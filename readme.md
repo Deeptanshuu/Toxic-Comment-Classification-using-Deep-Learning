@@ -1,4 +1,3 @@
-```markdown
 # Toxic Comment Classification
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
@@ -26,31 +25,8 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 
 
-## 📁 Dataset Structure
-
-dataset/
-├── raw/                   # Original CSV files
-├── processed/            # Cleaned and tokenized data
-└── testing/              # Validation/test splits
 
 
-## 🚀 Usage
-1. Data Preparation:
-
-python preprocess/clean_data.py
-python preprocess/tokenize_data.py
-
-
-2. Training:
-
-python train.py --model xlm-roberta --batch_size 32
-
-
-3. Evaluation:
-
-python evaluate.py --checkpoint models/best_model.pt
-
-```
 
 ## 📊 Results
     TBD
@@ -81,34 +57,7 @@ python evaluate.py --checkpoint models/best_model.pt
 Key remaining tasks to complete:
 
 1. **Implement Advanced Training Techniques**:
-``` python
-# Add to train.py
-# Gradient Accumulation
-for i, batch in enumerate(accum_iter, dataloader):
-    loss.backward()
-    if (i + 1) % accum_steps == 0:
-        optimizer.step()
-        optimizer.zero_grad()
-```
 
-2. **Create Language Detection Module**:
-``` python
-from langdetect import DetectorFactory
-DetectorFactory.seed = 42  # For consistent results
-
-def detect_lang(text):
-    try:
-        return detect(text)
-    except:
-        return 'en'
-```
+2. **Train the model**:
 
 3. **Build Deployment Pipeline**:
-``` bash
-# Dockerfile
-FROM python:3.8-slim
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
-```
