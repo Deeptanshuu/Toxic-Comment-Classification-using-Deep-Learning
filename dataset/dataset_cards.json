@@ -1,9 +1,9 @@
 {
-  "dataset\\raw\\MULTILINGUAL_TOXIC_DATASET_367k_7LANG_cleaned.csv": {
-    "filename": "MULTILINGUAL_TOXIC_DATASET_367k_7LANG_cleaned.csv",
-    "last_modified": "2025-02-03 20:38:19",
-    "file_size_mb": 175.03,
-    "num_rows": 470500,
+  "dataset\\raw\\MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv": {
+    "filename": "MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv",
+    "last_modified": "2025-02-03 23:03:13",
+    "file_size_mb": 129.46,
+    "num_rows": 360728,
     "num_columns": 8,
     "columns": [
       "comment_text",
@@ -37,8 +37,18 @@
     },
     "sample_rows": [
       {
-        "comment_text": "Explanation Why the edits made under my username Hardcore Metallica Fan were reverted? They weren t vandalisms, just closure on some GAs after I voted at New York Dolls FAC. And please don t remove the template from the talk page since I m retired now.89.205.38.27",
-        "toxic": 0.0,
+        "comment_text": "COCKSUCKER BEFORE YOU PISS AROUND ON MY WORK",
+        "toxic": 1.0,
+        "severe_toxic": 1.0,
+        "obscene": 1.0,
+        "threat": 0.0,
+        "insult": 1.0,
+        "identity_hate": 0.0,
+        "lang": "en"
+      },
+      {
+        "comment_text": "Hey. what is it. talk. What is it. an exclusive group of some WP TALIBANS.who are good at destroying, self-appointed purist who GANG UP any one who asks them questions abt their ANTI-SOCIAL and DESTRUCTIVE non -contribution at WP? Ask Sityush to clean up his behavior than issue me nonsensical warnings.",
+        "toxic": 1.0,
         "severe_toxic": 0.0,
         "obscene": 0.0,
         "threat": 0.0,
@@ -47,18 +57,8 @@
         "lang": "en"
       },
       {
-        "comment_text": "D aww! He matches this background colour I m seemingly stuck with. Thanks. talk 21 51, January 11, 2016 UTC",
-        "toxic": 0.0,
-        "severe_toxic": 0.0,
-        "obscene": 0.0,
-        "threat": 0.0,
-        "insult": 0.0,
-        "identity_hate": 0.0,
-        "lang": "en"
-      },
-      {
-        "comment_text": "Hey man, I m really not trying to edit war. It s just that this guy is constantly removing relevant information and talking to me through edits instead of my talk page. He seems to care more about the formatting than the actual info.",
-        "toxic": 0.0,
+        "comment_text": "Bye! Don t look, come or think of comming back! Tosser.",
+        "toxic": 1.0,
         "severe_toxic": 0.0,
         "obscene": 0.0,
         "threat": 0.0,
@@ -68,22 +68,22 @@
       }
     ],
     "language_distribution": {
-      "en": 159564,
-      "pt": 52026,
-      "ru": 52007,
-      "fr": 51802,
-      "es": 51789,
-      "tr": 51717,
-      "it": 51595
+      "ru": 52632,
+      "tr": 52558,
+      "pt": 52440,
+      "es": 52412,
+      "fr": 52368,
+      "it": 52340,
+      "en": 45978
     },
     "label_distribution": {
       "toxic": {
-        "0.0": 299925,
-        "1.0": 170575
+        "0.0": 183604,
+        "1.0": 177124
       },
       "severe_toxic": {
-        "0.0": 454304,
-        "1.0": 13283,
+        "0.0": 344141,
+        "1.0": 13674,
         "0.1666666666666666": 1179,
         "0.2": 786,
         "0.1": 576,
@@ -118,8 +118,8 @@
         "0.025": 6
       },
       "obscene": {
-        "0.0": 387705,
-        "1.0": 78302,
+        "0.0": 274026,
+        "1.0": 82209,
         "0.1666666666666666": 1892,
         "0.2": 1015,
         "0.1": 241,
@@ -164,8 +164,8 @@
         "0.833333333333333": 6
       },
       "threat": {
-        "0.0": 463574,
-        "1.0": 5234,
+        "0.0": 353576,
+        "1.0": 5460,
         "0.1666666666666666": 755,
         "0.2": 339,
         "0.1": 127,
@@ -190,8 +190,8 @@
         "0.142857142857142": 1
       },
       "insult": {
-        "0.0": 371714,
-        "1.0": 94346,
+        "0.0": 258344,
+        "1.0": 97944,
         "0.8333333333333333": 1326,
         "0.1666666666666666": 808,
         "0.8": 588,
@@ -230,8 +230,8 @@
         "0.0008904719501335": 1
       },
       "identity_hate": {
-        "0.0": 452316,
-        "1.0": 14251,
+        "0.0": 341806,
+        "1.0": 14989,
         "0.1666666666666666": 1790,
         "0.2": 841,
         "0.1": 281,

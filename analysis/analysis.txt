@@ -1,0 +1,261 @@
+Dataset Overview:
+--------------------------------------------------
+Total number of comments: 360,728
+Number of languages: 7
+
+Language Distribution:
+--------------------------------------------------
+ru: 52,632 comments (14.59%)
+tr: 52,558 comments (14.57%)
+pt: 52,440 comments (14.54%)
+es: 52,412 comments (14.53%)
+fr: 52,368 comments (14.52%)
+it: 52,340 comments (14.51%)
+en: 45,978 comments (12.75%)
+
+Class Distribution by Language:
+--------------------------------------------------
+
+RU (Total: 52,632 comments)
+0 toxic classes: 26,316 (50.00%)
+1 toxic classes: 7,688 (14.61%)
+2 toxic classes: 8,010 (15.22%)
+3 toxic classes: 7,103 (13.50%)
+4 toxic classes: 2,740 (5.21%)
+5 toxic classes: 706 (1.34%)
+6 toxic classes: 69 (0.13%)
+
+TR (Total: 52,558 comments)
+0 toxic classes: 26,279 (50.00%)
+1 toxic classes: 7,677 (14.61%)
+2 toxic classes: 8,004 (15.23%)
+3 toxic classes: 7,088 (13.49%)
+4 toxic classes: 2,736 (5.21%)
+5 toxic classes: 705 (1.34%)
+6 toxic classes: 69 (0.13%)
+
+PT (Total: 52,440 comments)
+0 toxic classes: 26,220 (50.00%)
+1 toxic classes: 7,668 (14.62%)
+2 toxic classes: 7,977 (15.21%)
+3 toxic classes: 7,071 (13.48%)
+4 toxic classes: 2,732 (5.21%)
+5 toxic classes: 703 (1.34%)
+6 toxic classes: 69 (0.13%)
+
+ES (Total: 52,412 comments)
+0 toxic classes: 26,206 (50.00%)
+1 toxic classes: 7,647 (14.59%)
+2 toxic classes: 7,982 (15.23%)
+3 toxic classes: 7,069 (13.49%)
+4 toxic classes: 2,737 (5.22%)
+5 toxic classes: 702 (1.34%)
+6 toxic classes: 69 (0.13%)
+
+FR (Total: 52,368 comments)
+0 toxic classes: 26,184 (50.00%)
+1 toxic classes: 7,626 (14.56%)
+2 toxic classes: 7,990 (15.26%)
+3 toxic classes: 7,066 (13.49%)
+4 toxic classes: 2,728 (5.21%)
+5 toxic classes: 705 (1.35%)
+6 toxic classes: 69 (0.13%)
+
+IT (Total: 52,340 comments)
+0 toxic classes: 26,170 (50.00%)
+1 toxic classes: 7,652 (14.62%)
+2 toxic classes: 7,967 (15.22%)
+3 toxic classes: 7,057 (13.48%)
+4 toxic classes: 2,722 (5.20%)
+5 toxic classes: 703 (1.34%)
+6 toxic classes: 69 (0.13%)
+
+EN (Total: 45,978 comments)
+0 toxic classes: 22,989 (50.00%)
+1 toxic classes: 8,499 (18.48%)
+2 toxic classes: 5,104 (11.10%)
+3 toxic classes: 6,391 (13.90%)
+4 toxic classes: 2,395 (5.21%)
+5 toxic classes: 553 (1.20%)
+6 toxic classes: 47 (0.10%)
+
+Detailed Toxicity Analysis by Language:
+--------------------------------------------------
+
+RU (Total: 52,632 comments)
+- Toxic:
+  Count: 25,954 (49.31%)
+  95% CI: [48.89%, 49.74%]
+- Severe Toxic:
+  Count: 2,441 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,432 (23.62%)
+  95% CI: [23.26%, 23.98%]
+- Threat:
+  Count: 1,075 (2.04%)
+  95% CI: [1.92%, 2.16%]
+- Insult:
+  Count: 15,207 (28.89%)
+  95% CI: [28.51%, 29.28%]
+- Identity Hate:
+  Count: 2,812 (5.34%)
+  95% CI: [5.15%, 5.53%]
+
+TR (Total: 52,558 comments)
+- Toxic:
+  Count: 25,908 (49.29%)
+  95% CI: [48.87%, 49.72%]
+- Severe Toxic:
+  Count: 2,439 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,411 (23.61%)
+  95% CI: [23.25%, 23.98%]
+- Threat:
+  Count: 1,077 (2.05%)
+  95% CI: [1.93%, 2.17%]
+- Insult:
+  Count: 15,170 (28.86%)
+  95% CI: [28.48%, 29.25%]
+- Identity Hate:
+  Count: 2,827 (5.38%)
+  95% CI: [5.19%, 5.57%]
+
+PT (Total: 52,440 comments)
+- Toxic:
+  Count: 25,841 (49.28%)
+  95% CI: [48.85%, 49.71%]
+- Severe Toxic:
+  Count: 2,432 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,395 (23.64%)
+  95% CI: [23.27%, 24.00%]
+- Threat:
+  Count: 1,080 (2.06%)
+  95% CI: [1.94%, 2.18%]
+- Insult:
+  Count: 15,143 (28.88%)
+  95% CI: [28.49%, 29.26%]
+- Identity Hate:
+  Count: 2,801 (5.34%)
+  95% CI: [5.15%, 5.53%]
+
+ES (Total: 52,412 comments)
+- Toxic:
+  Count: 25,874 (49.37%)
+  95% CI: [48.94%, 49.79%]
+- Severe Toxic:
+  Count: 2,432 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,388 (23.64%)
+  95% CI: [23.27%, 24.00%]
+- Threat:
+  Count: 1,073 (2.05%)
+  95% CI: [1.93%, 2.17%]
+- Insult:
+  Count: 15,140 (28.89%)
+  95% CI: [28.50%, 29.27%]
+- Identity Hate:
+  Count: 2,783 (5.31%)
+  95% CI: [5.12%, 5.50%]
+
+FR (Total: 52,368 comments)
+- Toxic:
+  Count: 25,877 (49.41%)
+  95% CI: [48.99%, 49.84%]
+- Severe Toxic:
+  Count: 2,428 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,379 (23.64%)
+  95% CI: [23.27%, 24.00%]
+- Threat:
+  Count: 1,066 (2.04%)
+  95% CI: [1.91%, 2.16%]
+- Insult:
+  Count: 15,131 (28.89%)
+  95% CI: [28.51%, 29.28%]
+- Identity Hate:
+  Count: 2,774 (5.30%)
+  95% CI: [5.11%, 5.49%]
+
+IT (Total: 52,340 comments)
+- Toxic:
+  Count: 25,827 (49.34%)
+  95% CI: [48.92%, 49.77%]
+- Severe Toxic:
+  Count: 2,429 (4.64%)
+  95% CI: [4.46%, 4.82%]
+- Obscene:
+  Count: 12,341 (23.58%)
+  95% CI: [23.21%, 23.94%]
+- Threat:
+  Count: 1,077 (2.06%)
+  95% CI: [1.94%, 2.18%]
+- Insult:
+  Count: 15,118 (28.88%)
+  95% CI: [28.50%, 29.27%]
+- Identity Hate:
+  Count: 2,782 (5.32%)
+  95% CI: [5.12%, 5.51%]
+
+EN (Total: 45,978 comments)
+- Toxic:
+  Count: 21,843 (47.51%)
+  95% CI: [47.05%, 47.96%]
+- Severe Toxic:
+  Count: 1,986 (4.32%)
+  95% CI: [4.13%, 4.51%]
+- Obscene:
+  Count: 12,356 (26.87%)
+  95% CI: [26.47%, 27.28%]
+- Threat:
+  Count: 704 (1.53%)
+  95% CI: [1.42%, 1.64%]
+- Insult:
+  Count: 11,475 (24.96%)
+  95% CI: [24.56%, 25.35%]
+- Identity Hate:
+  Count: 2,143 (4.66%)
+  95% CI: [4.47%, 4.85%]
+
+Statistical Analysis:
+--------------------------------------------------
+
+Chi-square test for number of toxic classes by language:
+Chi-square statistic: 879.32
+p-value: 0.0000000000
+Significant at α=0.05: Yes
+
+Chi-square test for Toxic:
+Chi-square statistic: 53.86
+p-value: 0.0000000008
+Significant at α=0.05: Yes
+
+Chi-square test for Severe Toxic:
+Chi-square statistic: 9.34
+p-value: 0.1555842046
+Significant at α=0.05: No
+
+Chi-square test for Obscene:
+Chi-square statistic: 232.60
+p-value: 0.0000000000
+Significant at α=0.05: Yes
+
+Chi-square test for Threat:
+Chi-square statistic: 55.38
+p-value: 0.0000000004
+Significant at α=0.05: Yes
+
+Chi-square test for Insult:
+Chi-square statistic: 304.12
+p-value: 0.0000000000
+Significant at α=0.05: Yes
+
+Chi-square test for Identity Hate:
+Chi-square statistic: 36.69
+p-value: 0.0000020223
+Significant at α=0.05: Yes

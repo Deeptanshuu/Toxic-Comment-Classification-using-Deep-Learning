@@ -54,23 +54,47 @@ def create_language_distribution_plot(df, lang_dist, lang_percent, colors, image
 
 def create_toxicity_heatmap(df, toxicity_cols, image_dir):
     """Create and save toxicity correlation heatmap"""
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(12, 10))
+    
+    # Calculate correlation and sort
     correlation = df[toxicity_cols].corr()
     
-    # Create heatmap
-    im = plt.imshow(correlation, cmap='RdYlBu_r', aspect='equal')
-    plt.colorbar(im)
+    # Sort correlation matrix by mean correlation value
+    mean_corr = correlation.mean()
+    sorted_cols = mean_corr.sort_values(ascending=False).index
+    correlation = correlation.loc[sorted_cols, sorted_cols]
     
-    # Add text annotations
+    # Create heatmap with better styling
+    im = plt.imshow(correlation, cmap='RdYlBu_r', aspect='equal', vmin=0, vmax=1)
+    plt.colorbar(im, label='Correlation Coefficient')
+    
+    # Add text annotations with conditional formatting
     for i in range(len(correlation)):
         for j in range(len(correlation)):
-            text = plt.text(j, i, f'{correlation.iloc[i, j]:.2f}',
-                          ha='center', va='center', color='black')
+            corr_value = correlation.iloc[i, j]
+            # Choose text color based on background
+            text_color = 'white' if abs(corr_value) > 0.5 else 'black'
+            # Make diagonal elements bold
+            fontweight = 'bold' if i == j else 'normal'
+            plt.text(j, i, f'{corr_value:.2f}',
+                    ha='center', va='center', 
+                    color=text_color,
+                    fontweight=fontweight,
+                    fontsize=10)
     
-    plt.title('Correlation between Different Types of Toxicity')
-    plt.xticks(range(len(toxicity_cols)), [col.replace('_', ' ').title() for col in toxicity_cols], rotation=45)
-    plt.yticks(range(len(toxicity_cols)), [col.replace('_', ' ').title() for col in toxicity_cols])
+    # Improve title and labels
+    plt.title('Correlation between Different Types of Toxicity\n(Sorted by Average Correlation)', 
+             pad=20, fontsize=14)
     
+    # Format axis labels
+    formatted_labels = [col.replace('_', ' ').title() for col in correlation.columns]
+    plt.xticks(range(len(formatted_labels)), formatted_labels, rotation=45, ha='right')
+    plt.yticks(range(len(formatted_labels)), formatted_labels)
+    
+    # Add gridlines
+    plt.grid(False)
+    
+    # Adjust layout
     plt.tight_layout()
     plt.savefig(os.path.join(image_dir, 'toxicity_correlation.png'), dpi=300, bbox_inches='tight')
     plt.close()
@@ -189,7 +213,7 @@ def analyze_language_distribution():
     
     # Read the dataset
     print("Reading dataset...")
-    input_file = 'dataset/processed/final_merged_dataset.csv'
+    input_file = 'dataset/raw/MULTILINGUAL_TOXIC_DATASET_347K_7LANG.csv'
     df = pd.read_csv(input_file)
     
     # Get language distribution
