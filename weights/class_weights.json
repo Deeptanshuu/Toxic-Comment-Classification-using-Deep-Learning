@@ -1,0 +1,819 @@
+{
+  "dataset_info": {
+    "total_samples": 360728,
+    "n_languages": 7,
+    "languages": [
+      "en",
+      "ru",
+      "fr",
+      "it",
+      "es",
+      "pt",
+      "tr"
+    ]
+  },
+  "overall_weights": {
+    "toxic": {
+      "positive_weight": 1.0182922698222714,
+      "negative_weight": 0.9823533256356071,
+      "positive_count": 177124,
+      "negative_count": 183604,
+      "positive_ratio": 0.4910181632698321,
+      "negative_ratio": 0.5089818367301678
+    },
+    "severe_toxic": {
+      "positive_weight": 10.87381684451679,
+      "negative_weight": 0.5240991337852798,
+      "positive_count": 16587,
+      "negative_count": 344141,
+      "positive_ratio": 0.04598201414916502,
+      "negative_ratio": 0.954017985850835
+    },
+    "obscene": {
+      "positive_weight": 2.080274964822034,
+      "negative_weight": 0.6582003167582638,
+      "positive_count": 86702,
+      "negative_count": 274026,
+      "positive_ratio": 0.24035284203056043,
+      "negative_ratio": 0.7596471579694396
+    },
+    "threat": {
+      "positive_weight": 25.21868008948546,
+      "negative_weight": 0.510113808629545,
+      "positive_count": 7152,
+      "negative_count": 353576,
+      "positive_ratio": 0.01982657293029651,
+      "negative_ratio": 0.9801734270697035
+    },
+    "insult": {
+      "positive_weight": 1.7616424441318956,
+      "negative_weight": 0.6981543987861146,
+      "positive_count": 102384,
+      "negative_count": 258344,
+      "positive_ratio": 0.2838260406733051,
+      "negative_ratio": 0.7161739593266949
+    },
+    "identity_hate": {
+      "positive_weight": 9.531973364337809,
+      "negative_weight": 0.5276794438950749,
+      "positive_count": 18922,
+      "negative_count": 341806,
+      "positive_ratio": 0.05245503537291255,
+      "negative_ratio": 0.9475449646270875
+    }
+  },
+  "normalized_overall_weights": {
+    "toxic": {
+      "positive_weight": 0.48949888213906645,
+      "negative_weight": 0.47222282738938154,
+      "positive_count": 177124,
+      "negative_count": 183604,
+      "positive_ratio": 0.4910181632698321,
+      "negative_ratio": 0.5089818367301678
+    },
+    "severe_toxic": {
+      "positive_weight": 5.227105564598783,
+      "negative_weight": 0.25193743262209384,
+      "positive_count": 16587,
+      "negative_count": 344141,
+      "positive_ratio": 0.04598201414916502,
+      "negative_ratio": 0.954017985850835
+    },
+    "obscene": {
+      "positive_weight": 1.0,
+      "negative_weight": 0.31640063351652764,
+      "positive_count": 86702,
+      "negative_count": 274026,
+      "positive_ratio": 0.24035284203056043,
+      "negative_ratio": 0.7596471579694396
+    },
+    "threat": {
+      "positive_weight": 12.122762863534676,
+      "negative_weight": 0.24521460732628914,
+      "positive_count": 7152,
+      "negative_count": 353576,
+      "positive_ratio": 0.01982657293029651,
+      "negative_ratio": 0.9801734270697035
+    },
+    "insult": {
+      "positive_weight": 0.8468315361775278,
+      "negative_weight": 0.3356067878487598,
+      "positive_count": 102384,
+      "negative_count": 258344,
+      "positive_ratio": 0.2838260406733051,
+      "negative_ratio": 0.7161739593266949
+    },
+    "identity_hate": {
+      "positive_weight": 4.58207377655639,
+      "negative_weight": 0.25365850804257384,
+      "positive_count": 18922,
+      "negative_count": 341806,
+      "positive_ratio": 0.05245503537291255,
+      "negative_ratio": 0.9475449646270875
+    }
+  },
+  "language_weights": {
+    "en": {
+      "toxic": {
+        "positive_weight": 1.0524653206977064,
+        "negative_weight": 0.9525170913610939,
+        "positive_count": 21843,
+        "negative_count": 24135,
+        "positive_ratio": 0.47507503588672845,
+        "negative_ratio": 0.5249249641132716
+      },
+      "severe_toxic": {
+        "positive_weight": 11.575528700906345,
+        "negative_weight": 0.5225722858701582,
+        "positive_count": 1986,
+        "negative_count": 43992,
+        "positive_ratio": 0.04319457131671669,
+        "negative_ratio": 0.9568054286832833
+      },
+      "obscene": {
+        "positive_weight": 1.8605535772094528,
+        "negative_weight": 0.6837487359467016,
+        "positive_count": 12356,
+        "negative_count": 33622,
+        "positive_ratio": 0.2687372221497238,
+        "negative_ratio": 0.7312627778502763
+      },
+      "threat": {
+        "positive_weight": 32.65482954545455,
+        "negative_weight": 0.5077748818306312,
+        "positive_count": 704,
+        "negative_count": 45274,
+        "positive_ratio": 0.015311670799077819,
+        "negative_ratio": 0.9846883292009222
+      },
+      "insult": {
+        "positive_weight": 2.0033986928104577,
+        "negative_weight": 0.6662898878358403,
+        "positive_count": 11475,
+        "negative_count": 34503,
+        "positive_ratio": 0.24957588411849146,
+        "negative_ratio": 0.7504241158815086
+      },
+      "identity_hate": {
+        "positive_weight": 10.727484834344377,
+        "negative_weight": 0.524443937492871,
+        "positive_count": 2143,
+        "negative_count": 43835,
+        "positive_ratio": 0.046609247901170124,
+        "negative_ratio": 0.9533907520988298
+      }
+    },
+    "ru": {
+      "toxic": {
+        "positive_weight": 1.0139477537181167,
+        "negative_weight": 0.9864307669240573,
+        "positive_count": 25954,
+        "negative_count": 26678,
+        "positive_ratio": 0.4931220550235598,
+        "negative_ratio": 0.5068779449764402
+      },
+      "severe_toxic": {
+        "positive_weight": 10.780827529700943,
+        "negative_weight": 0.5243171086449762,
+        "positive_count": 2441,
+        "negative_count": 50191,
+        "positive_ratio": 0.046378628970968235,
+        "negative_ratio": 0.9536213710290318
+      },
+      "obscene": {
+        "positive_weight": 2.1167953667953667,
+        "negative_weight": 0.6546268656716417,
+        "positive_count": 12432,
+        "negative_count": 40200,
+        "positive_ratio": 0.2362061103511172,
+        "negative_ratio": 0.7637938896488828
+      },
+      "threat": {
+        "positive_weight": 24.48,
+        "negative_weight": 0.5104253544620517,
+        "positive_count": 1075,
+        "negative_count": 51557,
+        "positive_ratio": 0.02042483660130719,
+        "negative_ratio": 0.9795751633986928
+      },
+      "insult": {
+        "positive_weight": 1.730518840007891,
+        "negative_weight": 0.7031663326653307,
+        "positive_count": 15207,
+        "negative_count": 37425,
+        "positive_ratio": 0.28893068855449155,
+        "negative_ratio": 0.7110693114455084
+      },
+      "identity_hate": {
+        "positive_weight": 9.35846372688478,
+        "negative_weight": 0.5282215977519069,
+        "positive_count": 2812,
+        "negative_count": 49820,
+        "positive_ratio": 0.053427572579419366,
+        "negative_ratio": 0.9465724274205807
+      }
+    },
+    "fr": {
+      "toxic": {
+        "positive_weight": 1.011863817289485,
+        "negative_weight": 0.9884111585066626,
+        "positive_count": 25877,
+        "negative_count": 26491,
+        "positive_ratio": 0.4941376413076688,
+        "negative_ratio": 0.5058623586923312
+      },
+      "severe_toxic": {
+        "positive_weight": 10.784184514003295,
+        "negative_weight": 0.5243091710052062,
+        "positive_count": 2428,
+        "negative_count": 49940,
+        "positive_ratio": 0.04636419187289948,
+        "negative_ratio": 0.9536358081271005
+      },
+      "obscene": {
+        "positive_weight": 2.1151950884562565,
+        "negative_weight": 0.6547800645177424,
+        "positive_count": 12379,
+        "negative_count": 39989,
+        "positive_ratio": 0.2363848151542927,
+        "negative_ratio": 0.7636151848457073
+      },
+      "threat": {
+        "positive_weight": 24.56285178236398,
+        "negative_weight": 0.5103894585006432,
+        "positive_count": 1066,
+        "negative_count": 51302,
+        "positive_ratio": 0.020355942560342195,
+        "negative_ratio": 0.9796440574396578
+      },
+      "insult": {
+        "positive_weight": 1.7304870795056506,
+        "negative_weight": 0.7031715766576255,
+        "positive_count": 15131,
+        "negative_count": 37237,
+        "positive_ratio": 0.28893599144515736,
+        "negative_ratio": 0.7110640085548426
+      },
+      "identity_hate": {
+        "positive_weight": 9.439077144917087,
+        "negative_weight": 0.5279670927934831,
+        "positive_count": 2774,
+        "negative_count": 49594,
+        "positive_ratio": 0.052971280171096854,
+        "negative_ratio": 0.9470287198289031
+      }
+    },
+    "it": {
+      "toxic": {
+        "positive_weight": 1.0132806752623225,
+        "negative_weight": 0.9870629502508204,
+        "positive_count": 25827,
+        "negative_count": 26513,
+        "positive_ratio": 0.4934466946885747,
+        "negative_ratio": 0.5065533053114253
+      },
+      "severe_toxic": {
+        "positive_weight": 10.7739810621655,
+        "negative_weight": 0.5243333132976699,
+        "positive_count": 2429,
+        "negative_count": 49911,
+        "positive_ratio": 0.04640810087886894,
+        "negative_ratio": 0.9535918991211311
+      },
+      "obscene": {
+        "positive_weight": 2.1205736974313263,
+        "negative_weight": 0.6542663566589165,
+        "positive_count": 12341,
+        "negative_count": 39999,
+        "positive_ratio": 0.2357852502865877,
+        "negative_ratio": 0.7642147497134123
+      },
+      "threat": {
+        "positive_weight": 24.298978644382544,
+        "negative_weight": 0.5105046524783957,
+        "positive_count": 1077,
+        "negative_count": 51263,
+        "positive_ratio": 0.02057699656094765,
+        "negative_ratio": 0.9794230034390523
+      },
+      "insult": {
+        "positive_weight": 1.7310490805662124,
+        "negative_weight": 0.7030788243511902,
+        "positive_count": 15118,
+        "negative_count": 37222,
+        "positive_ratio": 0.2888421857088269,
+        "negative_ratio": 0.7111578142911731
+      },
+      "identity_hate": {
+        "positive_weight": 9.406901509705248,
+        "negative_weight": 0.5280681222002502,
+        "positive_count": 2782,
+        "negative_count": 49558,
+        "positive_ratio": 0.05315246465418418,
+        "negative_ratio": 0.9468475353458158
+      }
+    },
+    "es": {
+      "toxic": {
+        "positive_weight": 1.0128314137744454,
+        "negative_weight": 0.9874896375009421,
+        "positive_count": 25874,
+        "negative_count": 26538,
+        "positive_ratio": 0.4936655727695948,
+        "negative_ratio": 0.5063344272304052
+      },
+      "severe_toxic": {
+        "positive_weight": 10.775493421052632,
+        "negative_weight": 0.5243297318927571,
+        "positive_count": 2432,
+        "negative_count": 49980,
+        "positive_ratio": 0.04640158742272762,
+        "negative_ratio": 0.9535984125772724
+      },
+      "obscene": {
+        "positive_weight": 2.1154342912495965,
+        "negative_weight": 0.6547571457125725,
+        "positive_count": 12388,
+        "negative_count": 40024,
+        "positive_ratio": 0.23635808593451882,
+        "negative_ratio": 0.7636419140654812
+      },
+      "threat": {
+        "positive_weight": 24.423112767940353,
+        "negative_weight": 0.5104501451138511,
+        "positive_count": 1073,
+        "negative_count": 51339,
+        "positive_ratio": 0.02047241089826757,
+        "negative_ratio": 0.9795275891017324
+      },
+      "insult": {
+        "positive_weight": 1.7309114927344782,
+        "negative_weight": 0.7031015239321743,
+        "positive_count": 15140,
+        "negative_count": 37272,
+        "positive_ratio": 0.2888651453865527,
+        "negative_ratio": 0.7111348546134473
+      },
+      "identity_hate": {
+        "positive_weight": 9.416457060725836,
+        "negative_weight": 0.5280380422736707,
+        "positive_count": 2783,
+        "negative_count": 49629,
+        "positive_ratio": 0.05309852705487293,
+        "negative_ratio": 0.946901472945127
+      }
+    },
+    "pt": {
+      "toxic": {
+        "positive_weight": 1.0146666150690762,
+        "negative_weight": 0.98575134403549,
+        "positive_count": 25841,
+        "negative_count": 26599,
+        "positive_ratio": 0.4927726926010679,
+        "negative_ratio": 0.5072273073989321
+      },
+      "severe_toxic": {
+        "positive_weight": 10.78125,
+        "negative_weight": 0.5243161094224924,
+        "positive_count": 2432,
+        "negative_count": 50008,
+        "positive_ratio": 0.0463768115942029,
+        "negative_ratio": 0.9536231884057971
+      },
+      "obscene": {
+        "positive_weight": 2.1153691004437274,
+        "negative_weight": 0.654763391184917,
+        "positive_count": 12395,
+        "negative_count": 40045,
+        "positive_ratio": 0.23636536994660565,
+        "negative_ratio": 0.7636346300533944
+      },
+      "threat": {
+        "positive_weight": 24.27777777777778,
+        "negative_weight": 0.5105140186915887,
+        "positive_count": 1080,
+        "negative_count": 51360,
+        "positive_ratio": 0.020594965675057208,
+        "negative_ratio": 0.9794050343249427
+      },
+      "insult": {
+        "positive_weight": 1.7314930991217063,
+        "negative_weight": 0.7030056036678554,
+        "positive_count": 15143,
+        "negative_count": 37297,
+        "positive_ratio": 0.288768115942029,
+        "negative_ratio": 0.711231884057971
+      },
+      "identity_hate": {
+        "positive_weight": 9.360942520528383,
+        "negative_weight": 0.5282137029351921,
+        "positive_count": 2801,
+        "negative_count": 49639,
+        "positive_ratio": 0.05341342486651411,
+        "negative_ratio": 0.9465865751334859
+      }
+    },
+    "tr": {
+      "toxic": {
+        "positive_weight": 1.014319901188822,
+        "negative_weight": 0.9860787992495309,
+        "positive_count": 25908,
+        "negative_count": 26650,
+        "positive_ratio": 0.49294113170211956,
+        "negative_ratio": 0.5070588682978804
+      },
+      "severe_toxic": {
+        "positive_weight": 10.77449774497745,
+        "negative_weight": 0.5243320896266885,
+        "positive_count": 2439,
+        "negative_count": 50119,
+        "positive_ratio": 0.04640587541382853,
+        "negative_ratio": 0.9535941245861714
+      },
+      "obscene": {
+        "positive_weight": 2.1173958585126096,
+        "negative_weight": 0.654569457244626,
+        "positive_count": 12411,
+        "negative_count": 40147,
+        "positive_ratio": 0.23613912249324556,
+        "negative_ratio": 0.7638608775067545
+      },
+      "threat": {
+        "positive_weight": 24.400185701021357,
+        "negative_weight": 0.510460169771372,
+        "positive_count": 1077,
+        "negative_count": 51481,
+        "positive_ratio": 0.020491647322957496,
+        "negative_ratio": 0.9795083526770425
+      },
+      "insult": {
+        "positive_weight": 1.732300593276203,
+        "negative_weight": 0.7028725794372526,
+        "positive_count": 15170,
+        "negative_count": 37388,
+        "positive_ratio": 0.28863350964648576,
+        "negative_ratio": 0.7113664903535142
+      },
+      "identity_hate": {
+        "positive_weight": 9.295719844357977,
+        "negative_weight": 0.5284229152842291,
+        "positive_count": 2827,
+        "negative_count": 49731,
+        "positive_ratio": 0.05378819589786522,
+        "negative_ratio": 0.9462118041021348
+      }
+    }
+  },
+  "normalized_language_weights": {
+    "en": {
+      "toxic": {
+        "positive_weight": 0.5656732133864396,
+        "negative_weight": 0.5119535943650301,
+        "positive_count": 21843,
+        "negative_count": 24135,
+        "positive_ratio": 0.47507503588672845,
+        "negative_ratio": 0.5249249641132716
+      },
+      "severe_toxic": {
+        "positive_weight": 6.221550855991944,
+        "negative_weight": 0.2808692489543554,
+        "positive_count": 1986,
+        "negative_count": 43992,
+        "positive_ratio": 0.04319457131671669,
+        "negative_ratio": 0.9568054286832833
+      },
+      "obscene": {
+        "positive_weight": 1.0,
+        "negative_weight": 0.36749747189340315,
+        "positive_count": 12356,
+        "negative_count": 33622,
+        "positive_ratio": 0.2687372221497238,
+        "negative_ratio": 0.7312627778502763
+      },
+      "threat": {
+        "positive_weight": 17.551136363636367,
+        "negative_weight": 0.2729160224411362,
+        "positive_count": 704,
+        "negative_count": 45274,
+        "positive_ratio": 0.015311670799077819,
+        "negative_ratio": 0.9846883292009222
+      },
+      "insult": {
+        "positive_weight": 1.0767755991285404,
+        "negative_weight": 0.35811378720690956,
+        "positive_count": 11475,
+        "negative_count": 34503,
+        "positive_ratio": 0.24957588411849146,
+        "negative_ratio": 0.7504241158815086
+      },
+      "identity_hate": {
+        "positive_weight": 5.765748950069995,
+        "negative_weight": 0.28187521387019504,
+        "positive_count": 2143,
+        "negative_count": 43835,
+        "positive_ratio": 0.046609247901170124,
+        "negative_ratio": 0.9533907520988298
+      }
+    },
+    "ru": {
+      "toxic": {
+        "positive_weight": 0.5449710054783179,
+        "negative_weight": 0.5301813282923856,
+        "positive_count": 25954,
+        "negative_count": 26678,
+        "positive_ratio": 0.4931220550235598,
+        "negative_ratio": 0.5068779449764402
+      },
+      "severe_toxic": {
+        "positive_weight": 5.7944192856142,
+        "negative_weight": 0.28180704660565165,
+        "positive_count": 2441,
+        "negative_count": 50191,
+        "positive_ratio": 0.046378628970968235,
+        "negative_ratio": 0.9536213710290318
+      },
+      "obscene": {
+        "positive_weight": 1.137723413463985,
+        "negative_weight": 0.35184521085035475,
+        "positive_count": 12432,
+        "negative_count": 40200,
+        "positive_ratio": 0.2362061103511172,
+        "negative_ratio": 0.7637938896488828
+      },
+      "threat": {
+        "positive_weight": 13.157374396450477,
+        "negative_weight": 0.2743405837458398,
+        "positive_count": 1075,
+        "negative_count": 51557,
+        "positive_ratio": 0.02042483660130719,
+        "negative_ratio": 0.9795751633986928
+      },
+      "insult": {
+        "positive_weight": 0.9301096518829659,
+        "negative_weight": 0.3779339338993791,
+        "positive_count": 15207,
+        "negative_count": 37425,
+        "positive_ratio": 0.28893068855449155,
+        "negative_ratio": 0.7110693114455084
+      },
+      "identity_hate": {
+        "positive_weight": 5.029935091103934,
+        "negative_weight": 0.2839056097186725,
+        "positive_count": 2812,
+        "negative_count": 49820,
+        "positive_ratio": 0.053427572579419366,
+        "negative_ratio": 0.9465724274205807
+      }
+    },
+    "fr": {
+      "toxic": {
+        "positive_weight": 0.5438509429043837,
+        "negative_weight": 0.5312457381577417,
+        "positive_count": 25877,
+        "negative_count": 26491,
+        "positive_ratio": 0.4941376413076688,
+        "negative_ratio": 0.5058623586923312
+      },
+      "severe_toxic": {
+        "positive_weight": 5.796223578886629,
+        "negative_weight": 0.28180278032712724,
+        "positive_count": 2428,
+        "negative_count": 49940,
+        "positive_ratio": 0.04636419187289948,
+        "negative_ratio": 0.9536358081271005
+      },
+      "obscene": {
+        "positive_weight": 1.1368633047529473,
+        "negative_weight": 0.35192755131503006,
+        "positive_count": 12379,
+        "negative_count": 39989,
+        "positive_ratio": 0.2363848151542927,
+        "negative_ratio": 0.7636151848457073
+      },
+      "threat": {
+        "positive_weight": 13.201905112135774,
+        "negative_weight": 0.2743212905839292,
+        "positive_count": 1066,
+        "negative_count": 51302,
+        "positive_ratio": 0.020355942560342195,
+        "negative_ratio": 0.9796440574396578
+      },
+      "insult": {
+        "positive_weight": 0.9300925814246735,
+        "negative_weight": 0.3779367524112237,
+        "positive_count": 15131,
+        "negative_count": 37237,
+        "positive_ratio": 0.28893599144515736,
+        "negative_ratio": 0.7110640085548426
+      },
+      "identity_hate": {
+        "positive_weight": 5.0732627431639274,
+        "negative_weight": 0.2837688198075722,
+        "positive_count": 2774,
+        "negative_count": 49594,
+        "positive_ratio": 0.052971280171096854,
+        "negative_ratio": 0.9470287198289031
+      }
+    },
+    "it": {
+      "toxic": {
+        "positive_weight": 0.5446124678559858,
+        "negative_weight": 0.5305211106746329,
+        "positive_count": 25827,
+        "negative_count": 26513,
+        "positive_ratio": 0.4934466946885747,
+        "negative_ratio": 0.5065533053114253
+      },
+      "severe_toxic": {
+        "positive_weight": 5.7907394842801745,
+        "negative_weight": 0.2818157561923533,
+        "positive_count": 2429,
+        "negative_count": 49911,
+        "positive_ratio": 0.04640810087886894,
+        "negative_ratio": 0.9535918991211311
+      },
+      "obscene": {
+        "positive_weight": 1.139754169622927,
+        "negative_weight": 0.35165144646907537,
+        "positive_count": 12341,
+        "negative_count": 39999,
+        "positive_ratio": 0.2357852502865877,
+        "negative_ratio": 0.7642147497134123
+      },
+      "threat": {
+        "positive_weight": 13.060080043933652,
+        "negative_weight": 0.27438320440310837,
+        "positive_count": 1077,
+        "negative_count": 51263,
+        "positive_ratio": 0.02057699656094765,
+        "negative_ratio": 0.9794230034390523
+      },
+      "insult": {
+        "positive_weight": 0.9303946426323947,
+        "negative_weight": 0.37788690041686485,
+        "positive_count": 15118,
+        "negative_count": 37222,
+        "positive_ratio": 0.2888421857088269,
+        "negative_ratio": 0.7111578142911731
+      },
+      "identity_hate": {
+        "positive_weight": 5.055969161508463,
+        "negative_weight": 0.2838231205318323,
+        "positive_count": 2782,
+        "negative_count": 49558,
+        "positive_ratio": 0.05315246465418418,
+        "negative_ratio": 0.9468475353458158
+      }
+    },
+    "es": {
+      "toxic": {
+        "positive_weight": 0.5443710012874439,
+        "negative_weight": 0.5307504441672818,
+        "positive_count": 25874,
+        "negative_count": 26538,
+        "positive_ratio": 0.4936655727695948,
+        "negative_ratio": 0.5063344272304052
+      },
+      "severe_toxic": {
+        "positive_weight": 5.791552338532616,
+        "negative_weight": 0.281813831278738,
+        "positive_count": 2432,
+        "negative_count": 49980,
+        "positive_ratio": 0.04640158742272762,
+        "negative_ratio": 0.9535984125772724
+      },
+      "obscene": {
+        "positive_weight": 1.1369918701413726,
+        "negative_weight": 0.35191523304295735,
+        "positive_count": 12388,
+        "negative_count": 40024,
+        "positive_ratio": 0.23635808593451882,
+        "negative_ratio": 0.7636419140654812
+      },
+      "threat": {
+        "positive_weight": 13.126798963011485,
+        "negative_weight": 0.2743539080876395,
+        "positive_count": 1073,
+        "negative_count": 51339,
+        "positive_ratio": 0.02047241089826757,
+        "negative_ratio": 0.9795275891017324
+      },
+      "insult": {
+        "positive_weight": 0.930320692688991,
+        "negative_weight": 0.3778991008615401,
+        "positive_count": 15140,
+        "negative_count": 37272,
+        "positive_ratio": 0.2888651453865527,
+        "negative_ratio": 0.7111348546134473
+      },
+      "identity_hate": {
+        "positive_weight": 5.061105025983228,
+        "negative_weight": 0.2838069533400094,
+        "positive_count": 2783,
+        "negative_count": 49629,
+        "positive_ratio": 0.05309852705487293,
+        "negative_ratio": 0.946901472945127
+      }
+    },
+    "pt": {
+      "toxic": {
+        "positive_weight": 0.5453573750834532,
+        "negative_weight": 0.5298161558529085,
+        "positive_count": 25841,
+        "negative_count": 26599,
+        "positive_ratio": 0.4927726926010679,
+        "negative_ratio": 0.5072273073989321
+      },
+      "severe_toxic": {
+        "positive_weight": 5.7946463526034195,
+        "negative_weight": 0.28180650954910247,
+        "positive_count": 2432,
+        "negative_count": 50008,
+        "positive_ratio": 0.0463768115942029,
+        "negative_ratio": 0.9536231884057971
+      },
+      "obscene": {
+        "positive_weight": 1.1369568317492147,
+        "negative_weight": 0.35191858982473506,
+        "positive_count": 12395,
+        "negative_count": 40045,
+        "positive_ratio": 0.23636536994660565,
+        "negative_ratio": 0.7636346300533944
+      },
+      "threat": {
+        "positive_weight": 13.04868511993659,
+        "negative_weight": 0.2743882385033395,
+        "positive_count": 1080,
+        "negative_count": 51360,
+        "positive_ratio": 0.020594965675057208,
+        "negative_ratio": 0.9794050343249427
+      },
+      "insult": {
+        "positive_weight": 0.9306332912587675,
+        "negative_weight": 0.37784754617077826,
+        "positive_count": 15143,
+        "negative_count": 37297,
+        "positive_ratio": 0.288768115942029,
+        "negative_ratio": 0.711231884057971
+      },
+      "identity_hate": {
+        "positive_weight": 5.031267379340063,
+        "negative_weight": 0.28390136645644587,
+        "positive_count": 2801,
+        "negative_count": 49639,
+        "positive_ratio": 0.05341342486651411,
+        "negative_ratio": 0.9465865751334859
+      }
+    },
+    "tr": {
+      "toxic": {
+        "positive_weight": 0.5451710252333327,
+        "negative_weight": 0.5299921546621081,
+        "positive_count": 25908,
+        "negative_count": 26650,
+        "positive_ratio": 0.49294113170211956,
+        "negative_ratio": 0.5070588682978804
+      },
+      "severe_toxic": {
+        "positive_weight": 5.791017188087406,
+        "negative_weight": 0.2818150985004726,
+        "positive_count": 2439,
+        "negative_count": 50119,
+        "positive_ratio": 0.04640587541382853,
+        "negative_ratio": 0.9535941245861714
+      },
+      "obscene": {
+        "positive_weight": 1.1380461624160165,
+        "negative_weight": 0.35181435528794636,
+        "positive_count": 12411,
+        "negative_count": 40147,
+        "positive_ratio": 0.23613912249324556,
+        "negative_ratio": 0.7638608775067545
+      },
+      "threat": {
+        "positive_weight": 13.11447625045978,
+        "negative_weight": 0.2743592960848698,
+        "positive_count": 1077,
+        "negative_count": 51481,
+        "positive_ratio": 0.020491647322957496,
+        "negative_ratio": 0.9795083526770425
+      },
+      "insult": {
+        "positive_weight": 0.9310672987307306,
+        "negative_weight": 0.37777604904635664,
+        "positive_count": 15170,
+        "negative_count": 37388,
+        "positive_ratio": 0.28863350964648576,
+        "negative_ratio": 0.7113664903535142
+      },
+      "identity_hate": {
+        "positive_weight": 4.9962118577096515,
+        "negative_weight": 0.2840138127474851,
+        "positive_count": 2827,
+        "negative_count": 49731,
+        "positive_ratio": 0.05378819589786522,
+        "negative_ratio": 0.9462118041021348
+      }
+    }
+  }
+}
