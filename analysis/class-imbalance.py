@@ -4,7 +4,7 @@ import pandas as pd
 import json
 
 # Load data with language column
-train_df = pd.read_csv('dataset/raw/FINAL_TOXIC_DATASET_367k.csv')
+train_df = pd.read_csv('dataset/raw/MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv')
 lang_weights = {}
 
 for lang in train_df['lang'].unique():

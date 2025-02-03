@@ -73,7 +73,7 @@ def create_toxicity_heatmap(df, toxicity_cols, image_dir):
         for j in range(len(correlation)):
             corr_value = correlation.iloc[i, j]
             # Choose text color based on background
-            text_color = 'white' if abs(corr_value) > 0.5 else 'black'
+            text_color = 'white' if abs(corr_value) > 0.7 else 'black'
             # Make diagonal elements bold
             fontweight = 'bold' if i == j else 'normal'
             plt.text(j, i, f'{corr_value:.2f}',
@@ -213,7 +213,7 @@ def analyze_language_distribution():
     
     # Read the dataset
     print("Reading dataset...")
-    input_file = 'dataset/raw/MULTILINGUAL_TOXIC_DATASET_347K_7LANG.csv'
+    input_file = 'dataset/raw/MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv'
     df = pd.read_csv(input_file)
     
     # Get language distribution
