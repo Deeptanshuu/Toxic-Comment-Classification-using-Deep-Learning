@@ -105,5 +105,5 @@ def split_dataset(input_file, train_ratio=0.8, random_state=42):
     return train_df, test_df
 
 if __name__ == "__main__":
-    input_file = "dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv"
+    input_file = "dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv"
     train_df, test_df = split_dataset(input_file) 
