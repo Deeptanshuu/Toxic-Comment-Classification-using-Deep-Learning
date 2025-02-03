@@ -213,7 +213,7 @@ def analyze_language_distribution():
     
     # Read the dataset
     print("Reading dataset...")
-    input_file = 'dataset/raw/MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv'
+    input_file = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv'
     df = pd.read_csv(input_file)
     
     # Get language distribution
