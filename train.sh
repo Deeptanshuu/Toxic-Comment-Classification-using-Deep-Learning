@@ -58,6 +58,9 @@ cd "${PROJECT_DIR}"  # Change to project directory
 nohup python -u model/train.py \
     --batch_size 64 \
     --grad_accum_steps 2 \
+    --epochs 5 \
+    --lr 2e-5 \
+    --model_name xlm-roberta-large \
     --mixed_precision bf16 \
     --num_workers 12 \
     --activation_checkpointing true \

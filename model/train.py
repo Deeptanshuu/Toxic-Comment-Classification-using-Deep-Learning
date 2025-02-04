@@ -43,17 +43,21 @@ warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0
 class Config:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    batch_size: int = 48  # Optimized for RTX 6000
-    grad_accum_steps: int = 1  # Reduced since we increased batch size
+    batch_size: int = 48
+    grad_accum_steps: int = 1
     epochs: int = 5
     lr: float = 2e-5
     warmup_steps: int = 500
     languages: list = None
     device: str = None
     fp16: bool = True
-    num_workers: int = 8  # Optimized for Xeon Gold
+    mixed_precision: str = 'bf16'
+    num_workers: int = 8
     pin_memory: bool = True
     prefetch_factor: int = 2
+    activation_checkpointing: bool = True
+    tensor_float_32: bool = True
+    gc_frequency: int = 500
     
     def __post_init__(self):
         # Load language-specific weights
@@ -64,6 +68,11 @@ class Config:
         # Set available languages from the weights file
         self.languages = list(self.lang_weights.keys())
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Set TF32 if requested
+        if torch.cuda.is_available() and self.tensor_float_32:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
 def init_model(config):
     """Initialize model"""
@@ -288,9 +297,23 @@ def parse_args():
                       help='Learning rate')
     parser.add_argument('--model_name', type=str, default='xlm-roberta-large',
                       help='Model name')
-    parser.add_argument('--fp16', action='store_true',
-                      help='Use mixed precision training')
-    return parser.parse_args()
+    parser.add_argument('--mixed_precision', type=str, choices=['no', 'fp16', 'bf16'], default='bf16',
+                      help='Mixed precision mode')
+    parser.add_argument('--num_workers', type=int, default=12,
+                      help='Number of dataloader workers')
+    parser.add_argument('--activation_checkpointing', type=lambda x: x.lower() == 'true',
+                      default=True, help='Enable activation checkpointing')
+    parser.add_argument('--tensor_float_32', type=lambda x: x.lower() == 'true',
+                      default=True, help='Enable TF32 on Ampere GPUs')
+    parser.add_argument('--gc_frequency', type=int, default=500,
+                      help='Garbage collection frequency (in batches)')
+    
+    args = parser.parse_args()
+    
+    # Set fp16 based on mixed_precision argument
+    args.fp16 = args.mixed_precision in ['fp16', 'bf16']
+    
+    return args
 
 # Custom Dataset
 class ToxicDataset(Dataset):
