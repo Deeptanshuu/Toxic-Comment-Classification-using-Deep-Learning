@@ -75,7 +75,7 @@ def main():
                       help='Path to the trained model')
     parser.add_argument('--text', type=str, required=True,
                       help='Text to classify')
-    parser.add_argument('--threshold', type=float, default=0.5,
+    parser.add_argument('--threshold', type=float, default=0.3,
                       help='Probability threshold for toxic classification')
     
     args = parser.parse_args()
