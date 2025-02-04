@@ -2,7 +2,7 @@
 
 # Activate virtual environment if it exists
 if [ -d "myenv" ]; then
-    source myenv/bin/activate
+    source ~/myenv/bin/activate
 fi
 
 # Create necessary directories
@@ -60,9 +60,13 @@ echo "Learning rate: $LEARNING_RATE"
 echo "Model: $MODEL_NAME"
 echo "----------------------"
 
-# Launch distributed training
-python -m torch.distributed.launch \
+# Set CUDA device order
+export CUDA_DEVICE_ORDER="PCI_BUS_ID"
+
+# Launch distributed training using torchrun
+torchrun \
     --nproc_per_node=$NUM_GPUS \
+    --master_port=$(shuf -i 29500-29999 -n 1) \
     model/train.py \
     --batch_size $BATCH_SIZE \
     --grad_accum_steps $GRAD_ACCUM_STEPS \

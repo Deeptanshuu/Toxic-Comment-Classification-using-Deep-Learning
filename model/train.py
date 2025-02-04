@@ -50,15 +50,14 @@ class Config:
         if self.num_gpus > 1:
             self.batch_size = self.batch_size * self.num_gpus
 
-def setup_ddp():
+def setup_ddp(local_rank):
     """Setup distributed training"""
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        rank = int(os.environ['RANK'])
-        world_size = int(os.environ['WORLD_SIZE'])
-        dist.init_process_group('nccl', rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
-        return rank, world_size
-    return 0, 1
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    
+    # Initialize process group
+    dist.init_process_group(backend='nccl', init_method='env://')
+    return local_rank, dist.get_world_size()
 
 def init_model(config, rank=0):
     """Initialize model with DDP support"""
@@ -142,12 +141,20 @@ def train(model, train_loader, val_loader, config, rank=0):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train toxic comment classifier')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size per GPU')
-    parser.add_argument('--grad_accum_steps', type=int, default=2, help='Gradient accumulation steps')
-    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=2e-5, help='Learning rate')
-    parser.add_argument('--model_name', type=str, default='xlm-roberta-large', help='Model name')
-    parser.add_argument('--fp16', action='store_true', help='Use mixed precision training')
+    parser.add_argument('--local_rank', type=int, default=0,
+                      help='Local rank for distributed training')
+    parser.add_argument('--batch_size', type=int, default=32,
+                      help='Batch size per GPU')
+    parser.add_argument('--grad_accum_steps', type=int, default=2,
+                      help='Gradient accumulation steps')
+    parser.add_argument('--epochs', type=int, default=5,
+                      help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=2e-5,
+                      help='Learning rate')
+    parser.add_argument('--model_name', type=str, default='xlm-roberta-large',
+                      help='Model name')
+    parser.add_argument('--fp16', action='store_true',
+                      help='Use mixed precision training')
     return parser.parse_args()
 
 # Custom Dataset
@@ -267,11 +274,13 @@ def predict_toxicity(text, model, tokenizer, config):
 
 # Main
 if __name__ == "__main__":
-    # Setup distributed training
-    rank, world_size = setup_ddp()
-    
-    # Parse arguments and initialize config
+    # Parse arguments first
     args = parse_args()
+    
+    # Setup distributed training
+    rank, world_size = setup_ddp(args.local_rank)
+    
+    # Initialize config
     config = Config(
         model_name=args.model_name,
         batch_size=args.batch_size,
@@ -285,68 +294,66 @@ if __name__ == "__main__":
     if rank == 0:
         wandb.init(project="toxic-comments", config=asdict(config))
     
-    # Load data
-    print(f"Loading datasets on rank {rank}...")
     try:
+        # Load data
+        print(f"Loading datasets on rank {rank}...")
         train_df = pd.read_csv("dataset/split/train.csv", encoding='utf-8')
         val_df = pd.read_csv("dataset/split/val.csv", encoding='utf-8')
         if rank == 0:
             print(f"Loaded training set with {len(train_df)} samples")
             print(f"Columns available: {list(train_df.columns)}")
-    except Exception as e:
-        print(f"Error loading datasets: {str(e)}")
-        raise
-    
-    # Initialize model and tokenizer
-    print(f"Initializing model and tokenizer on rank {rank}...")
-    tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
-    model = init_model(config, rank)
-    
-    # Create datasets
-    train_dataset = ToxicDataset(train_df, tokenizer)
-    val_dataset = ToxicDataset(val_df, tokenizer)
-    
-    # Create distributed samplers
-    train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
-    
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size // world_size if world_size > 1 else config.batch_size,
-        shuffle=(train_sampler is None),
-        num_workers=4,
-        pin_memory=True,
-        sampler=train_sampler
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size*2,
-        num_workers=4,
-        pin_memory=True
-    )
-    
-    # Train
-    train(model, train_loader, val_loader, config, rank)
-    
-    # Cleanup
-    if world_size > 1:
-        dist.destroy_process_group()
-    
-    # Example predictions (only on main process)
-    if rank == 0:
-        print("\nTesting model with example texts...")
-        examples = [
-            "You are a wonderful person!",  # Non-toxic English
-            "Va te faire foutre, idiot!",   # Toxic French
-            "Eres un estúpido imbécil",     # Toxic Spanish
-            "Sei una persona molto gentile", # Non-toxic Italian
-        ]
         
-        for text in examples:
-            print(f"\nText: {text}")
-            predictions = predict_toxicity(text, model, tokenizer, config)
-            print("Predictions:")
-            for label, prob in predictions.items():
-                if prob > 0.5:
-                    print(f"- {label}: {prob:.2%}")
+        # Initialize model and tokenizer
+        print(f"Initializing model and tokenizer on rank {rank}...")
+        tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
+        model = init_model(config, rank)
+        
+        # Create datasets
+        train_dataset = ToxicDataset(train_df, tokenizer)
+        val_dataset = ToxicDataset(val_df, tokenizer)
+        
+        # Create distributed samplers
+        train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
+        
+        # Create dataloaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.batch_size // world_size if world_size > 1 else config.batch_size,
+            shuffle=(train_sampler is None),
+            num_workers=4,
+            pin_memory=True,
+            sampler=train_sampler
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=config.batch_size*2,
+            num_workers=4,
+            pin_memory=True
+        )
+        
+        # Train
+        train(model, train_loader, val_loader, config, rank)
+        
+        # Example predictions (only on main process)
+        if rank == 0:
+            print("\nTesting model with example texts...")
+            examples = [
+                "You are a wonderful person!",  # Non-toxic English
+                "Va te faire foutre, idiot!",   # Toxic French
+                "Eres un estúpido imbécil",     # Toxic Spanish
+                "Sei una persona molto gentile", # Non-toxic Italian
+            ]
+            
+            for text in examples:
+                print(f"\nText: {text}")
+                predictions = predict_toxicity(text, model, tokenizer, config)
+                print("Predictions:")
+                for label, prob in predictions.items():
+                    if prob > 0.5:
+                        print(f"- {label}: {prob:.2%}")
+    
+    finally:
+        # Cleanup
+        if world_size > 1:
+            dist.destroy_process_group()
