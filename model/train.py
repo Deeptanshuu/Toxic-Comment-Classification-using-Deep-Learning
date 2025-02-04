@@ -41,10 +41,16 @@ class ToxicDataset(Dataset):
         self.df = df
         self.tokenizer = tokenizer
         
+        # Verify required columns
+        required_columns = ['comment_text'] + list(Config().class_weights.keys()) + ['lang']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}. Available columns: {list(df.columns)}")
+        
         # Get text and labels
-        self.texts = df['comment_text'].values
-        self.labels = df[list(Config().class_weights.keys())].values
-        self.langs = df['lang'].values
+        self.texts = df['comment_text'].fillna('').values  # Handle any potential NaN values
+        self.labels = df[list(Config().class_weights.keys())].fillna(0).values  # Handle any potential NaN values
+        self.langs = df['lang'].fillna('en').values  # Default to 'en' for any NaN values
 
     def __len__(self):
         return len(self.df)
@@ -53,6 +59,10 @@ class ToxicDataset(Dataset):
         text = str(self.texts[idx])
         lang = self.langs[idx]
         label = self.labels[idx]
+        
+        # Ensure text is not empty
+        if not text.strip():
+            text = '[UNK]'  # Use unknown token for empty text
         
         encoding = self.tokenizer(
             text,
@@ -190,11 +200,23 @@ if __name__ == "__main__":
     # Initialize Weights & Biases
     wandb.init(project="toxic-comments", config=asdict(config))
     
-    # Load data
-    train_df = pd.read_csv("dataset/split/train.csv")
-    val_df = pd.read_csv("dataset/split/val.csv")
+    # Load data with explicit encoding
+    print("Loading datasets...")
+    try:
+        train_df = pd.read_csv("dataset/split/train.csv", encoding='utf-8')
+        val_df = pd.read_csv("dataset/split/val.csv", encoding='utf-8')
+        print(f"Loaded training set with {len(train_df)} samples")
+        print(f"Columns available: {list(train_df.columns)}")
+        
+        if 'comment_text' not in train_df.columns:
+            raise ValueError(f"comment_text column not found. Available columns: {list(train_df.columns)}")
+            
+    except Exception as e:
+        print(f"Error loading datasets: {str(e)}")
+        raise
     
     # Initialize tokenizer and model
+    print("Initializing model and tokenizer...")
     tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
     model = init_model(config)
     
