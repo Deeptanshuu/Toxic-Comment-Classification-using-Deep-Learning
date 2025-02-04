@@ -41,14 +41,8 @@ class ToxicDataset(Dataset):
         self.df = df
         self.tokenizer = tokenizer
         
-        # Handle both possible text column names
-        if 'comment_text' in df.columns:
-            self.texts = df['comment_text'].values
-        elif 'text' in df.columns:
-            self.texts = df['text'].values
-        else:
-            raise ValueError("Dataset must contain either 'comment_text' or 'text' column")
-            
+        # Get text and labels
+        self.texts = df['comment_text'].values
         self.labels = df[list(Config().class_weights.keys())].values
         self.langs = df['lang'].values
 
