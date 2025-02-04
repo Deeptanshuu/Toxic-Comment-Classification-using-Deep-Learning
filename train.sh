@@ -8,6 +8,8 @@ mkdir -p .cuda_cache
 # Check if virtual environment exists
 if [ -d "myenv" ]; then
     source myenv/bin/activate
+elif [ -d "venv" ]; then
+    source venv/bin/activate
 else
     echo "Error: Virtual environment not found. Please create one first:"
     echo "python -m venv myenv"
@@ -31,22 +33,12 @@ export CUDA_CACHE_PATH=.cuda_cache
 
 # Set PyTorch configurations
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-export TORCH_DISTRIBUTED_DEBUG=INFO
 export PYTHONPATH="${PYTHONPATH}:${PWD}"  # Add current directory to Python path
-
-# Set NCCL configurations for DDP
-export NCCL_DEBUG=INFO
-export NCCL_IB_DISABLE=0
-export NCCL_SOCKET_IFNAME=^docker0,lo
-export NCCL_P2P_DISABLE=1  # Try disabling P2P if having issues
 
 # Get timestamp for unique log files
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="logs/training_${TIMESTAMP}.log"
 ERROR_LOG="logs/error_${TIMESTAMP}.log"
-
-# Get number of available GPUs
-NUM_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
 
 # Check if weights directory exists and has required files
 if [ ! -f "weights/language_class_weights.json" ]; then
@@ -56,11 +48,8 @@ if [ ! -f "weights/language_class_weights.json" ]; then
 fi
 
 # Run training in background with nohup
-echo "Starting training with ${NUM_GPUS} GPUs..."
-nohup python -m torch.distributed.run \
-    --nproc_per_node=${NUM_GPUS} \
-    --master_port=29500 \
-    model/train.py \
+echo "Starting training..."
+nohup python model/train.py \
     --batch_size 64 \
     --grad_accum_steps 2 \
     --mixed_precision bf16 \
@@ -74,7 +63,6 @@ echo $! > logs/train.pid
 
 echo ""
 echo "Training has been started in the background with PID: $(cat logs/train.pid)"
-echo "Using ${NUM_GPUS} GPUs for distributed training"
 echo ""
 echo "To monitor the training:"
 echo "1. View logs: tail -f ${LOG_FILE}"
