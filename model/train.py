@@ -554,56 +554,57 @@ def create_dataloaders(train_dataset, val_dataset, config):
     return train_loader, val_loader
 
 def main():
-    # Initialize process group for DDP
-    if torch.cuda.is_available():
-        try:
-            # Get world size and rank from environment variables
-            world_size = int(os.environ.get('WORLD_SIZE', 1))
-            rank = int(os.environ.get('RANK', 0))
+    """Main training function with robust DDP initialization"""
+    try:
+        # Initialize process group for DDP
+        if torch.cuda.is_available():
+            # Get local rank from environment
             local_rank = int(os.environ.get('LOCAL_RANK', 0))
             
-            # Initialize process group
+            # Set device
             torch.cuda.set_device(local_rank)
-            dist.init_process_group(
-                backend='nccl',
-                init_method='env://',
-                world_size=world_size,
-                rank=rank
-            )
-            print(f"Initialized DDP: rank {rank}/{world_size} on GPU {local_rank}")
-        except Exception as e:
-            print(f"Failed to initialize DDP: {str(e)}")
-            raise
-    
-    # Parse arguments and initialize config
-    args = parse_args()
-    config = Config(
-        model_name=args.model_name,
-        batch_size=args.batch_size,
-        grad_accum_steps=args.grad_accum_steps,
-        epochs=args.epochs,
-        lr=args.lr,
-        fp16=args.fp16,
-        ddp=torch.cuda.is_available() and dist.is_initialized()
-    )
-    
-    # Initialize wandb only on master process
-    if not config.ddp or (config.ddp and dist.get_rank() == 0):
-        wandb.init(project="toxic-comments", config=asdict(config))
-    
-    try:
+            
+            # Initialize process group
+            dist.init_process_group(backend='nccl')
+            
+            # Log initialization
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            print(f"[{os.getpid()}] Initialized DDP: rank {rank}/{world_size} on GPU {local_rank}")
+            print(f"[{os.getpid()}] Master: {rank == 0}")
+        
+        # Parse arguments and initialize config
+        args = parse_args()
+        config = Config(
+            model_name=args.model_name,
+            batch_size=args.batch_size,
+            grad_accum_steps=args.grad_accum_steps,
+            epochs=args.epochs,
+            lr=args.lr,
+            fp16=args.fp16,
+            ddp=torch.cuda.is_available() and dist.is_initialized()
+        )
+        
+        # Initialize wandb only on master process
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            wandb.init(project="toxic-comments", config=asdict(config))
+            print(f"[{os.getpid()}] Initialized wandb")
+        
         # Load data
         if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print("Loading datasets...")
-        train_df = pd.read_csv("dataset/split/train.csv", encoding='utf-8')
-        val_df = pd.read_csv("dataset/split/val.csv", encoding='utf-8')
+            print(f"[{os.getpid()}] Loading datasets...")
+        
+        train_df = pd.read_csv("dataset/split/train.csv")
+        val_df = pd.read_csv("dataset/split/val.csv")
+        
         if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"Loaded training set with {len(train_df)} samples")
-            print(f"Columns available: {list(train_df.columns)}")
+            print(f"[{os.getpid()}] Loaded {len(train_df)} training samples")
+            print(f"[{os.getpid()}] Loaded {len(val_df)} validation samples")
         
         # Initialize model and tokenizer
         if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print("Initializing model and tokenizer...")
+            print(f"[{os.getpid()}] Initializing model and tokenizer...")
+        
         tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
         model = init_model(config)
         
@@ -613,28 +614,38 @@ def main():
                 model,
                 device_ids=[local_rank],
                 output_device=local_rank,
-                find_unused_parameters=False
+                find_unused_parameters=False,
+                broadcast_buffers=False
             )
+            if dist.get_rank() == 0:
+                print(f"[{os.getpid()}] Model wrapped in DDP")
         
         # Create datasets and dataloaders
         train_dataset = ToxicDataset(train_df, tokenizer, config)
         val_dataset = ToxicDataset(val_df, tokenizer, config)
         train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
         
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            print(f"[{os.getpid()}] Starting training...")
+        
         # Train
         train(model, train_loader, val_loader, config)
+        
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            print(f"[{os.getpid()}] Training completed successfully")
     
     except Exception as e:
-        print(f"Error during training: {str(e)}")
+        print(f"[{os.getpid()}] Error during training: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise
     
     finally:
+        # Cleanup
+        if torch.cuda.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
         if not config.ddp or (config.ddp and dist.get_rank() == 0):
             wandb.finish()
-        # Cleanup DDP
-        if config.ddp:
-            dist.destroy_process_group()
-        # Memory cleanup
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -642,4 +653,9 @@ if __name__ == "__main__":
     # Set multiprocessing start method
     if sys.platform.startswith('linux'):
         mp.set_start_method('spawn', force=True)
+    
+    # Set better error formatting
+    np.set_printoptions(precision=4, suppress=True)
+    torch.set_printoptions(precision=4, sci_mode=False)
+    
     main()

@@ -5,8 +5,22 @@ mkdir -p weights
 mkdir -p logs
 mkdir -p .cuda_cache
 
-# Activate virtual environment
-source venv/bin/activate
+# Check if virtual environment exists
+if [ -d "myenv" ]; then
+    source myenv/bin/activate
+else
+    echo "Error: Virtual environment not found. Please create one first:"
+    echo "python -m venv myenv"
+    echo "source myenv/bin/activate"
+    echo "pip install -r requirements.txt"
+    exit 1
+fi
+
+# Verify CUDA is available
+if ! command -v nvidia-smi &> /dev/null; then
+    echo "Error: NVIDIA GPU/CUDA not found"
+    exit 1
+fi
 
 # Set CUDA device order
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -17,12 +31,14 @@ export CUDA_CACHE_PATH=.cuda_cache
 
 # Set PyTorch configurations
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-export TORCH_DISTRIBUTED_DEBUG=INFO  # More detailed DDP debugging
+export TORCH_DISTRIBUTED_DEBUG=INFO
+export PYTHONPATH="${PYTHONPATH}:${PWD}"  # Add current directory to Python path
 
 # Set NCCL configurations for DDP
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=0
 export NCCL_SOCKET_IFNAME=^docker0,lo
+export NCCL_P2P_DISABLE=1  # Try disabling P2P if having issues
 
 # Get timestamp for unique log files
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -32,13 +48,18 @@ ERROR_LOG="logs/error_${TIMESTAMP}.log"
 # Get number of available GPUs
 NUM_GPUS=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader | wc -l)
 
+# Check if weights directory exists and has required files
+if [ ! -f "weights/language_class_weights.json" ]; then
+    echo "Error: weights/language_class_weights.json not found"
+    echo "Please run compute_class_weights.py first"
+    exit 1
+fi
+
 # Run training in background with nohup
 echo "Starting training with ${NUM_GPUS} GPUs..."
-nohup torchrun \
+nohup python -m torch.distributed.run \
     --nproc_per_node=${NUM_GPUS} \
     --master_port=29500 \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:0 \
     model/train.py \
     --batch_size 64 \
     --grad_accum_steps 2 \
@@ -71,4 +92,8 @@ if ! ps -p $(cat logs/train.pid) > /dev/null; then
     echo "Error: Training process failed to start. Check error log:"
     cat "${ERROR_LOG}"
     exit 1
-fi 
+fi
+
+# Print GPU information
+echo "\nGPU Information:"
+nvidia-smi 
