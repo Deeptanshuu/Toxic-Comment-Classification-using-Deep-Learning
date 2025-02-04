@@ -8,6 +8,7 @@ fi
 # Create necessary directories
 mkdir -p weights
 mkdir -p dataset/split
+mkdir -p logs
 
 # Set number of GPUs
 NUM_GPUS=1
@@ -63,11 +64,32 @@ echo "----------------------"
 # Set CUDA device order
 export CUDA_DEVICE_ORDER="PCI_BUS_ID"
 
-# Run training script directly without torchrun
-python model/train.py \
+# Create the training command
+TRAIN_CMD="python model/train.py \
     --batch_size $BATCH_SIZE \
     --grad_accum_steps $GRAD_ACCUM_STEPS \
     --epochs $EPOCHS \
     --lr $LEARNING_RATE \
     --model_name $MODEL_NAME \
-    --fp16  # Enable mixed precision training 
+    --fp16"
+
+# Run the training command with nohup
+echo "Starting training in background..."
+nohup $TRAIN_CMD > logs/training.log 2>&1 &
+
+# Get the process ID
+TRAIN_PID=$!
+echo $TRAIN_PID > logs/train.pid
+
+echo ""
+echo "Training has been started in the background (PID: $TRAIN_PID)"
+echo "You can disconnect from SSH and the training will continue"
+echo ""
+echo "To monitor the training:"
+echo "1. View logs: tail -f logs/training.log"
+echo "2. Monitor on W&B: Check the URL printed in the log file"
+echo "3. Check if running: ps -p $TRAIN_PID"
+echo "4. Kill training: kill $TRAIN_PID"
+echo ""
+echo "The model will be saved in the weights directory when validation AUC improves"
+echo "Training metrics and artifacts will be logged to W&B" 

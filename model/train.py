@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from transformers import XLMRobertaForSequenceClassification, XLMRobertaTokenizer
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 import numpy as np
 import pandas as pd
 import wandb
@@ -11,6 +11,10 @@ from dataclasses import dataclass, asdict
 import os
 import warnings
 from torch.cuda.amp import autocast, GradScaler
+import time
+from datetime import datetime, timedelta
+import psutil
+import GPUtil
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
@@ -52,18 +56,48 @@ def init_model(config):
     return model.to(config.device)
 
 def train(model, train_loader, val_loader, config):
-    """Training loop with mixed precision support"""
+    """Training loop with mixed precision support and enhanced wandb logging"""
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
     loss_fn = WeightedFocalLoss()
     scaler = GradScaler() if config.fp16 else None
     
     best_auc = 0
+    total_steps = len(train_loader) * config.epochs
+    start_time = time.time()
+    
+    # Initialize wandb run with more metadata
+    wandb.config.update({
+        "total_params": sum(p.numel() for p in model.parameters()),
+        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "train_samples": len(train_loader.dataset),
+        "val_samples": len(val_loader.dataset),
+        "total_steps": total_steps,
+        "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    
+    # Create wandb Table for predictions
+    predictions_table = wandb.Table(columns=["epoch", "text", "true_labels", "predicted_labels"])
+    
+    print(f"\nStarting training at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Training progress can be monitored at: {wandb.run.url}")
+    
     for epoch in range(config.epochs):
         model.train()
         total_loss = 0
+        epoch_start = time.time()
         
         for batch_idx, batch in enumerate(train_loader):
+            # Log system metrics every 100 batches
+            if batch_idx % 100 == 0:
+                gpu = GPUtil.getGPUs()[0]
+                wandb.log({
+                    "system/gpu_utilization": gpu.load * 100,
+                    "system/gpu_memory": gpu.memoryUtil * 100,
+                    "system/cpu_percent": psutil.cpu_percent(),
+                    "system/ram_percent": psutil.virtual_memory().percent,
+                })
+            
             with autocast(enabled=config.fp16):
                 inputs = {
                     'input_ids': batch['input_ids'].to(config.device),
@@ -88,23 +122,77 @@ def train(model, train_loader, val_loader, config):
                     optimizer.zero_grad()
             
             total_loss += loss.item() * config.grad_accum_steps
+            current_loss = total_loss / (batch_idx + 1)
             
+            # Calculate progress and ETA
+            progress = (epoch * len(train_loader) + batch_idx + 1) / total_steps
+            elapsed = time.time() - start_time
+            eta = elapsed / progress - elapsed if progress > 0 else 0
+            
+            # Log training metrics
             if batch_idx % 50 == 0:
                 wandb.log({
-                    'train_loss': total_loss/(batch_idx+1),
-                    'lr': scheduler.get_last_lr()[0]
+                    'train/loss': current_loss,
+                    'train/learning_rate': scheduler.get_last_lr()[0],
+                    'train/epoch': epoch + (batch_idx / len(train_loader)),
+                    'train/progress': progress * 100,
+                    'time/eta_seconds': eta,
+                    'time/elapsed_seconds': elapsed
                 })
         
         scheduler.step()
+        epoch_time = time.time() - epoch_start
         
-        val_auc = evaluate(model, val_loader, config)
-        print(f"Epoch {epoch+1}: Val AUC = {val_auc:.4f}")
-        wandb.log({'val_auc': val_auc, 'epoch': epoch+1})
+        # Validation
+        print(f"\nRunning validation for epoch {epoch+1}...")
+        val_metrics = evaluate(model, val_loader, config)
         
-        if val_auc > best_auc:
-            best_auc = val_auc
+        # Log validation metrics
+        wandb.log({
+            'val/auc': val_metrics['auc'],
+            'val/loss': val_metrics['loss'],
+            'val/precision': val_metrics['precision'],
+            'val/recall': val_metrics['recall'],
+            'val/f1': val_metrics['f1'],
+            'time/epoch_seconds': epoch_time,
+            'epoch': epoch + 1
+        })
+        
+        # Save model if it's the best so far
+        if val_metrics['auc'] > best_auc:
+            best_auc = val_metrics['auc']
             model_save_path = f"weights/toxic_classifier_{config.model_name}"
             model.save_pretrained(model_save_path)
+            
+            # Log model as wandb artifact
+            artifact = wandb.Artifact(
+                name=f"model-epoch{epoch+1}", 
+                type="model",
+                description=f"Model checkpoint from epoch {epoch+1} with AUC {best_auc:.4f}"
+            )
+            artifact.add_dir(model_save_path)
+            wandb.log_artifact(artifact)
+        
+        # Log example predictions
+        if (epoch + 1) % 1 == 0:  # Log every epoch
+            example_texts = [
+                "You are a wonderful person!",  # Non-toxic English
+                "Va te faire foutre, idiot!",   # Toxic French
+                "Eres un estúpido imbécil",     # Toxic Spanish
+                "Sei una persona molto gentile", # Non-toxic Italian
+            ]
+            
+            for text in example_texts:
+                preds = predict_toxicity(text, model, tokenizer, config)
+                predictions_table.add_data(
+                    epoch + 1,
+                    text,
+                    "N/A",  # true labels not available for examples
+                    str({k: f"{v:.2%}" for k, v in preds.items() if v > 0.5})
+                )
+    
+    # Log final predictions table
+    wandb.log({"predictions_over_time": predictions_table})
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train toxic comment classifier')
@@ -182,24 +270,46 @@ class WeightedFocalLoss(nn.Module):
 
 # Evaluation
 def evaluate(model, loader, config):
+    """Enhanced evaluation with more metrics"""
     model.eval()
-    preds = []
-    targets = []
+    total_loss = 0
+    all_preds = []
+    all_targets = []
+    loss_fn = WeightedFocalLoss()
     
     with torch.no_grad():
         for batch in loader:
             inputs = {
                 'input_ids': batch['input_ids'].to(config.device),
-                'attention_mask': batch['attention_mask'].to(config.device)
+                'attention_mask': batch['attention_mask'].to(config.device),
+                'labels': batch['labels'].to(config.device)
             }
             
             outputs = model(**inputs)
-            preds.append(torch.sigmoid(outputs.logits).cpu().numpy())
-            targets.append(batch['labels'].cpu().numpy())
+            loss = loss_fn(outputs.logits, inputs['labels'])
+            total_loss += loss.item()
+            
+            preds = torch.sigmoid(outputs.logits).cpu().numpy()
+            all_preds.append(preds)
+            all_targets.append(batch['labels'].cpu().numpy())
     
-    preds = np.concatenate(preds)
-    targets = np.concatenate(targets)
-    return roc_auc_score(targets, preds, average='macro')
+    all_preds = np.concatenate(all_preds)
+    all_targets = np.concatenate(all_targets)
+    
+    # Calculate metrics
+    auc = roc_auc_score(all_targets, all_preds, average='macro')
+    binary_preds = (all_preds > 0.5).astype(int)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        all_targets, binary_preds, average='macro'
+    )
+    
+    return {
+        'auc': auc,
+        'loss': total_loss / len(loader),
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
+    }
 
 def predict_toxicity(text, model, tokenizer, config):
     """
