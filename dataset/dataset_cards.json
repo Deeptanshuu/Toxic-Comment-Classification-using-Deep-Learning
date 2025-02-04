@@ -1,4 +1,114 @@
 {
+  "dataset\\processed\\MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv": {
+    "filename": "MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv",
+    "last_modified": "2025-02-04 00:28:12",
+    "file_size_mb": 132.77,
+    "num_rows": 360728,
+    "num_columns": 9,
+    "columns": [
+      "id",
+      "comment_text",
+      "toxic",
+      "severe_toxic",
+      "obscene",
+      "threat",
+      "insult",
+      "identity_hate",
+      "lang"
+    ],
+    "column_dtypes": {
+      "id": "object",
+      "comment_text": "object",
+      "toxic": "float64",
+      "severe_toxic": "int64",
+      "obscene": "int64",
+      "threat": "int64",
+      "insult": "int64",
+      "identity_hate": "int64",
+      "lang": "object"
+    },
+    "null_counts": {
+      "id": 0,
+      "comment_text": 0,
+      "toxic": 0,
+      "severe_toxic": 0,
+      "obscene": 0,
+      "threat": 0,
+      "insult": 0,
+      "identity_hate": 0,
+      "lang": 0
+    },
+    "sample_rows": [
+      {
+        "id": "0_en_111010_3dba34",
+        "comment_text": "COCKSUCKER BEFORE YOU PISS AROUND ON MY WORK",
+        "toxic": 1.0,
+        "severe_toxic": 1,
+        "obscene": 1,
+        "threat": 0,
+        "insult": 1,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_100000_ffa925",
+        "comment_text": "Hey. what is it. talk. What is it. an exclusive group of some WP TALIBANS.who are good at destroying, self-appointed purist who GANG UP any one who asks them questions abt their ANTI-SOCIAL and DESTRUCTIVE non -contribution at WP? Ask Sityush to clean up his behavior than issue me nonsensical warnings.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_100000_e7f892",
+        "comment_text": "Bye! Don t look, come or think of comming back! Tosser.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      }
+    ],
+    "language_distribution": {
+      "ru": 52632,
+      "tr": 52558,
+      "pt": 52440,
+      "es": 52412,
+      "fr": 52368,
+      "it": 52340,
+      "en": 45978
+    },
+    "label_distribution": {
+      "toxic": {
+        "0.0": 183604,
+        "1.0": 177124
+      },
+      "severe_toxic": {
+        "0": 344141,
+        "1": 16587
+      },
+      "obscene": {
+        "0": 274026,
+        "1": 86702
+      },
+      "threat": {
+        "0": 353576,
+        "1": 7152
+      },
+      "insult": {
+        "0": 258344,
+        "1": 102384
+      },
+      "identity_hate": {
+        "0": 341806,
+        "1": 18922
+      }
+    }
+  },
   "dataset\\raw\\MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv": {
     "filename": "MULTILINGUAL_TOXIC_DATASET_360K_7LANG.csv",
     "last_modified": "2025-02-03 23:03:13",
@@ -265,6 +375,440 @@
         "0.0217391304347826": 6,
         "0.125": 4,
         "0.0035618878005342": 1
+      }
+    }
+  },
+  "dataset\\raw\\MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv": {
+    "filename": "MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv",
+    "last_modified": "2025-02-03 23:53:56",
+    "file_size_mb": 126.23,
+    "num_rows": 360728,
+    "num_columns": 8,
+    "columns": [
+      "comment_text",
+      "toxic",
+      "severe_toxic",
+      "obscene",
+      "threat",
+      "insult",
+      "identity_hate",
+      "lang"
+    ],
+    "column_dtypes": {
+      "comment_text": "object",
+      "toxic": "float64",
+      "severe_toxic": "int64",
+      "obscene": "int64",
+      "threat": "int64",
+      "insult": "int64",
+      "identity_hate": "int64",
+      "lang": "object"
+    },
+    "null_counts": {
+      "comment_text": 0,
+      "toxic": 0,
+      "severe_toxic": 0,
+      "obscene": 0,
+      "threat": 0,
+      "insult": 0,
+      "identity_hate": 0,
+      "lang": 0
+    },
+    "sample_rows": [
+      {
+        "comment_text": "COCKSUCKER BEFORE YOU PISS AROUND ON MY WORK",
+        "toxic": 1.0,
+        "severe_toxic": 1,
+        "obscene": 1,
+        "threat": 0,
+        "insult": 1,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "comment_text": "Hey. what is it. talk. What is it. an exclusive group of some WP TALIBANS.who are good at destroying, self-appointed purist who GANG UP any one who asks them questions abt their ANTI-SOCIAL and DESTRUCTIVE non -contribution at WP? Ask Sityush to clean up his behavior than issue me nonsensical warnings.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "comment_text": "Bye! Don t look, come or think of comming back! Tosser.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      }
+    ],
+    "language_distribution": {
+      "ru": 52632,
+      "tr": 52558,
+      "pt": 52440,
+      "es": 52412,
+      "fr": 52368,
+      "it": 52340,
+      "en": 45978
+    },
+    "label_distribution": {
+      "toxic": {
+        "0.0": 183604,
+        "1.0": 177124
+      },
+      "severe_toxic": {
+        "0": 344141,
+        "1": 16587
+      },
+      "obscene": {
+        "0": 274026,
+        "1": 86702
+      },
+      "threat": {
+        "0": 353576,
+        "1": 7152
+      },
+      "insult": {
+        "0": 258344,
+        "1": 102384
+      },
+      "identity_hate": {
+        "0": 341806,
+        "1": 18922
+      }
+    }
+  },
+  "dataset\\split\\test.csv": {
+    "filename": "test.csv",
+    "last_modified": "2025-02-04 20:47:14",
+    "file_size_mb": 12.99,
+    "num_rows": 35608,
+    "num_columns": 9,
+    "columns": [
+      "id",
+      "comment_text",
+      "toxic",
+      "severe_toxic",
+      "obscene",
+      "threat",
+      "insult",
+      "identity_hate",
+      "lang"
+    ],
+    "column_dtypes": {
+      "id": "object",
+      "comment_text": "object",
+      "toxic": "float64",
+      "severe_toxic": "int64",
+      "obscene": "int64",
+      "threat": "int64",
+      "insult": "int64",
+      "identity_hate": "int64",
+      "lang": "object"
+    },
+    "null_counts": {
+      "id": 0,
+      "comment_text": 0,
+      "toxic": 0,
+      "severe_toxic": 0,
+      "obscene": 0,
+      "threat": 0,
+      "insult": 0,
+      "identity_hate": 0,
+      "lang": 0
+    },
+    "sample_rows": [
+      {
+        "id": "0_en_111010_3dba34",
+        "comment_text": "COCKSUCKER BEFORE YOU PISS AROUND ON MY WORK",
+        "toxic": 1.0,
+        "severe_toxic": 1,
+        "obscene": 1,
+        "threat": 0,
+        "insult": 1,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_100000_ca65ec",
+        "comment_text": "SORRY PUCK BUT NO ONE EVER SAID DICK WAS NUMBER ONE! But he is clearly listed as being second only to Batman and a master detective and martial artist and been trained in all the mentioned combat discplines. No need to mention in skills abilities about the battles he s lost and won because thats not what an encylopia is supposed to do. Also, what your problem is your going by low end showings and not HIGH end showings where he s proven more than a match for a meta like Slade and pinned Shiva down in one of his earliest appearences.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_100000_0b4192",
+        "comment_text": "Add Mobile porn as additional WP ALSO link",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      }
+    ],
+    "language_distribution": {
+      "ru": 5193,
+      "pt": 5192,
+      "es": 5168,
+      "tr": 5163,
+      "fr": 5158,
+      "it": 5146,
+      "en": 4588
+    },
+    "label_distribution": {
+      "toxic": {
+        "0.0": 17962,
+        "1.0": 17646
+      },
+      "severe_toxic": {
+        "0": 33959,
+        "1": 1649
+      },
+      "obscene": {
+        "0": 26983,
+        "1": 8625
+      },
+      "threat": {
+        "0": 34894,
+        "1": 714
+      },
+      "insult": {
+        "0": 25407,
+        "1": 10201
+      },
+      "identity_hate": {
+        "0": 33726,
+        "1": 1882
+      }
+    }
+  },
+  "dataset\\split\\train.csv": {
+    "filename": "train.csv",
+    "last_modified": "2025-02-04 20:47:14",
+    "file_size_mb": 106.78,
+    "num_rows": 284864,
+    "num_columns": 9,
+    "columns": [
+      "id",
+      "comment_text",
+      "toxic",
+      "severe_toxic",
+      "obscene",
+      "threat",
+      "insult",
+      "identity_hate",
+      "lang"
+    ],
+    "column_dtypes": {
+      "id": "object",
+      "comment_text": "object",
+      "toxic": "float64",
+      "severe_toxic": "float64",
+      "obscene": "float64",
+      "threat": "int64",
+      "insult": "float64",
+      "identity_hate": "int64",
+      "lang": "object"
+    },
+    "null_counts": {
+      "id": 0,
+      "comment_text": 0,
+      "toxic": 0,
+      "severe_toxic": 0,
+      "obscene": 0,
+      "threat": 0,
+      "insult": 0,
+      "identity_hate": 0,
+      "lang": 0
+    },
+    "sample_rows": [
+      {
+        "id": "0_en_100000_e7f892",
+        "comment_text": "Bye! Don t look, come or think of comming back! Tosser.",
+        "toxic": 1.0,
+        "severe_toxic": 0.0,
+        "obscene": 0.0,
+        "threat": 0,
+        "insult": 0.0,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_101011_d67a2d",
+        "comment_text": "You are gay or antisemmitian? Archangel WHite Tiger Meow! Greetingshhh! Uh, there are two ways, why you do erased my comment about WW2, that holocaust was brutally slaying of Jews and not gays Gypsys Slavs anyone. 1 - If you are anti-semitian, than shave your head bald and go to the skinhead meetings! 2 - If you doubt words of the Bible, that homosexuality is a deadly sin, make a pentagram tatoo on your forehead go to the satanistic masses with your gay pals! 3 - First and last warning, you fucking gay - I won t appreciate if any more nazi shwain would write in my page! I don t wish to talk to you anymore! Beware of the Dark Side!",
+        "toxic": 1.0,
+        "severe_toxic": 0.0,
+        "obscene": 1.0,
+        "threat": 0,
+        "insult": 1.0,
+        "identity_hate": 1,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_101010_01dc66",
+        "comment_text": "FUCK YOUR FILTHY MOTHER IN THE ASS, DRY!",
+        "toxic": 1.0,
+        "severe_toxic": 0.0,
+        "obscene": 1.0,
+        "threat": 0,
+        "insult": 1.0,
+        "identity_hate": 0,
+        "lang": "en"
+      }
+    ],
+    "language_distribution": {
+      "ru": 41542,
+      "pt": 41533,
+      "es": 41346,
+      "tr": 41312,
+      "fr": 41264,
+      "it": 41165,
+      "en": 36702
+    },
+    "label_distribution": {
+      "toxic": {
+        "0.0": 143688,
+        "1.0": 141176
+      },
+      "severe_toxic": {
+        "0.0": 271653,
+        "1.0": 13211
+      },
+      "obscene": {
+        "0.0": 215863,
+        "1.0": 69001
+      },
+      "threat": {
+        "0": 279164,
+        "1": 5700
+      },
+      "insult": {
+        "0.0": 203272,
+        "1.0": 81592
+      },
+      "identity_hate": {
+        "0": 269816,
+        "1": 15048
+      }
+    }
+  },
+  "dataset\\split\\val.csv": {
+    "filename": "val.csv",
+    "last_modified": "2025-02-04 20:47:14",
+    "file_size_mb": 13.02,
+    "num_rows": 35608,
+    "num_columns": 9,
+    "columns": [
+      "id",
+      "comment_text",
+      "toxic",
+      "severe_toxic",
+      "obscene",
+      "threat",
+      "insult",
+      "identity_hate",
+      "lang"
+    ],
+    "column_dtypes": {
+      "id": "object",
+      "comment_text": "object",
+      "toxic": "float64",
+      "severe_toxic": "int64",
+      "obscene": "int64",
+      "threat": "int64",
+      "insult": "int64",
+      "identity_hate": "int64",
+      "lang": "object"
+    },
+    "null_counts": {
+      "id": 0,
+      "comment_text": 0,
+      "toxic": 0,
+      "severe_toxic": 0,
+      "obscene": 0,
+      "threat": 0,
+      "insult": 0,
+      "identity_hate": 0,
+      "lang": 0
+    },
+    "sample_rows": [
+      {
+        "id": "0_en_100000_ffa925",
+        "comment_text": "Hey. what is it. talk. What is it. an exclusive group of some WP TALIBANS.who are good at destroying, self-appointed purist who GANG UP any one who asks them questions abt their ANTI-SOCIAL and DESTRUCTIVE non -contribution at WP? Ask Sityush to clean up his behavior than issue me nonsensical warnings.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 0,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_111010_b6d488",
+        "comment_text": "Stupid peace of shit stop deleting my stuff asshole go die and fall in a hole go to hell!",
+        "toxic": 1.0,
+        "severe_toxic": 1,
+        "obscene": 1,
+        "threat": 0,
+        "insult": 1,
+        "identity_hate": 0,
+        "lang": "en"
+      },
+      {
+        "id": "0_en_101000_05fdc0",
+        "comment_text": "Fuck off You are NOT an administrator. You DON T have the authority to tell me what to do.",
+        "toxic": 1.0,
+        "severe_toxic": 0,
+        "obscene": 1,
+        "threat": 0,
+        "insult": 0,
+        "identity_hate": 0,
+        "lang": "en"
+      }
+    ],
+    "language_distribution": {
+      "ru": 5193,
+      "pt": 5192,
+      "es": 5168,
+      "tr": 5164,
+      "fr": 5157,
+      "it": 5146,
+      "en": 4588
+    },
+    "label_distribution": {
+      "toxic": {
+        "0.0": 17960,
+        "1.0": 17648
+      },
+      "severe_toxic": {
+        "0": 33954,
+        "1": 1654
+      },
+      "obscene": {
+        "0": 26981,
+        "1": 8627
+      },
+      "threat": {
+        "0": 34896,
+        "1": 712
+      },
+      "insult": {
+        "0": 25411,
+        "1": 10197
+      },
+      "identity_hate": {
+        "0": 33721,
+        "1": 1887
       }
     }
   }

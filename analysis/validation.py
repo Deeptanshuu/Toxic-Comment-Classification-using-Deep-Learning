@@ -1,6 +1,7 @@
 import json
 import pandas as pd
-
+import string
+from hashlib import sha3_256
 
 def validate_dataset_distributions():
     """Validate dataset distributions and check for potential issues"""
@@ -47,8 +48,8 @@ def validate_dataset_distributions():
     
     # Create comment fingerprints (simplified hash of cleaned text)
     def get_fingerprint(text):
-        # Simple fingerprint: lowercase, remove spaces, take first 100 chars
-        return str(text).lower().replace(' ', '')[:100]
+        cleaned = text.strip().lower().translate(str.maketrans('','',string.punctuation))
+        return sha3_256(cleaned.encode()).hexdigest()
     
     train_fps = set(train_df['comment_text'].apply(get_fingerprint))
     val_fps = set(val_df['comment_text'].apply(get_fingerprint))
