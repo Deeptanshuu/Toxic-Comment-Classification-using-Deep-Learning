@@ -102,14 +102,26 @@ def evaluate_model(model, test_loader, device, output_dir):
     return results
 
 def calculate_metrics(predictions, labels, langs):
-    """Calculate detailed metrics"""
+    """Calculate detailed metrics using class-specific thresholds"""
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    
+    # Per-class optimal thresholds (estimated)
+    thresholds = {
+        'toxic': 0.42,
+        'severe_toxic': 0.38,
+        'obscene': 0.47,
+        'threat': 0.32,
+        'insult': 0.45,
+        'identity_hate': 0.35
+    }
+    
     unique_langs = np.unique(langs)
     
     results = {
         'overall': {},
         'per_language': {},
         'per_class': {},
+        'thresholds': thresholds,  # Include thresholds in results
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
@@ -119,8 +131,10 @@ def calculate_metrics(predictions, labels, langs):
         'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
     }
     
-    # Binary predictions using 0.5 threshold
-    binary_predictions = (predictions > 0.5).astype(int)
+    # Binary predictions using class-specific thresholds
+    threshold_array = np.array([thresholds[ct] for ct in toxicity_types])
+    binary_predictions = (predictions > threshold_array).astype(int)
+    
     precision, recall, f1, _ = precision_recall_fscore_support(
         labels, binary_predictions, average='macro'
     )
@@ -170,6 +184,7 @@ def calculate_metrics(predictions, labels, langs):
                 'precision': precision,
                 'recall': recall,
                 'f1': f1,
+                'threshold': thresholds[class_name],  # Include threshold in per-class metrics
                 'positive_samples': int(labels[:, i].sum())
             }
         except:
@@ -178,9 +193,21 @@ def calculate_metrics(predictions, labels, langs):
     return results
 
 def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=10):
-    """Plot confusion matrices in batches to avoid too many open files"""
+    """Plot confusion matrices in batches using class-specific thresholds"""
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    binary_predictions = (predictions > 0.5).astype(int)
+    
+    # Per-class optimal thresholds
+    thresholds = {
+        'toxic': 0.42,
+        'severe_toxic': 0.38,
+        'obscene': 0.47,
+        'threat': 0.32,
+        'insult': 0.45,
+        'identity_hate': 0.35
+    }
+    
+    threshold_array = np.array([thresholds[ct] for ct in toxicity_types])
+    binary_predictions = (predictions > threshold_array).astype(int)
     
     # Create directory for confusion matrices
     cm_dir = os.path.join(output_dir, 'confusion_matrices')
@@ -192,7 +219,7 @@ def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=1
             if item_type == 'class':
                 i = toxicity_types.index(item)
                 cm = confusion_matrix(labels[:, i], binary_predictions[:, i])
-                title = f'Confusion Matrix - {item}'
+                title = f'Confusion Matrix - {item}\n(threshold={thresholds[item]:.2f})'
                 filename = f'cm_{item}.png'
             else:  # language
                 lang_mask = langs == item
@@ -201,7 +228,7 @@ def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=1
                         labels[lang_mask, 0],
                         binary_predictions[lang_mask, 0]
                     )
-                    title = f'Confusion Matrix - Toxic Class - {item}'
+                    title = f'Confusion Matrix - Toxic Class - {item}\n(threshold={thresholds["toxic"]:.2f})'
                     filename = f'cm_toxic_{item}.png'
                 else:
                     continue
@@ -248,9 +275,13 @@ def save_results(results, predictions, labels, langs, output_dir):
     for lang, metrics in results['per_language'].items():
         print(f"{lang}: {metrics['auc']:.4f} (n={metrics['sample_count']})")
     
-    print("\nPer-Class Performance (AUC):")
+    print("\nPer-Class Performance:")
     for class_name, metrics in results['per_class'].items():
-        print(f"{class_name}: {metrics['auc']:.4f} (pos={metrics['positive_samples']})")
+        print(f"\n{class_name}:")
+        print(f"  AUC: {metrics['auc']:.4f}")
+        print(f"  F1: {metrics['f1']:.4f}")
+        print(f"  Threshold: {metrics['threshold']:.2f}")
+        print(f"  Positive samples: {metrics['positive_samples']}")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
