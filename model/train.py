@@ -48,7 +48,6 @@ class Config:
     epochs: int = 5
     lr: float = 2e-5
     warmup_steps: int = 500
-    languages: list = None
     device: str = None
     fp16: bool = True
     mixed_precision: str = 'bf16'
@@ -65,20 +64,23 @@ class Config:
             weights_data = json.load(f)
             self.lang_weights = weights_data['weights']
             
-        # Set available languages from the weights file
-        self.languages = list(self.lang_weights.keys())
+        # Set device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Set TF32 if requested
         if torch.cuda.is_available() and self.tensor_float_32:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            
+        # Define toxicity labels
+        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        self.num_labels = len(self.toxicity_labels)
 
 def init_model(config):
     """Initialize model"""
     model = XLMRobertaForSequenceClassification.from_pretrained(
         config.model_name,
-        num_labels=len(config.lang_weights),
+        num_labels=config.num_labels,
         problem_type="multi_label_classification"
     )
     
@@ -322,7 +324,7 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
-        required_columns = ['comment_text'] + list(config.lang_weights.keys()) + ['lang']
+        required_columns = ['comment_text'] + config.toxicity_labels + ['lang']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
@@ -353,7 +355,7 @@ class ToxicDataset(Dataset):
         self.encodings['attention_mask'] = torch.cat(self.encodings['attention_mask'])
         
         # Convert labels to tensor
-        self.labels = torch.FloatTensor(df[list(config.lang_weights.keys())].fillna(0).values)
+        self.labels = torch.FloatTensor(df[config.toxicity_labels].fillna(0).values)
         self.langs = df['lang'].fillna('en').values
         
         # Pin memory for faster transfer to GPU
