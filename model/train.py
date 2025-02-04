@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import sys
 
-from .training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
+# Change relative import to absolute import
+try:
+    from model.training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
+except ImportError:
+    from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")

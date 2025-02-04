@@ -5,6 +5,9 @@ mkdir -p weights
 mkdir -p logs
 mkdir -p .cuda_cache
 
+# Get the absolute path of the project directory
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Check if virtual environment exists
 if [ -d "myenv" ]; then
     source myenv/bin/activate
@@ -33,7 +36,9 @@ export CUDA_CACHE_PATH=.cuda_cache
 
 # Set PyTorch configurations
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-export PYTHONPATH="${PYTHONPATH}:${PWD}"  # Add current directory to Python path
+
+# Add project directory to Python path
+export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH}"
 
 # Get timestamp for unique log files
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -49,7 +54,8 @@ fi
 
 # Run training in background with nohup
 echo "Starting training..."
-nohup python model/train.py \
+cd "${PROJECT_DIR}"  # Change to project directory
+nohup python -u model/train.py \
     --batch_size 64 \
     --grad_accum_steps 2 \
     --mixed_precision bf16 \
@@ -83,5 +89,5 @@ if ! ps -p $(cat logs/train.pid) > /dev/null; then
 fi
 
 # Print GPU information
-echo "\nGPU Information:"
+echo -e "\nGPU Information:"
 nvidia-smi 
