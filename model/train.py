@@ -30,11 +30,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import sys
 
-# Change relative import to absolute import
-try:
-    from model.training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
-except ImportError:
-    from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
+from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
@@ -43,20 +39,20 @@ warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0
 class Config:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    batch_size: int = 48
-    grad_accum_steps: int = 1
-    epochs: int = 5
-    lr: float = 2e-5
-    warmup_steps: int = 500
+    batch_size: int = 32  # Reduced batch size for stability
+    grad_accum_steps: int = 4  # Increased grad accumulation
+    epochs: int = 10  # Increased epochs
+    lr: float = 1e-5  # Slightly lower learning rate for stability
+    warmup_ratio: float = 0.1  # Use ratio instead of steps
     device: str = None
     fp16: bool = True
     mixed_precision: str = 'bf16'
-    num_workers: int = 8
+    num_workers: int = 4  # Reduced workers
     pin_memory: bool = True
     prefetch_factor: int = 2
-    activation_checkpointing: bool = True
+    activation_checkpointing: bool = False  # Disabled for simplicity
     tensor_float_32: bool = True
-    gc_frequency: int = 500
+    gc_frequency: int = 100  # More frequent GC
     
     def __post_init__(self):
         # Load language-specific weights
@@ -90,7 +86,7 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, config,
     """Save training checkpoint"""
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.module.state_dict() if config.ddp else model.state_dict(),
+        'model_state_dict': model.state_dict(),  # No need to check for DDP since we're not using it
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
         'scaler_state_dict': scaler.state_dict() if scaler else None,
@@ -108,14 +104,13 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, config,
         torch.save(checkpoint, best_path)
         
         # Log best model to wandb
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            artifact = wandb.Artifact(
-                name=f"best-model-auc{metrics['auc']:.4f}",
-                type="model",
-                description=f"Best model checkpoint with AUC {metrics['auc']:.4f}"
-            )
-            artifact.add_file(str(best_path))
-            wandb.log_artifact(artifact)
+        artifact = wandb.Artifact(
+            name=f"best-model-auc{metrics['auc']:.4f}",
+            type="model",
+            description=f"Best model checkpoint with AUC {metrics['auc']:.4f}"
+        )
+        artifact.add_file(str(best_path))
+        wandb.log_artifact(artifact)
 
 def load_checkpoint(model, optimizer, scheduler, scaler, config):
     """Load training checkpoint"""
@@ -146,166 +141,156 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
     return checkpoint['epoch'] + 1, checkpoint['metrics'].get('auc', 0)
 
 def train(model, train_loader, val_loader, config):
-    """Optimized training loop with language-specific weights"""
+    """Training loop with optimized configuration"""
     
-    # Initialize optimizer with gradient clipping
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.lr,
-        weight_decay=0.01,
+        weight_decay=config.weight_decay,
         eps=1e-8
     )
     
-    # Gradient scaler for mixed precision
-    scaler = GradScaler(enabled=config.fp16)
-    
-    # Learning rate scheduler with warmup
+    # Use warmup ratio instead of fixed steps
     num_training_steps = len(train_loader) * config.epochs
-    num_warmup_steps = config.warmup_steps
+    num_warmup_steps = int(num_training_steps * config.warmup_ratio)
+    
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps
     )
     
-    # Try to load checkpoint
-    start_epoch, best_auc = load_checkpoint(model, optimizer, scheduler, scaler, config)
+    scaler = GradScaler(enabled=config.fp16)
+    metrics = config.metrics
+    class_weights = config.class_weights
     
-    # Initialize loss function with language-specific weights
-    loss_fn = WeightedFocalLoss()
-    start_time = time.time()
+    print(f"\nStarting training for {config.epochs} epochs...")
+    print(f"Total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}")
     
-    # Initialize metrics tracking
-    metrics = {
-        'best_auc': best_auc,
-        'train_loss': [],
-        'val_loss': [],
-        'val_auc': [],
-        'epoch_times': []  # Track time per epoch for ETA calculation
-    }
-    
-    # Training loop
-    for epoch in range(start_epoch, config.epochs):
+    for epoch in range(config.epochs):
         model.train()
-        total_loss = 0
+        running_loss = 0.0  # Running average for current window
+        total_loss = 0.0    # Accumulator for epoch average
+        num_batches = 0     # Counter for proper averaging
         epoch_start = time.time()
         
-        # Calculate ETA
-        if len(metrics['epoch_times']) > 0:
-            avg_epoch_time = sum(metrics['epoch_times']) / len(metrics['epoch_times'])
-            remaining_epochs = config.epochs - epoch
-            eta_seconds = avg_epoch_time * remaining_epochs
-            eta = str(timedelta(seconds=int(eta_seconds)))
-        else:
-            eta = "Calculating..."
-        
+        # Get ETA
+        eta = metrics.get_eta(epoch, config.epochs)
         print(f"\nEpoch {epoch+1}/{config.epochs} (ETA: {eta})")
         
-        # Enable automatic mixed precision
-        with autocast(enabled=config.fp16):
-            for batch_idx, batch in enumerate(train_loader):
-                # Move batch to GPU and clear cache if needed
-                if batch_idx % config.gc_frequency == 0:
-                    torch.cuda.empty_cache()
-                
-                inputs = {
-                    'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
-                    'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
-                    'labels': batch['labels'].to(config.device, non_blocking=True)
-                }
-                
-                # Forward pass with gradient scaling
+        optimizer.zero_grad()  # Zero gradients at start of epoch
+        
+        for batch_idx, batch in enumerate(train_loader):
+            # Memory management
+            if batch_idx % config.gc_frequency == 0:
+                torch.cuda.empty_cache()
+            
+            # Move batch to GPU
+            inputs = {
+                'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
+                'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
+                'labels': batch['labels'].to(config.device, non_blocking=True)
+            }
+            
+            # Forward pass
+            with autocast(enabled=config.fp16):
                 outputs = model(**inputs)
-                loss = loss_fn(outputs.logits, inputs['labels'], batch['lang'])
-                scaled_loss = scaler.scale(loss)
+                # Scale loss by grad_accum_steps for proper averaging
+                loss = outputs.loss * class_weights.get_weights_for_batch(batch['lang'], config.device)
+                loss = loss / config.grad_accum_steps
+            
+            # Backward pass
+            scaled_loss = scaler.scale(loss)
+            scaled_loss.backward()
+            
+            # Update running averages
+            running_loss += loss.item() * config.grad_accum_steps  # Unscale for logging
+            total_loss += loss.item() * config.grad_accum_steps    # Unscale for epoch average
+            num_batches += 1
+            
+            # Optimizer step with gradient accumulation
+            if (batch_idx + 1) % config.grad_accum_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
                 
-                # Backward pass with gradient scaling
-                scaled_loss.backward()
-                
-                # Update total loss
-                total_loss += loss.item()
-                
-                # Gradient clipping and optimizer step
-                if (batch_idx + 1) % config.grad_accum_steps == 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
-                    optimizer.zero_grad()
-                
-                # Log training metrics every 50 batches
+                # Calculate proper running average for current window
+                avg_loss = running_loss / config.grad_accum_steps
+                running_loss = 0.0  # Reset running loss after optimization step
+            
+                # Log progress every 50 actual optimization steps
                 if batch_idx % 50 == 0:
-                    # Calculate average loss and progress
-                    avg_loss = total_loss / (batch_idx + 1)
                     progress = batch_idx / len(train_loader)
                     
                     # Calculate batch ETA
                     batch_time = time.time() - epoch_start
-                    batch_eta_seconds = (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
-                    batch_eta = str(timedelta(seconds=int(batch_eta_seconds)))
+                    batch_eta = str(timedelta(seconds=int(
+                        (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
+                    )))
                     
-                    # Get GPU stats
-                    gpu_stats = get_gpu_stats()
-                    
-                    # Log metrics
+                    # Log to wandb with proper averaging
                     wandb.log({
-                        'train/batch_loss': loss.item(),
-                        'train/avg_loss': avg_loss,
-                        'train/learning_rate': scheduler.get_last_lr()[0],
+                        'train/loss': avg_loss,
+                        'train/lr': scheduler.get_last_lr()[0],
+                        'train/progress': progress * 100,
                         'train/epoch': epoch + progress,
-                        'train/progress': progress * 100,  # As percentage
-                        'system/gpu_utilization': gpu_stats['utilization'],
-                        'system/gpu_memory': gpu_stats['memory'],
-                        'system/gpu_temp': gpu_stats['temperature'],
-                        'system/batch_time': batch_time,
+                        'train/grad_norm': get_grad_norm(model),  # Add gradient norm tracking
                         'time/batch_eta': batch_eta,
                         'time/training_eta': eta
                     })
                     
-                    # Print progress
                     print(f"\rBatch {batch_idx}/{len(train_loader)} "
                           f"Loss: {avg_loss:.4f} "
+                          f"LR: {scheduler.get_last_lr()[0]:.2e} "
                           f"Batch ETA: {batch_eta} "
                           f"Training ETA: {eta}", end="")
         
-        # Calculate epoch metrics
+        # End of epoch
         epoch_time = time.time() - epoch_start
-        metrics['epoch_times'].append(epoch_time)
-        epoch_loss = total_loss / len(train_loader)
-        metrics['train_loss'].append(epoch_loss)
+        epoch_avg_loss = total_loss / num_batches  # Proper epoch average
+        
+        metrics.update_time(epoch_time)
+        metrics.update_train(epoch_avg_loss)
         
         # Validation
+        model.eval()
         val_metrics = evaluate(model, val_loader, config)
-        metrics['val_loss'].append(val_metrics['loss'])
-        metrics['val_auc'].append(val_metrics['auc'])
         
-        # Save checkpoint
-        is_best = val_metrics['auc'] > metrics['best_auc']
-        if is_best:
-            metrics['best_auc'] = val_metrics['auc']
-        
-        save_checkpoint(
-            model, optimizer, scheduler, scaler,
-            epoch, val_metrics, config, is_best
-        )
+        # Update metrics and save if best
+        if metrics.update_validation(val_metrics):
+            torch.save(model.state_dict(), 'weights/best_model.pt')
+            print(f"\nNew best AUC: {metrics.best_auc:.4f}")
         
         # Log epoch metrics
-        log_epoch_metrics(epoch, val_metrics, epoch_time, eta)
-        
-        # Log training summary
         wandb.log({
-            'train/epoch_loss': epoch_loss,
-            'train/epoch': epoch + 1,
-            'train/epoch_time': epoch_time,
-            'train/total_time': time.time() - start_time,
-            'time/epoch_eta': eta
+            'val/auc': val_metrics['auc'],
+            'val/loss': val_metrics['loss'],
+            'val/f1': val_metrics['f1'],
+            'train/epoch_loss': epoch_avg_loss,
+            'time/epoch_minutes': epoch_time / 60,
+            'epoch': epoch + 1
         })
         
+        print(f"\nEpoch {epoch+1} completed in {epoch_time/60:.2f}m "
+              f"Train Loss: {epoch_avg_loss:.4f} "
+              f"Val AUC: {val_metrics['auc']:.4f} "
+              f"Val Loss: {val_metrics['loss']:.4f}")
+        
         # Memory cleanup
-        if (epoch + 1) % 2 == 0:  # Every 2 epochs
-            gc.collect()
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
+        gc.collect()
+
+def get_grad_norm(model):
+    """Calculate gradient norm for monitoring"""
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+    return total_norm ** 0.5
 
 def get_gpu_stats():
     """Get GPU statistics"""
@@ -499,13 +484,11 @@ class WeightedFocalLoss(nn.Module):
 
 # Evaluation
 def evaluate(model, loader, config):
-    """Enhanced evaluation with more metrics"""
+    """Evaluation function"""
     model.eval()
     total_loss = 0
     all_preds = []
     all_targets = []
-    all_langs = []  # Track languages for per-language metrics
-    loss_fn = WeightedFocalLoss()
     
     with torch.no_grad():
         for batch in loader:
@@ -516,66 +499,27 @@ def evaluate(model, loader, config):
             }
             
             outputs = model(**inputs)
-            loss = loss_fn(outputs.logits, inputs['labels'], batch['lang'])
+            loss = outputs.loss
             total_loss += loss.item()
             
             preds = torch.sigmoid(outputs.logits).cpu().numpy()
             all_preds.append(preds)
             all_targets.append(batch['labels'].cpu().numpy())
-            all_langs.extend(batch['lang'])  # Collect languages
     
     all_preds = np.concatenate(all_preds)
     all_targets = np.concatenate(all_targets)
     
-    # Calculate overall metrics
+    # Calculate metrics
     auc = roc_auc_score(all_targets, all_preds, average='macro')
     binary_preds = (all_preds > 0.5).astype(int)
-    precision, recall, f1, _ = precision_recall_fscore_support(
+    _, _, f1, _ = precision_recall_fscore_support(
         all_targets, binary_preds, average='macro'
     )
-    
-    # Calculate per-language metrics
-    lang_metrics = {}
-    unique_langs = set(all_langs)
-    
-    for lang in unique_langs:
-        lang_mask = np.array(all_langs) == lang
-        if np.sum(lang_mask) > 0:  # Only calculate if we have samples for this language
-            lang_preds = all_preds[lang_mask]
-            lang_targets = all_targets[lang_mask]
-            
-            try:
-                lang_auc = roc_auc_score(lang_targets, lang_preds, average='macro')
-                lang_binary_preds = (lang_preds > 0.5).astype(int)
-                lang_precision, lang_recall, lang_f1, _ = precision_recall_fscore_support(
-                    lang_targets, lang_binary_preds, average='macro'
-                )
-                
-                lang_metrics[lang] = {
-                    'auc': lang_auc,
-                    'precision': lang_precision,
-                    'recall': lang_recall,
-                    'f1': lang_f1
-                }
-            except Exception as e:
-                print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
-    
-    # Log per-language metrics to wandb
-    for lang, metrics in lang_metrics.items():
-        wandb.log({
-            f'val/{lang}/auc': metrics['auc'],
-            f'val/{lang}/precision': metrics['precision'],
-            f'val/{lang}/recall': metrics['recall'],
-            f'val/{lang}/f1': metrics['f1']
-        })
     
     return {
         'auc': auc,
         'loss': total_loss / len(loader),
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'lang_metrics': lang_metrics
+        'f1': f1
     }
 
 def predict_toxicity(text, model, tokenizer, config):
@@ -641,20 +585,16 @@ def create_dataloaders(train_dataset, val_dataset, config):
 def main():
     """Main training function"""
     try:
-        # Set device
-        if torch.cuda.is_available():
-            torch.cuda.set_device(0)  # Use first GPU
-            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-        
-        # Parse arguments and initialize config
+        # Parse arguments
         args = parse_args()
-        config = Config(
+        
+        # Initialize config
+        config = TrainingConfig(
             model_name=args.model_name,
             batch_size=args.batch_size,
             grad_accum_steps=args.grad_accum_steps,
             epochs=args.epochs,
             lr=args.lr,
-            fp16=args.fp16,
             mixed_precision=args.mixed_precision,
             num_workers=args.num_workers,
             activation_checkpointing=args.activation_checkpointing,
@@ -662,24 +602,14 @@ def main():
             gc_frequency=args.gc_frequency
         )
         
-        # Initialize wandb with more configuration
-        run = wandb.init(
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)
+            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        
+        # Initialize wandb
+        wandb.init(
             project="toxic-comment-classification",
-            config={
-                "model_name": config.model_name,
-                "batch_size": config.batch_size,
-                "grad_accum_steps": config.grad_accum_steps,
-                "epochs": config.epochs,
-                "learning_rate": config.lr,
-                "mixed_precision": config.mixed_precision,
-                "num_workers": config.num_workers,
-                "activation_checkpointing": config.activation_checkpointing,
-                "tensor_float_32": config.tensor_float_32,
-                "gc_frequency": config.gc_frequency,
-                "max_length": config.max_length,
-                "architecture": "XLM-RoBERTa",
-                "dataset": "Multilingual Toxic Comments"
-            }
+            config=asdict(config)
         )
         print("Initialized wandb")
         
@@ -700,24 +630,11 @@ def main():
         val_dataset = ToxicDataset(val_df, tokenizer, config)
         train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
         
-        # Log dataset sizes
-        wandb.log({
-            "train_samples": len(train_df),
-            "val_samples": len(val_df),
-            "train_batch_size": config.batch_size,
-            "val_batch_size": config.batch_size * 2
-        })
-        
-        print("Starting training...")
-        
         # Train
         train(model, train_loader, val_loader, config)
         
         print("Training completed successfully")
         
-        # Close wandb run
-        wandb.finish()
-    
     except Exception as e:
         print(f"Error during training: {str(e)}")
         import traceback
@@ -731,8 +648,6 @@ def main():
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
-    # Set better error formatting
     np.set_printoptions(precision=4, suppress=True)
     torch.set_printoptions(precision=4, sci_mode=False)
-    
     main()
