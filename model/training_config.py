@@ -128,8 +128,8 @@ class TrainingConfig:
     tensor_float_32: bool = True
     
     def __post_init__(self):
-        # Set device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Initialize device
+        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Enable TF32 if requested
         if torch.cuda.is_available() and self.tensor_float_32:
@@ -152,20 +152,20 @@ class TrainingConfig:
 
     @property
     def device(self) -> torch.device:
-        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        """Get the device to use"""
+        return self._device
     
     def get_optimizer_groups(self, model: torch.nn.Module) -> list:
-        """
-        Create parameter groups for discriminative learning rates.
-        """
+        """Create parameter groups for optimizer"""
         return [
             {'params': model.roberta.parameters(), 'lr': self.lr},
             {'params': model.classifier.parameters(), 'lr': self.lr}
         ]
 
     def get_summary(self) -> Dict:
+        """Get training configuration summary"""
         return {
             'grad_norm_max': self.max_grad_norm,
-            'throughput_avg': self.batch_size / self.epoch_times[-1] if self.epoch_times else "Calculating...",
+            'throughput_avg': self.batch_size / self.metrics.epoch_times[-1] if self.metrics.epoch_times else "Calculating...",
             'peak_memory_gb': self.batch_size * self.num_workers * 4 / 1024**3 if torch.cuda.is_available() else 0
         } 
