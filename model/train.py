@@ -169,23 +169,20 @@ def train(model, train_loader, val_loader, config):
     
     for epoch in range(config.epochs):
         model.train()
-        running_loss = 0.0  # Running average for current window
-        total_loss = 0.0    # Accumulator for epoch average
-        num_batches = 0     # Counter for proper averaging
+        running_loss = 0.0
+        total_loss = 0.0
+        num_batches = 0
         epoch_start = time.time()
         
-        # Get ETA
         eta = metrics.get_eta(epoch, config.epochs)
         print(f"\nEpoch {epoch+1}/{config.epochs} (ETA: {eta})")
         
-        optimizer.zero_grad()  # Zero gradients at start of epoch
+        optimizer.zero_grad()
         
         for batch_idx, batch in enumerate(train_loader):
-            # Memory management
             if batch_idx % config.gc_frequency == 0:
                 torch.cuda.empty_cache()
             
-            # Move batch to GPU
             inputs = {
                 'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
                 'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
@@ -195,20 +192,19 @@ def train(model, train_loader, val_loader, config):
             # Forward pass
             with autocast(enabled=config.fp16):
                 outputs = model(**inputs)
-                # Scale loss by grad_accum_steps for proper averaging
-                loss = outputs.loss * class_weights.get_weights_for_batch(batch['lang'], config.device)
-                loss = loss / config.grad_accum_steps
+                # Get weights for current batch
+                batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
+                # Apply weights to each sample's loss and take mean
+                weighted_loss = outputs.loss * batch_weights
+                loss = weighted_loss.mean() / config.grad_accum_steps
             
             # Backward pass
-            scaled_loss = scaler.scale(loss)
-            scaled_loss.backward()
+            scaler.scale(loss).backward()
             
-            # Update running averages
-            running_loss += loss.item() * config.grad_accum_steps  # Unscale for logging
-            total_loss += loss.item() * config.grad_accum_steps    # Unscale for epoch average
+            running_loss += loss.item() * config.grad_accum_steps
+            total_loss += loss.item() * config.grad_accum_steps
             num_batches += 1
             
-            # Optimizer step with gradient accumulation
             if (batch_idx + 1) % config.grad_accum_steps == 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
@@ -217,27 +213,22 @@ def train(model, train_loader, val_loader, config):
                 scheduler.step()
                 optimizer.zero_grad()
                 
-                # Calculate proper running average for current window
                 avg_loss = running_loss / config.grad_accum_steps
-                running_loss = 0.0  # Reset running loss after optimization step
+                running_loss = 0.0
             
-                # Log progress every 50 actual optimization steps
                 if batch_idx % 50 == 0:
                     progress = batch_idx / len(train_loader)
-                    
-                    # Calculate batch ETA
                     batch_time = time.time() - epoch_start
                     batch_eta = str(timedelta(seconds=int(
                         (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
                     )))
                     
-                    # Log to wandb with proper averaging
                     wandb.log({
                         'train/loss': avg_loss,
                         'train/lr': scheduler.get_last_lr()[0],
                         'train/progress': progress * 100,
                         'train/epoch': epoch + progress,
-                        'train/grad_norm': get_grad_norm(model),  # Add gradient norm tracking
+                        'train/grad_norm': get_grad_norm(model),
                         'time/batch_eta': batch_eta,
                         'time/training_eta': eta
                     })
