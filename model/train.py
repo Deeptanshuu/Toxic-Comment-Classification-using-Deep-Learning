@@ -175,6 +175,14 @@ def train(model, train_loader, val_loader, config):
     loss_fn = WeightedFocalLoss()
     start_time = time.time()
     
+    # Initialize metrics tracking
+    metrics = {
+        'best_auc': best_auc,
+        'train_loss': [],
+        'val_loss': [],
+        'val_auc': []
+    }
+    
     # Training loop
     for epoch in range(start_epoch, config.epochs):
         model.train()
@@ -185,7 +193,7 @@ def train(model, train_loader, val_loader, config):
         with autocast(enabled=config.fp16):
             for batch_idx, batch in enumerate(train_loader):
                 # Move batch to GPU and clear cache if needed
-                if batch_idx % 100 == 0:
+                if batch_idx % config.gc_frequency == 0:
                     torch.cuda.empty_cache()
                 
                 inputs = {
@@ -202,6 +210,9 @@ def train(model, train_loader, val_loader, config):
                 # Backward pass with gradient scaling
                 scaled_loss.backward()
                 
+                # Update total loss
+                total_loss += loss.item()
+                
                 # Gradient clipping and optimizer step
                 if (batch_idx + 1) % config.grad_accum_steps == 0:
                     scaler.unscale_(optimizer)
@@ -211,25 +222,39 @@ def train(model, train_loader, val_loader, config):
                     scheduler.step()
                     optimizer.zero_grad()
                 
-                # Log metrics
+                # Log training metrics every 50 batches
                 if batch_idx % 50 == 0:
+                    # Calculate average loss
+                    avg_loss = total_loss / (batch_idx + 1)
+                    
+                    # Get GPU stats
                     gpu_stats = get_gpu_stats()
+                    
+                    # Log metrics
                     wandb.log({
-                        'train/loss': loss.item(),
+                        'train/batch_loss': loss.item(),
+                        'train/avg_loss': avg_loss,
                         'train/learning_rate': scheduler.get_last_lr()[0],
                         'train/epoch': epoch + (batch_idx / len(train_loader)),
                         'system/gpu_utilization': gpu_stats['utilization'],
                         'system/gpu_memory': gpu_stats['memory'],
-                        'system/gpu_temp': gpu_stats['temperature']
+                        'system/gpu_temp': gpu_stats['temperature'],
+                        'system/batch_time': time.time() - epoch_start
                     })
+        
+        # Calculate epoch metrics
+        epoch_loss = total_loss / len(train_loader)
+        metrics['train_loss'].append(epoch_loss)
         
         # Validation
         val_metrics = evaluate(model, val_loader, config)
+        metrics['val_loss'].append(val_metrics['loss'])
+        metrics['val_auc'].append(val_metrics['auc'])
         
         # Save checkpoint
-        is_best = val_metrics['auc'] > best_auc
+        is_best = val_metrics['auc'] > metrics['best_auc']
         if is_best:
-            best_auc = val_metrics['auc']
+            metrics['best_auc'] = val_metrics['auc']
         
         save_checkpoint(
             model, optimizer, scheduler, scaler,
@@ -237,11 +262,21 @@ def train(model, train_loader, val_loader, config):
         )
         
         # Log epoch metrics
-        log_epoch_metrics(epoch, val_metrics, time.time() - epoch_start)
+        epoch_time = time.time() - epoch_start
+        log_epoch_metrics(epoch, val_metrics, epoch_time)
+        
+        # Log training summary
+        wandb.log({
+            'train/epoch_loss': epoch_loss,
+            'train/epoch': epoch + 1,
+            'train/epoch_time': epoch_time,
+            'train/total_time': time.time() - start_time
+        })
         
         # Memory cleanup
-        gc.collect()
-        torch.cuda.empty_cache()
+        if (epoch + 1) % 2 == 0:  # Every 2 epochs
+            gc.collect()
+            torch.cuda.empty_cache()
 
 def get_gpu_stats():
     """Get GPU statistics"""
@@ -267,14 +302,14 @@ def save_model(model, config, epoch, auc):
     wandb.log_artifact(artifact)
 
 def log_epoch_metrics(epoch, metrics, epoch_time):
-    """Log epoch-level metrics"""
+    """Log epoch-level metrics to wandb"""
     wandb.log({
         'val/auc': metrics['auc'],
         'val/loss': metrics['loss'],
         'val/precision': metrics['precision'],
         'val/recall': metrics['recall'],
         'val/f1': metrics['f1'],
-        'time/epoch_seconds': epoch_time,
+        'time/epoch_minutes': epoch_time / 60,
         'epoch': epoch + 1
     })
     
@@ -589,11 +624,33 @@ def main():
             grad_accum_steps=args.grad_accum_steps,
             epochs=args.epochs,
             lr=args.lr,
-            fp16=args.fp16
+            fp16=args.fp16,
+            mixed_precision=args.mixed_precision,
+            num_workers=args.num_workers,
+            activation_checkpointing=args.activation_checkpointing,
+            tensor_float_32=args.tensor_float_32,
+            gc_frequency=args.gc_frequency
         )
         
-        # Initialize wandb
-        wandb.init(project="toxic-comments", config=asdict(config))
+        # Initialize wandb with more configuration
+        run = wandb.init(
+            project="toxic-comment-classification",
+            config={
+                "model_name": config.model_name,
+                "batch_size": config.batch_size,
+                "grad_accum_steps": config.grad_accum_steps,
+                "epochs": config.epochs,
+                "learning_rate": config.lr,
+                "mixed_precision": config.mixed_precision,
+                "num_workers": config.num_workers,
+                "activation_checkpointing": config.activation_checkpointing,
+                "tensor_float_32": config.tensor_float_32,
+                "gc_frequency": config.gc_frequency,
+                "max_length": config.max_length,
+                "architecture": "XLM-RoBERTa",
+                "dataset": "Multilingual Toxic Comments"
+            }
+        )
         print("Initialized wandb")
         
         # Load data
@@ -613,12 +670,23 @@ def main():
         val_dataset = ToxicDataset(val_df, tokenizer, config)
         train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
         
+        # Log dataset sizes
+        wandb.log({
+            "train_samples": len(train_df),
+            "val_samples": len(val_df),
+            "train_batch_size": config.batch_size,
+            "val_batch_size": config.batch_size * 2
+        })
+        
         print("Starting training...")
         
         # Train
         train(model, train_loader, val_loader, config)
         
         print("Training completed successfully")
+        
+        # Close wandb run
+        wandb.finish()
     
     except Exception as e:
         print(f"Error during training: {str(e)}")
@@ -627,7 +695,8 @@ def main():
         raise
     
     finally:
-        wandb.finish()
+        if wandb.run is not None:
+            wandb.finish()
         gc.collect()
         torch.cuda.empty_cache()
 
