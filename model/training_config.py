@@ -118,7 +118,7 @@ class TrainingConfig:
     mixed_precision: str = 'bf16'
     
     # System parameters
-    num_workers: int = 4
+    num_workers: int = 16
     pin_memory: bool = True
     prefetch_factor: int = 2
     gc_frequency: int = 100
