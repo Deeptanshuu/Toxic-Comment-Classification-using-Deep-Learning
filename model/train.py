@@ -164,8 +164,14 @@ def train(model, train_loader, val_loader, config):
     metrics = config.metrics
     class_weights = config.class_weights
     
-    print(f"\nStarting training for {config.epochs} epochs...")
-    print(f"Total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}")
+    # Initialize progress tracking
+    best_auc = 0.0
+    train_start_time = time.time()
+    
+    print("\n" + "="*80)
+    print(f"Starting training for {config.epochs} epochs...")
+    print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
+    print("="*80 + "\n")
     
     for epoch in range(config.epochs):
         model.train()
@@ -174,8 +180,13 @@ def train(model, train_loader, val_loader, config):
         num_batches = 0
         epoch_start = time.time()
         
+        # Initialize per-class metrics
+        class_losses = {label: 0.0 for label in config.toxicity_labels}
+        class_counts = {label: 0 for label in config.toxicity_labels}
+        
         eta = metrics.get_eta(epoch, config.epochs)
-        print(f"\nEpoch {epoch+1}/{config.epochs} (ETA: {eta})")
+        print(f"\nEpoch {epoch+1}/{config.epochs}")
+        print(f"{'='*40} Training {'='*40}")
         
         optimizer.zero_grad()
         
@@ -198,6 +209,12 @@ def train(model, train_loader, val_loader, config):
                 weighted_loss = outputs.loss * batch_weights
                 loss = weighted_loss.mean() / config.grad_accum_steps
             
+            # Track per-class losses
+            with torch.no_grad():
+                for i, label in enumerate(config.toxicity_labels):
+                    class_losses[label] += weighted_loss[i].item()
+                    class_counts[label] += 1
+            
             # Backward pass
             scaler.scale(loss).backward()
             
@@ -207,7 +224,7 @@ def train(model, train_loader, val_loader, config):
             
             if (batch_idx + 1) % config.grad_accum_steps == 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
@@ -223,52 +240,101 @@ def train(model, train_loader, val_loader, config):
                         (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
                     )))
                     
-                    wandb.log({
+                    # Get GPU stats
+                    gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
+                    
+                    # Log detailed metrics to wandb
+                    log_dict = {
                         'train/loss': avg_loss,
                         'train/lr': scheduler.get_last_lr()[0],
                         'train/progress': progress * 100,
                         'train/epoch': epoch + progress,
-                        'train/grad_norm': get_grad_norm(model),
+                        'train/grad_norm': grad_norm.item(),
+                        'train/batch_size': config.batch_size,
+                        'train/steps': batch_idx,
                         'time/batch_eta': batch_eta,
-                        'time/training_eta': eta
-                    })
+                        'time/training_eta': eta,
+                        'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
+                        'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
+                    }
                     
-                    print(f"\rBatch {batch_idx}/{len(train_loader)} "
-                          f"Loss: {avg_loss:.4f} "
-                          f"LR: {scheduler.get_last_lr()[0]:.2e} "
-                          f"Batch ETA: {batch_eta} "
-                          f"Training ETA: {eta}", end="")
+                    # Add GPU metrics if available
+                    if gpu_stats:
+                        log_dict.update({
+                            'system/gpu_util': gpu_stats['utilization'],
+                            'system/gpu_mem': gpu_stats['memory'],
+                            'system/gpu_temp': gpu_stats['temperature']
+                        })
+                    
+                    # Add per-class losses
+                    for label in config.toxicity_labels:
+                        if class_counts[label] > 0:
+                            log_dict[f'train/loss_{label}'] = class_losses[label] / class_counts[label]
+                    
+                    wandb.log(log_dict)
+                    
+                    # Print progress with better formatting
+                    print(
+                        f"\r[{batch_idx:>5}/{len(train_loader)}] "
+                        f"Loss: {avg_loss:.4f} | "
+                        f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+                        f"GN: {grad_norm.item():.2f} | "
+                        f"BT: {batch_eta} | "
+                        f"ETA: {eta}",
+                        end="", flush=True
+                    )
         
         # End of epoch
         epoch_time = time.time() - epoch_start
-        epoch_avg_loss = total_loss / num_batches  # Proper epoch average
+        epoch_avg_loss = total_loss / num_batches
         
         metrics.update_time(epoch_time)
         metrics.update_train(epoch_avg_loss)
         
         # Validation
+        print(f"\n\n{'='*40} Validation {'='*40}")
         model.eval()
         val_metrics = evaluate(model, val_loader, config)
         
         # Update metrics and save if best
-        if metrics.update_validation(val_metrics):
-            torch.save(model.state_dict(), 'weights/best_model.pt')
-            print(f"\nNew best AUC: {metrics.best_auc:.4f}")
+        is_best = metrics.update_validation(val_metrics)
+        if is_best:
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                epoch=epoch,
+                metrics=val_metrics,
+                config=config,
+                is_best=True
+            )
+            print(f"\n🏆 New best model! AUC: {val_metrics['auc']:.4f}")
         
         # Log epoch metrics
-        wandb.log({
+        epoch_metrics = {
             'val/auc': val_metrics['auc'],
             'val/loss': val_metrics['loss'],
             'val/f1': val_metrics['f1'],
             'train/epoch_loss': epoch_avg_loss,
             'time/epoch_minutes': epoch_time / 60,
             'epoch': epoch + 1
-        })
+        }
         
-        print(f"\nEpoch {epoch+1} completed in {epoch_time/60:.2f}m "
-              f"Train Loss: {epoch_avg_loss:.4f} "
-              f"Val AUC: {val_metrics['auc']:.4f} "
-              f"Val Loss: {val_metrics['loss']:.4f}")
+        # Add per-class validation metrics
+        for label, metrics in val_metrics['class_metrics'].items():
+            for metric_name, value in metrics.items():
+                epoch_metrics[f'val/{label}/{metric_name}'] = value
+        
+        wandb.log(epoch_metrics)
+        
+        # Print epoch summary
+        print(f"\nEpoch {epoch+1} Summary:")
+        print(f"{'='*80}")
+        print(f"Training Loss: {epoch_avg_loss:.4f}")
+        print(f"Validation - AUC: {val_metrics['auc']:.4f}, Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}")
+        print(f"Time: {epoch_time/60:.2f}m ({str(timedelta(seconds=int(epoch_time)))})")
+        print(f"{'='*80}\n")
         
         # Memory cleanup
         torch.cuda.empty_cache()
@@ -475,11 +541,15 @@ class WeightedFocalLoss(nn.Module):
 
 # Evaluation
 def evaluate(model, loader, config):
-    """Evaluation function"""
+    """Evaluation function with per-class metrics"""
     model.eval()
     total_loss = 0
     all_preds = []
     all_targets = []
+    
+    # Track per-class predictions and targets
+    class_preds = {label: [] for label in config.toxicity_labels}
+    class_targets = {label: [] for label in config.toxicity_labels}
     
     with torch.no_grad():
         for batch in loader:
@@ -494,23 +564,52 @@ def evaluate(model, loader, config):
             total_loss += loss.item()
             
             preds = torch.sigmoid(outputs.logits).cpu().numpy()
+            targets = batch['labels'].cpu().numpy()
+            
             all_preds.append(preds)
-            all_targets.append(batch['labels'].cpu().numpy())
+            all_targets.append(targets)
+            
+            # Track per-class predictions
+            for i, label in enumerate(config.toxicity_labels):
+                class_preds[label].append(preds[:, i])
+                class_targets[label].append(targets[:, i])
     
     all_preds = np.concatenate(all_preds)
     all_targets = np.concatenate(all_targets)
     
-    # Calculate metrics
+    # Calculate overall metrics
     auc = roc_auc_score(all_targets, all_preds, average='macro')
     binary_preds = (all_preds > 0.5).astype(int)
-    _, _, f1, _ = precision_recall_fscore_support(
+    precision, recall, f1, _ = precision_recall_fscore_support(
         all_targets, binary_preds, average='macro'
     )
+    
+    # Calculate per-class metrics
+    class_metrics = {}
+    for label in config.toxicity_labels:
+        label_preds = np.concatenate(class_preds[label])
+        label_targets = np.concatenate(class_targets[label])
+        label_binary_preds = (label_preds > 0.5).astype(int)
+        
+        label_auc = roc_auc_score(label_targets, label_preds)
+        p, r, f, _ = precision_recall_fscore_support(
+            label_targets, label_binary_preds, average='binary'
+        )
+        
+        class_metrics[label] = {
+            'auc': label_auc,
+            'precision': p,
+            'recall': r,
+            'f1': f
+        }
     
     return {
         'auc': auc,
         'loss': total_loss / len(loader),
-        'f1': f1
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'class_metrics': class_metrics
     }
 
 def predict_toxicity(text, model, tokenizer, config):
@@ -544,9 +643,8 @@ def predict_toxicity(text, model, tokenizer, config):
     
     # Create results dictionary
     results = {}
-    for label, prob in zip(config.lang_weights.keys(), probabilities):
+    for label, prob in zip(config.toxicity_labels, probabilities):
         results[label] = float(prob)
-    
     return results
 
 def create_dataloaders(train_dataset, val_dataset, config):
@@ -600,7 +698,7 @@ def main():
         # Initialize wandb
         wandb.init(
             project="toxic-comment-classification",
-            config=asdict(config)
+            config=config.to_serializable_dict()
         )
         print("Initialized wandb")
         

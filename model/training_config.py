@@ -168,4 +168,28 @@ class TrainingConfig:
             'grad_norm_max': self.max_grad_norm,
             'throughput_avg': self.batch_size / self.metrics.epoch_times[-1] if self.metrics.epoch_times else "Calculating...",
             'peak_memory_gb': self.batch_size * self.num_workers * 4 / 1024**3 if torch.cuda.is_available() else 0
+        }
+
+    def to_serializable_dict(self) -> dict:
+        """Return a serializable dictionary of configuration parameters, excluding non-serializable objects."""
+        return {
+            "model_name": self.model_name,
+            "max_length": self.max_length,
+            "num_labels": self.num_labels,
+            "batch_size": self.batch_size,
+            "grad_accum_steps": self.grad_accum_steps,
+            "epochs": self.epochs,
+            "lr": self.lr,
+            "warmup_ratio": self.warmup_ratio,
+            "weight_decay": self.weight_decay,
+            "max_grad_norm": self.max_grad_norm,
+            "fp16": self.fp16,
+            "mixed_precision": self.mixed_precision,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+            "prefetch_factor": self.prefetch_factor,
+            "gc_frequency": self.gc_frequency,
+            "activation_checkpointing": self.activation_checkpointing,
+            "tensor_float_32": self.tensor_float_32,
+            "toxicity_labels": self.toxicity_labels
         } 
