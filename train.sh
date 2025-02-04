@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Create necessary directories
+mkdir -p weights
+mkdir -p logs
+mkdir -p .cuda_cache
+
 # Activate virtual environment
 source venv/bin/activate
 
@@ -19,8 +24,14 @@ export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=0
 export NCCL_SOCKET_IFNAME=^docker0,lo
 
-# Run distributed training
-python -m torch.distributed.run \
+# Get timestamp for unique log files
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="logs/training_${TIMESTAMP}.log"
+ERROR_LOG="logs/error_${TIMESTAMP}.log"
+
+# Run training in background with nohup
+echo "Starting training in background..."
+nohup python -m torch.distributed.run \
     --nproc_per_node=2 \
     --master_port=29500 \
     model/train.py \
@@ -30,4 +41,20 @@ python -m torch.distributed.run \
     --num_workers 12 \
     --activation_checkpointing true \
     --tensor_float_32 true \
-    --gc_frequency 500 
+    --gc_frequency 500 > "${LOG_FILE}" 2> "${ERROR_LOG}" &
+
+# Save the process ID
+echo $! > logs/train.pid
+
+echo ""
+echo "Training has been started in the background with PID: $(cat logs/train.pid)"
+echo ""
+echo "To monitor the training:"
+echo "1. View logs: tail -f ${LOG_FILE}"
+echo "2. View errors: tail -f ${ERROR_LOG}"
+echo "3. Monitor GPU: nvidia-smi -l 1"
+echo "4. Check if running: ps -p $(cat logs/train.pid)"
+echo "5. Kill training if needed: kill $(cat logs/train.pid)"
+echo ""
+echo "The model will be saved in weights/ directory"
+echo "Training metrics are logged to W&B and ${LOG_FILE}" 

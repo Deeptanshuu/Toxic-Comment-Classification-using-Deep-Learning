@@ -74,8 +74,67 @@ def init_model(config):
     
     return model.to(config.device)
 
+def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, config, is_best=False):
+    """Save training checkpoint"""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.module.state_dict() if config.ddp else model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'scaler_state_dict': scaler.state_dict() if scaler else None,
+        'metrics': metrics,
+        'config': asdict(config)
+    }
+    
+    # Save latest checkpoint
+    checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
+    torch.save(checkpoint, checkpoint_path)
+    
+    # Save best model separately
+    if is_best:
+        best_path = Path('weights') / 'best_model.pt'
+        torch.save(checkpoint, best_path)
+        
+        # Log best model to wandb
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            artifact = wandb.Artifact(
+                name=f"best-model-auc{metrics['auc']:.4f}",
+                type="model",
+                description=f"Best model checkpoint with AUC {metrics['auc']:.4f}"
+            )
+            artifact.add_file(str(best_path))
+            wandb.log_artifact(artifact)
+
+def load_checkpoint(model, optimizer, scheduler, scaler, config):
+    """Load training checkpoint"""
+    checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
+    if not checkpoint_path.exists():
+        return 0, 0  # Start from epoch 0
+        
+    print(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=config.device)
+    
+    # Load model state
+    if config.ddp:
+        model.module.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Load optimizer state
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Load scheduler state if it exists
+    if scheduler and checkpoint['scheduler_state_dict']:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    # Load scaler state if it exists
+    if scaler and checkpoint['scaler_state_dict']:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+    
+    return checkpoint['epoch'] + 1, checkpoint['metrics'].get('auc', 0)
+
 def train(model, train_loader, val_loader, config):
-    """Optimized training loop for RTX 6000 and Xeon Gold"""
+    """Optimized training loop with checkpointing"""
     
     # Initialize optimizer with gradient clipping
     optimizer = torch.optim.AdamW(
@@ -97,31 +156,15 @@ def train(model, train_loader, val_loader, config):
         num_training_steps=num_training_steps
     )
     
+    # Try to load checkpoint
+    start_epoch, best_auc = load_checkpoint(model, optimizer, scheduler, scaler, config)
+    
     # Initialize loss function
     loss_fn = WeightedFocalLoss()
-    
-    best_auc = 0
     start_time = time.time()
     
-    # Initialize wandb metrics
-    wandb.config.update({
-        "total_params": sum(p.numel() for p in model.parameters()),
-        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
-        "train_samples": len(train_loader.dataset),
-        "val_samples": len(val_loader.dataset),
-        "batch_size": config.batch_size,
-        "effective_batch_size": config.batch_size * config.grad_accum_steps,
-        "num_workers": config.num_workers,
-        "hardware": {
-            "gpu": "RTX 6000 24GB",
-            "cpu": "Intel Xeon Gold",
-            "cuda_version": torch.version.cuda,
-            "gpu_count": torch.cuda.device_count()
-        }
-    })
-    
     # Training loop
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
         model.train()
         total_loss = 0
         epoch_start = time.time()
@@ -171,10 +214,15 @@ def train(model, train_loader, val_loader, config):
         # Validation
         val_metrics = evaluate(model, val_loader, config)
         
-        # Save best model
-        if val_metrics['auc'] > best_auc:
+        # Save checkpoint
+        is_best = val_metrics['auc'] > best_auc
+        if is_best:
             best_auc = val_metrics['auc']
-            save_model(model, config, epoch, best_auc)
+        
+        save_checkpoint(
+            model, optimizer, scheduler, scaler,
+            epoch, val_metrics, config, is_best
+        )
         
         # Log epoch metrics
         log_epoch_metrics(epoch, val_metrics, time.time() - epoch_start)
