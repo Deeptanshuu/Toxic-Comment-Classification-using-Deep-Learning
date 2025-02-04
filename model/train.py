@@ -50,7 +50,6 @@ class Config:
     num_workers: int = 8  # Optimized for Xeon Gold
     pin_memory: bool = True
     prefetch_factor: int = 2
-    ddp: bool = False  # Enable DDP for multi-GPU
     
     def __post_init__(self):
         # Load language-specific weights
@@ -522,29 +521,21 @@ def predict_toxicity(text, model, tokenizer, config):
     return results
 
 def create_dataloaders(train_dataset, val_dataset, config):
-    """Create optimized DataLoaders with proper memory management"""
-    
-    # Use DistributedSampler if in DDP mode
-    train_sampler = DistributedSampler(train_dataset) if config.ddp else None
-    val_sampler = DistributedSampler(val_dataset, shuffle=False) if config.ddp else None
-    
+    """Create optimized DataLoaders"""
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
+        shuffle=True,
         num_workers=config.num_workers,
         pin_memory=True,
         prefetch_factor=2,
-        persistent_workers=True,
-        drop_last=True  # Helps with DDP and batch norm
+        persistent_workers=True
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size * 2,  # Larger batch size for validation
         shuffle=False,
-        sampler=val_sampler,
         num_workers=config.num_workers,
         pin_memory=True,
         prefetch_factor=2,
@@ -554,24 +545,12 @@ def create_dataloaders(train_dataset, val_dataset, config):
     return train_loader, val_loader
 
 def main():
-    """Main training function with robust DDP initialization"""
+    """Main training function"""
     try:
-        # Initialize process group for DDP
+        # Set device
         if torch.cuda.is_available():
-            # Get local rank from environment
-            local_rank = int(os.environ.get('LOCAL_RANK', 0))
-            
-            # Set device
-            torch.cuda.set_device(local_rank)
-            
-            # Initialize process group
-            dist.init_process_group(backend='nccl')
-            
-            # Log initialization
-            world_size = dist.get_world_size()
-            rank = dist.get_rank()
-            print(f"[{os.getpid()}] Initialized DDP: rank {rank}/{world_size} on GPU {local_rank}")
-            print(f"[{os.getpid()}] Master: {rank == 0}")
+            torch.cuda.set_device(0)  # Use first GPU
+            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
         
         # Parse arguments and initialize config
         args = parse_args()
@@ -581,79 +560,49 @@ def main():
             grad_accum_steps=args.grad_accum_steps,
             epochs=args.epochs,
             lr=args.lr,
-            fp16=args.fp16,
-            ddp=torch.cuda.is_available() and dist.is_initialized()
+            fp16=args.fp16
         )
         
-        # Initialize wandb only on master process
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            wandb.init(project="toxic-comments", config=asdict(config))
-            print(f"[{os.getpid()}] Initialized wandb")
+        # Initialize wandb
+        wandb.init(project="toxic-comments", config=asdict(config))
+        print("Initialized wandb")
         
         # Load data
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"[{os.getpid()}] Loading datasets...")
-        
+        print("Loading datasets...")
         train_df = pd.read_csv("dataset/split/train.csv")
         val_df = pd.read_csv("dataset/split/val.csv")
-        
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"[{os.getpid()}] Loaded {len(train_df)} training samples")
-            print(f"[{os.getpid()}] Loaded {len(val_df)} validation samples")
+        print(f"Loaded {len(train_df)} training samples")
+        print(f"Loaded {len(val_df)} validation samples")
         
         # Initialize model and tokenizer
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"[{os.getpid()}] Initializing model and tokenizer...")
-        
+        print("Initializing model and tokenizer...")
         tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
         model = init_model(config)
-        
-        if config.ddp:
-            # Wrap model in DDP
-            model = DDP(
-                model,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=False,
-                broadcast_buffers=False
-            )
-            if dist.get_rank() == 0:
-                print(f"[{os.getpid()}] Model wrapped in DDP")
         
         # Create datasets and dataloaders
         train_dataset = ToxicDataset(train_df, tokenizer, config)
         val_dataset = ToxicDataset(val_df, tokenizer, config)
         train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
         
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"[{os.getpid()}] Starting training...")
+        print("Starting training...")
         
         # Train
         train(model, train_loader, val_loader, config)
         
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            print(f"[{os.getpid()}] Training completed successfully")
+        print("Training completed successfully")
     
     except Exception as e:
-        print(f"[{os.getpid()}] Error during training: {str(e)}")
+        print(f"Error during training: {str(e)}")
         import traceback
         traceback.print_exc()
         raise
     
     finally:
-        # Cleanup
-        if torch.cuda.is_available() and dist.is_initialized():
-            dist.destroy_process_group()
-        if not config.ddp or (config.ddp and dist.get_rank() == 0):
-            wandb.finish()
+        wandb.finish()
         gc.collect()
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
-    # Set multiprocessing start method
-    if sys.platform.startswith('linux'):
-        mp.set_start_method('spawn', force=True)
-    
     # Set better error formatting
     np.set_printoptions(precision=4, suppress=True)
     torch.set_printoptions(precision=4, sci_mode=False)
