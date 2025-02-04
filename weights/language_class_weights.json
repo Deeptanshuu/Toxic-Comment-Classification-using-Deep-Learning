@@ -22,310 +22,604 @@
   "weights": {
     "en": {
       "toxic": {
-        "0": 0.95,
-        "1": 2.1,
+        "0": 0.5,
+        "1": 3.5,
         "support_0": 24135,
         "support_1": 21843,
-        "raw_weight_1": 2.1
+        "raw_weight_1": 0.59,
+        "calculation_metadata": {
+          "formula": "(45978/(6*21843))*1.67",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.67"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 11.58,
+        "0": 0.5,
+        "1": 8.0,
         "support_0": 43992,
         "support_1": 1986,
-        "raw_weight_1": 11.58
+        "raw_weight_1": 3.86,
+        "calculation_metadata": {
+          "formula": "(45978/(6*1986))*1.0",
+          "constraints_applied": [
+            "max_weight=8.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.68,
-        "1": 1.86,
+        "0": 0.5,
+        "1": 0.62,
         "support_0": 33622,
         "support_1": 12356,
-        "raw_weight_1": 1.86
+        "raw_weight_1": 0.62,
+        "calculation_metadata": {
+          "formula": "(45978/(6*12356))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 12.5,
+        "0": 0.5,
+        "1": 15.0,
         "support_0": 45274,
         "support_1": 704,
-        "raw_weight_1": 32.65
+        "raw_weight_1": 10.88,
+        "calculation_metadata": {
+          "formula": "(45978/(6*704))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.67,
-        "1": 2.0,
+        "0": 0.5,
+        "1": 0.67,
         "support_0": 34503,
         "support_1": 11475,
-        "raw_weight_1": 2.0
+        "raw_weight_1": 0.67,
+        "calculation_metadata": {
+          "formula": "(45978/(6*11475))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 8.4,
+        "0": 0.5,
+        "1": 3.58,
         "support_0": 43835,
         "support_1": 2143,
-        "raw_weight_1": 10.73
+        "raw_weight_1": 3.58,
+        "calculation_metadata": {
+          "formula": "(45978/(6*2143))*1.0",
+          "constraints_applied": [
+            "max_weight=5.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "ru": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 0.5,
         "support_0": 26678,
         "support_1": 25954,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.34,
+        "calculation_metadata": {
+          "formula": "(52632/(6*25954))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.46,
+        "0": 0.5,
+        "1": 4.49,
         "support_0": 50677,
         "support_1": 1955,
-        "raw_weight_1": 13.46
+        "raw_weight_1": 4.49,
+        "calculation_metadata": {
+          "formula": "(52632/(6*1955))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.25,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40943,
         "support_1": 11689,
-        "raw_weight_1": 2.25
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52632/(6*11689))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 10.0,
+        "0": 0.5,
+        "1": 11.06,
         "support_0": 51839,
         "support_1": 793,
-        "raw_weight_1": 33.19
+        "raw_weight_1": 11.06,
+        "calculation_metadata": {
+          "formula": "(52632/(6*793))*1.0",
+          "constraints_applied": [
+            "max_weight=12.8",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 38175,
         "support_1": 14457,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52632/(6*14457))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 8.4,
+        "0": 0.5,
+        "1": 4.07,
         "support_0": 50477,
         "support_1": 2155,
-        "raw_weight_1": 12.21
+        "raw_weight_1": 4.07,
+        "calculation_metadata": {
+          "formula": "(52632/(6*2155))*1.0",
+          "constraints_applied": [
+            "max_weight=7.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "fr": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 2.2,
         "support_0": 26491,
         "support_1": 25877,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.4,
+        "calculation_metadata": {
+          "formula": "(52368/(6*25877))*1.2",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.2"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.48,
+        "0": 0.5,
+        "1": 4.49,
         "support_0": 50426,
         "support_1": 1942,
-        "raw_weight_1": 13.48
+        "raw_weight_1": 4.49,
+        "calculation_metadata": {
+          "formula": "(52368/(6*1942))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.25,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40732,
         "support_1": 11636,
-        "raw_weight_1": 2.25
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52368/(6*11636))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 15.0,
+        "0": 0.5,
+        "1": 11.02,
         "support_0": 51576,
         "support_1": 792,
-        "raw_weight_1": 33.06
+        "raw_weight_1": 11.02,
+        "calculation_metadata": {
+          "formula": "(52368/(6*792))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 37959,
         "support_1": 14409,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52368/(6*14409))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 12.23,
+        "0": 0.5,
+        "1": 4.08,
         "support_0": 50227,
         "support_1": 2141,
-        "raw_weight_1": 12.23
+        "raw_weight_1": 4.08,
+        "calculation_metadata": {
+          "formula": "(52368/(6*2141))*1.0",
+          "constraints_applied": [
+            "max_weight=10.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "it": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 0.5,
         "support_0": 26513,
         "support_1": 25827,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.34,
+        "calculation_metadata": {
+          "formula": "(52340/(6*25827))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.47,
+        "0": 0.5,
+        "1": 4.49,
         "support_0": 50397,
         "support_1": 1943,
-        "raw_weight_1": 13.47
+        "raw_weight_1": 4.49,
+        "calculation_metadata": {
+          "formula": "(52340/(6*1943))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.26,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40743,
         "support_1": 11597,
-        "raw_weight_1": 2.26
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52340/(6*11597))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 15.0,
+        "0": 0.5,
+        "1": 11.01,
         "support_0": 51548,
         "support_1": 792,
-        "raw_weight_1": 33.04
+        "raw_weight_1": 11.01,
+        "calculation_metadata": {
+          "formula": "(52340/(6*792))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 37963,
         "support_1": 14377,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52340/(6*14377))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 12.27,
+        "0": 0.5,
+        "1": 4.09,
         "support_0": 50208,
         "support_1": 2132,
-        "raw_weight_1": 12.27
+        "raw_weight_1": 4.09,
+        "calculation_metadata": {
+          "formula": "(52340/(6*2132))*1.0",
+          "constraints_applied": [
+            "max_weight=10.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "es": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 0.5,
         "support_0": 26538,
         "support_1": 25874,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.34,
+        "calculation_metadata": {
+          "formula": "(52412/(6*25874))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.47,
+        "0": 0.5,
+        "1": 4.49,
         "support_0": 50466,
         "support_1": 1946,
-        "raw_weight_1": 13.47
+        "raw_weight_1": 4.49,
+        "calculation_metadata": {
+          "formula": "(52412/(6*1946))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.25,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40773,
         "support_1": 11639,
-        "raw_weight_1": 2.25
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52412/(6*11639))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 15.0,
+        "0": 0.5,
+        "1": 11.02,
         "support_0": 51619,
         "support_1": 793,
-        "raw_weight_1": 33.05
+        "raw_weight_1": 11.02,
+        "calculation_metadata": {
+          "formula": "(52412/(6*793))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 38000,
         "support_1": 14412,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52412/(6*14412))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 12.25,
+        "0": 0.5,
+        "1": 4.08,
         "support_0": 50273,
         "support_1": 2139,
-        "raw_weight_1": 12.25
+        "raw_weight_1": 4.08,
+        "calculation_metadata": {
+          "formula": "(52412/(6*2139))*1.0",
+          "constraints_applied": [
+            "max_weight=10.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "pt": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 0.5,
         "support_0": 26599,
         "support_1": 25841,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.34,
+        "calculation_metadata": {
+          "formula": "(52440/(6*25841))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.46,
+        "0": 0.5,
+        "1": 4.49,
         "support_0": 50492,
         "support_1": 1948,
-        "raw_weight_1": 13.46
+        "raw_weight_1": 4.49,
+        "calculation_metadata": {
+          "formula": "(52440/(6*1948))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.25,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40807,
         "support_1": 11633,
-        "raw_weight_1": 2.25
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52440/(6*11633))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 15.0,
+        "0": 0.5,
+        "1": 11.02,
         "support_0": 51647,
         "support_1": 793,
-        "raw_weight_1": 33.06
+        "raw_weight_1": 11.02,
+        "calculation_metadata": {
+          "formula": "(52440/(6*793))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 38054,
         "support_1": 14386,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52440/(6*14386))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 12.28,
+        "0": 0.5,
+        "1": 4.09,
         "support_0": 50305,
         "support_1": 2135,
-        "raw_weight_1": 12.28
+        "raw_weight_1": 4.09,
+        "calculation_metadata": {
+          "formula": "(52440/(6*2135))*1.0",
+          "constraints_applied": [
+            "max_weight=10.0",
+            "boost=1.0"
+          ]
+        }
       }
     },
     "tr": {
       "toxic": {
-        "0": 0.99,
-        "1": 1.01,
+        "0": 0.5,
+        "1": 0.5,
         "support_0": 26650,
         "support_1": 25908,
-        "raw_weight_1": 1.01
+        "raw_weight_1": 0.34,
+        "calculation_metadata": {
+          "formula": "(52558/(6*25908))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "severe_toxic": {
-        "0": 0.52,
-        "1": 13.45,
+        "0": 0.5,
+        "1": 4.48,
         "support_0": 50604,
         "support_1": 1954,
-        "raw_weight_1": 13.45
+        "raw_weight_1": 4.48,
+        "calculation_metadata": {
+          "formula": "(52558/(6*1954))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "obscene": {
-        "0": 0.64,
-        "1": 2.25,
+        "0": 0.5,
+        "1": 0.75,
         "support_0": 40899,
         "support_1": 11659,
-        "raw_weight_1": 2.25
+        "raw_weight_1": 0.75,
+        "calculation_metadata": {
+          "formula": "(52558/(6*11659))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "threat": {
-        "0": 0.51,
-        "1": 9.8,
+        "0": 0.5,
+        "1": 11.05,
         "support_0": 51765,
         "support_1": 793,
-        "raw_weight_1": 33.14
+        "raw_weight_1": 11.05,
+        "calculation_metadata": {
+          "formula": "(52558/(6*793))*1.0",
+          "constraints_applied": [
+            "max_weight=12.8",
+            "boost=1.0"
+          ]
+        }
       },
       "insult": {
-        "0": 0.69,
-        "1": 1.82,
+        "0": 0.5,
+        "1": 0.61,
         "support_0": 38130,
         "support_1": 14428,
-        "raw_weight_1": 1.82
+        "raw_weight_1": 0.61,
+        "calculation_metadata": {
+          "formula": "(52558/(6*14428))*1.0",
+          "constraints_applied": [
+            "max_weight=15.0",
+            "boost=1.0"
+          ]
+        }
       },
       "identity_hate": {
-        "0": 0.52,
-        "1": 7.9,
+        "0": 0.5,
+        "1": 4.09,
         "support_0": 50414,
         "support_1": 2144,
-        "raw_weight_1": 12.26
+        "raw_weight_1": 4.09,
+        "calculation_metadata": {
+          "formula": "(52558/(6*2144))*1.0",
+          "constraints_applied": [
+            "max_weight=6.2",
+            "boost=1.0"
+          ]
+        }
       }
     }
   }
