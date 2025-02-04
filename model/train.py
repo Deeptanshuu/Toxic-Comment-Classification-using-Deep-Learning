@@ -8,19 +8,30 @@ import pandas as pd
 import wandb
 import argparse
 from dataclasses import dataclass, asdict
+import os
+import warnings
+from torch.cuda.amp import autocast, GradScaler
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
+warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
 
 @dataclass
 class Config:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    batch_size: int = 16
-    grad_accum_steps: int = 4
+    batch_size: int = 32  # Increased batch size for multi-GPU
+    grad_accum_steps: int = 2  # Reduced as we have larger batch size
     epochs: int = 5
     lr: float = 2e-5
+    warmup_steps: int = 500
     class_weights: dict = None
     languages: list = None
     device: str = None
     num_gpus: int = None
+    fp16: bool = True  # Enable mixed precision training
 
     def __post_init__(self):
         self.class_weights = {
@@ -34,6 +45,110 @@ class Config:
         self.languages = ['en', 'ru', 'fr', 'it', 'es', 'pt', 'tr']
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_gpus = torch.cuda.device_count()
+        
+        # Adjust batch size based on number of GPUs
+        if self.num_gpus > 1:
+            self.batch_size = self.batch_size * self.num_gpus
+
+def setup_ddp():
+    """Setup distributed training"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        dist.init_process_group('nccl', rank=rank, world_size=world_size)
+        torch.cuda.set_device(rank)
+        return rank, world_size
+    return 0, 1
+
+def init_model(config, rank=0):
+    """Initialize model with DDP support"""
+    model = XLMRobertaForSequenceClassification.from_pretrained(
+        config.model_name,
+        num_labels=len(config.class_weights),
+        problem_type="multi_label_classification"
+    )
+    
+    model = model.to(config.device)
+    
+    if config.num_gpus > 1:
+        model = DDP(model, device_ids=[rank])
+    
+    return model
+
+def train(model, train_loader, val_loader, config, rank=0):
+    """Training loop with mixed precision and distributed training support"""
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+    loss_fn = WeightedFocalLoss()
+    scaler = GradScaler() if config.fp16 else None
+    
+    best_auc = 0
+    for epoch in range(config.epochs):
+        model.train()
+        total_loss = 0
+        
+        if isinstance(train_loader.sampler, DistributedSampler):
+            train_loader.sampler.set_epoch(epoch)
+        
+        for batch_idx, batch in enumerate(train_loader):
+            with autocast(enabled=config.fp16):
+                inputs = {
+                    'input_ids': batch['input_ids'].to(config.device),
+                    'attention_mask': batch['attention_mask'].to(config.device),
+                    'labels': batch['labels'].to(config.device)
+                }
+                
+                outputs = model(**inputs)
+                loss = loss_fn(outputs.logits, inputs['labels'])
+                loss = loss / config.grad_accum_steps
+            
+            if config.fp16:
+                scaler.scale(loss).backward()
+                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+            else:
+                loss.backward()
+                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+            
+            total_loss += loss.item() * config.grad_accum_steps
+            
+            # Log metrics (only on main process)
+            if rank == 0 and batch_idx % 50 == 0:
+                wandb.log({
+                    'train_loss': total_loss/(batch_idx+1),
+                    'lr': scheduler.get_last_lr()[0]
+                })
+        
+        scheduler.step()
+        
+        # Validation (only on main process)
+        if rank == 0:
+            val_auc = evaluate(model, val_loader, config)
+            print(f"Epoch {epoch+1}: Val AUC = {val_auc:.4f}")
+            wandb.log({'val_auc': val_auc, 'epoch': epoch+1})
+            
+            if val_auc > best_auc:
+                best_auc = val_auc
+                if isinstance(model, DDP):
+                    model_to_save = model.module
+                else:
+                    model_to_save = model
+                model_save_path = f"weights/toxic_classifier_{config.model_name}"
+                model_to_save.save_pretrained(model_save_path)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train toxic comment classifier')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size per GPU')
+    parser.add_argument('--grad_accum_steps', type=int, default=2, help='Gradient accumulation steps')
+    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=2e-5, help='Learning rate')
+    parser.add_argument('--model_name', type=str, default='xlm-roberta-large', help='Model name')
+    parser.add_argument('--fp16', action='store_true', help='Use mixed precision training')
+    return parser.parse_args()
 
 # Custom Dataset
 class ToxicDataset(Dataset):
@@ -93,75 +208,6 @@ class WeightedFocalLoss(nn.Module):
         focal_loss = (self.alpha * (1-pt)**self.gamma * bce_loss) * self.weights
         return focal_loss.mean()
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train toxic comment classifier')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--grad_accum_steps', type=int, default=4, help='Gradient accumulation steps')
-    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=2e-5, help='Learning rate')
-    parser.add_argument('--model_name', type=str, default='xlm-roberta-large', help='Model name')
-    return parser.parse_args()
-
-# Initialize Model
-def init_model(config):
-    model = XLMRobertaForSequenceClassification.from_pretrained(
-        config.model_name,
-        num_labels=len(config.class_weights),
-        problem_type="multi_label_classification"
-    )
-    
-    if config.num_gpus > 1:
-        model = nn.DataParallel(model)
-    
-    return model.to(config.device)
-
-# Training Loop
-def train(model, train_loader, val_loader, config):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
-    loss_fn = WeightedFocalLoss()
-    
-    best_auc = 0
-    for epoch in range(config.epochs):
-        model.train()
-        total_loss = 0
-        
-        for batch_idx, batch in enumerate(train_loader):
-            inputs = {
-                'input_ids': batch['input_ids'].to(config.device),
-                'attention_mask': batch['attention_mask'].to(config.device),
-                'labels': batch['labels'].to(config.device)
-            }
-            
-            outputs = model(**inputs)
-            loss = loss_fn(outputs.logits, inputs['labels'])
-            loss = loss / config.grad_accum_steps  # Normalize loss for gradient accumulation
-            
-            loss.backward()
-            
-            if (batch_idx + 1) % config.grad_accum_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-                scheduler.step()
-            
-            total_loss += loss.item() * config.grad_accum_steps  # Denormalize for logging
-            
-            # Log metrics
-            if batch_idx % 50 == 0:
-                wandb.log({
-                    'train_loss': total_loss/(batch_idx+1),
-                    'lr': scheduler.get_last_lr()[0]
-                })
-        
-        # Validation
-        val_auc = evaluate(model, val_loader, config)
-        print(f"Epoch {epoch+1}: Val AUC = {val_auc:.4f}")
-        wandb.log({'val_auc': val_auc, 'epoch': epoch+1})
-        
-        if val_auc > best_auc:
-            best_auc = val_auc
-            torch.save(model.state_dict(), f"best_model_{config.model_name}.pt")
-            
 # Evaluation
 def evaluate(model, loader, config):
     model.eval()
@@ -183,53 +229,94 @@ def evaluate(model, loader, config):
     targets = np.concatenate(targets)
     return roc_auc_score(targets, preds, average='macro')
 
+def predict_toxicity(text, model, tokenizer, config):
+    """
+    Predict toxicity labels for a given text.
+    Returns probabilities for each toxicity type.
+    """
+    # Prepare model
+    model.eval()
+    
+    # Tokenize text
+    encoding = tokenizer(
+        text,
+        max_length=config.max_length,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt'
+    )
+    
+    # Move to device
+    input_ids = encoding['input_ids'].to(config.device)
+    attention_mask = encoding['attention_mask'].to(config.device)
+    
+    # Get predictions
+    with torch.no_grad():
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        predictions = torch.sigmoid(outputs.logits)
+    
+    # Convert to probabilities
+    probabilities = predictions[0].cpu().numpy()
+    
+    # Create results dictionary
+    results = {}
+    for label, prob in zip(config.class_weights.keys(), probabilities):
+        results[label] = float(prob)
+    
+    return results
+
 # Main
 if __name__ == "__main__":
-    # Parse arguments
-    args = parse_args()
+    # Setup distributed training
+    rank, world_size = setup_ddp()
     
-    # Initialize config with command line arguments
+    # Parse arguments and initialize config
+    args = parse_args()
     config = Config(
         model_name=args.model_name,
         batch_size=args.batch_size,
         grad_accum_steps=args.grad_accum_steps,
         epochs=args.epochs,
-        lr=args.lr
+        lr=args.lr,
+        fp16=args.fp16
     )
     
-    # Initialize Weights & Biases
-    wandb.init(project="toxic-comments", config=asdict(config))
+    # Initialize wandb only on main process
+    if rank == 0:
+        wandb.init(project="toxic-comments", config=asdict(config))
     
-    # Load data with explicit encoding
-    print("Loading datasets...")
+    # Load data
+    print(f"Loading datasets on rank {rank}...")
     try:
         train_df = pd.read_csv("dataset/split/train.csv", encoding='utf-8')
         val_df = pd.read_csv("dataset/split/val.csv", encoding='utf-8')
-        print(f"Loaded training set with {len(train_df)} samples")
-        print(f"Columns available: {list(train_df.columns)}")
-        
-        if 'comment_text' not in train_df.columns:
-            raise ValueError(f"comment_text column not found. Available columns: {list(train_df.columns)}")
-            
+        if rank == 0:
+            print(f"Loaded training set with {len(train_df)} samples")
+            print(f"Columns available: {list(train_df.columns)}")
     except Exception as e:
         print(f"Error loading datasets: {str(e)}")
         raise
     
-    # Initialize tokenizer and model
-    print("Initializing model and tokenizer...")
+    # Initialize model and tokenizer
+    print(f"Initializing model and tokenizer on rank {rank}...")
     tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
-    model = init_model(config)
+    model = init_model(config, rank)
     
-    # Create datasets and loaders
+    # Create datasets
     train_dataset = ToxicDataset(train_df, tokenizer)
     val_dataset = ToxicDataset(val_df, tokenizer)
     
+    # Create distributed samplers
+    train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
+    
+    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
+        batch_size=config.batch_size // world_size if world_size > 1 else config.batch_size,
+        shuffle=(train_sampler is None),
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        sampler=train_sampler
     )
     
     val_loader = DataLoader(
@@ -240,8 +327,26 @@ if __name__ == "__main__":
     )
     
     # Train
-    train(model, train_loader, val_loader, config)
+    train(model, train_loader, val_loader, config, rank)
     
-    # Save final model
-    torch.save(model.state_dict(), f"final_model_{config.model_name}.pt")
-    tokenizer.save_pretrained(config.model_name)
+    # Cleanup
+    if world_size > 1:
+        dist.destroy_process_group()
+    
+    # Example predictions (only on main process)
+    if rank == 0:
+        print("\nTesting model with example texts...")
+        examples = [
+            "You are a wonderful person!",  # Non-toxic English
+            "Va te faire foutre, idiot!",   # Toxic French
+            "Eres un estúpido imbécil",     # Toxic Spanish
+            "Sei una persona molto gentile", # Non-toxic Italian
+        ]
+        
+        for text in examples:
+            print(f"\nText: {text}")
+            predictions = predict_toxicity(text, model, tokenizer, config)
+            print("Predictions:")
+            for label, prob in predictions.items():
+                if prob > 0.5:
+                    print(f"- {label}: {prob:.2%}")
