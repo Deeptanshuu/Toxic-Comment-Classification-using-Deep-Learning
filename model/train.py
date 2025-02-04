@@ -28,6 +28,7 @@ from itertools import chain
 import gc
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+import sys
 
 from .training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
 
@@ -553,6 +554,27 @@ def create_dataloaders(train_dataset, val_dataset, config):
     return train_loader, val_loader
 
 def main():
+    # Initialize process group for DDP
+    if torch.cuda.is_available():
+        try:
+            # Get world size and rank from environment variables
+            world_size = int(os.environ.get('WORLD_SIZE', 1))
+            rank = int(os.environ.get('RANK', 0))
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            
+            # Initialize process group
+            torch.cuda.set_device(local_rank)
+            dist.init_process_group(
+                backend='nccl',
+                init_method='env://',
+                world_size=world_size,
+                rank=rank
+            )
+            print(f"Initialized DDP: rank {rank}/{world_size} on GPU {local_rank}")
+        except Exception as e:
+            print(f"Failed to initialize DDP: {str(e)}")
+            raise
+    
     # Parse arguments and initialize config
     args = parse_args()
     config = Config(
@@ -561,28 +583,38 @@ def main():
         grad_accum_steps=args.grad_accum_steps,
         epochs=args.epochs,
         lr=args.lr,
-        fp16=args.fp16
+        fp16=args.fp16,
+        ddp=torch.cuda.is_available() and dist.is_initialized()
     )
     
-    # Initialize wandb
+    # Initialize wandb only on master process
     if not config.ddp or (config.ddp and dist.get_rank() == 0):
         wandb.init(project="toxic-comments", config=asdict(config))
     
     try:
         # Load data
-        print("Loading datasets...")
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            print("Loading datasets...")
         train_df = pd.read_csv("dataset/split/train.csv", encoding='utf-8')
         val_df = pd.read_csv("dataset/split/val.csv", encoding='utf-8')
-        print(f"Loaded training set with {len(train_df)} samples")
-        print(f"Columns available: {list(train_df.columns)}")
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            print(f"Loaded training set with {len(train_df)} samples")
+            print(f"Columns available: {list(train_df.columns)}")
         
         # Initialize model and tokenizer
-        print("Initializing model and tokenizer...")
+        if not config.ddp or (config.ddp and dist.get_rank() == 0):
+            print("Initializing model and tokenizer...")
         tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
         model = init_model(config)
         
         if config.ddp:
-            model = DDP(model, device_ids=[dist.get_rank()])
+            # Wrap model in DDP
+            model = DDP(
+                model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False
+            )
         
         # Create datasets and dataloaders
         train_dataset = ToxicDataset(train_df, tokenizer, config)
@@ -592,12 +624,22 @@ def main():
         # Train
         train(model, train_loader, val_loader, config)
     
+    except Exception as e:
+        print(f"Error during training: {str(e)}")
+        raise
+    
     finally:
         if not config.ddp or (config.ddp and dist.get_rank() == 0):
             wandb.finish()
-        # Cleanup
+        # Cleanup DDP
+        if config.ddp:
+            dist.destroy_process_group()
+        # Memory cleanup
         gc.collect()
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
+    # Set multiprocessing start method
+    if sys.platform.startswith('linux'):
+        mp.set_start_method('spawn', force=True)
     main()
