@@ -38,12 +38,11 @@ warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0
 class Config:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    batch_size: int = 48  # Increased for RTX 6000
+    batch_size: int = 48  # Optimized for RTX 6000
     grad_accum_steps: int = 1  # Reduced since we increased batch size
     epochs: int = 5
     lr: float = 2e-5
     warmup_steps: int = 500
-    class_weights: dict = None
     languages: list = None
     device: str = None
     fp16: bool = True
@@ -53,22 +52,20 @@ class Config:
     ddp: bool = False  # Enable DDP for multi-GPU
     
     def __post_init__(self):
-        self.class_weights = {
-            'toxic': 0.54,
-            'severe_toxic': 5.88,
-            'obscene': 1.0,
-            'threat': 33.33,
-            'insult': 0.91,
-            'identity_hate': 5.45
-        }
-        self.languages = ['en', 'ru', 'fr', 'it', 'es', 'pt', 'tr']
+        # Load language-specific weights
+        with open('weights/language_class_weights.json', 'r') as f:
+            weights_data = json.load(f)
+            self.lang_weights = weights_data['weights']
+            
+        # Set available languages from the weights file
+        self.languages = list(self.lang_weights.keys())
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def init_model(config):
     """Initialize model"""
     model = XLMRobertaForSequenceClassification.from_pretrained(
         config.model_name,
-        num_labels=len(config.class_weights),
+        num_labels=len(config.lang_weights),
         problem_type="multi_label_classification"
     )
     
@@ -134,7 +131,7 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
     return checkpoint['epoch'] + 1, checkpoint['metrics'].get('auc', 0)
 
 def train(model, train_loader, val_loader, config):
-    """Optimized training loop with checkpointing"""
+    """Optimized training loop with language-specific weights"""
     
     # Initialize optimizer with gradient clipping
     optimizer = torch.optim.AdamW(
@@ -159,7 +156,7 @@ def train(model, train_loader, val_loader, config):
     # Try to load checkpoint
     start_epoch, best_auc = load_checkpoint(model, optimizer, scheduler, scaler, config)
     
-    # Initialize loss function
+    # Initialize loss function with language-specific weights
     loss_fn = WeightedFocalLoss()
     start_time = time.time()
     
@@ -298,7 +295,7 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
-        required_columns = ['comment_text'] + list(config.class_weights.keys()) + ['lang']
+        required_columns = ['comment_text'] + list(config.lang_weights.keys()) + ['lang']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
@@ -329,7 +326,7 @@ class ToxicDataset(Dataset):
         self.encodings['attention_mask'] = torch.cat(self.encodings['attention_mask'])
         
         # Convert labels to tensor
-        self.labels = torch.FloatTensor(df[list(config.class_weights.keys())].fillna(0).values)
+        self.labels = torch.FloatTensor(df[list(config.lang_weights.keys())].fillna(0).values)
         self.langs = df['lang'].fillna('en').values
         
         # Pin memory for faster transfer to GPU
@@ -358,34 +355,52 @@ class WeightedFocalLoss(nn.Module):
         self.gamma = gamma
         
         # Load language-specific weights
-        with open('language_class_weights.json', 'r') as f:
-            self.lang_weights = json.load(f)
+        with open('weights/language_class_weights.json', 'r') as f:
+            weights_data = json.load(f)
+            self.lang_weights = weights_data['weights']
         
-        # Initialize default weights as fallback
-        self.default_weights = torch.tensor(list(Config().class_weights.values())).to(Config().device)
+        # Get list of toxicity columns in order
+        self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        
+        # Default weights as fallback (use English weights)
+        self.default_weights = torch.tensor([
+            self.lang_weights['en'][col]['1'] for col in self.toxicity_columns
+        ])
+    
+    def get_weights_for_batch(self, langs, device):
+        """Get language-specific weights for each sample in the batch"""
+        batch_weights = []
+        
+        for lang in langs:
+            # Get weights for this language
+            lang_weights = [
+                self.lang_weights[lang][col]['1'] 
+                for col in self.toxicity_columns
+            ]
+            batch_weights.append(lang_weights)
+        
+        # Convert to tensor and move to device
+        weights = torch.tensor(batch_weights, dtype=torch.float32).to(device)
+        
+        # Take mean across batch if shape mismatch (shouldn't happen but just in case)
+        if len(weights.shape) > 1:
+            weights = weights.mean(dim=0)
+            
+        return weights
 
     def forward(self, preds, targets, langs=None):
         if langs is None:
-            # Use default weights if no language information is provided
-            weights = self.default_weights
+            # Use default weights if no language information
+            weights = self.default_weights.to(preds.device)
         else:
-            # Create batch-specific weights based on languages
-            batch_weights = []
-            for lang in langs:
-                lang_weight = []
-                for i, col in enumerate(['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']):
-                    # Get weight for positive class (1) for this language and column
-                    weight = self.lang_weights[lang][col]['1']
-                    lang_weight.append(weight)
-                batch_weights.append(lang_weight)
-            weights = torch.tensor(batch_weights).to(preds.device)
-            # Take mean across batch for each class if shape mismatch
-            if weights.shape[0] != preds.shape[0]:
-                weights = weights.mean(dim=0)
+            # Get language-specific weights
+            weights = self.get_weights_for_batch(langs, preds.device)
         
+        # Calculate focal loss with dynamic weights
         bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)
         pt = torch.exp(-bce_loss)
         focal_loss = (self.alpha * (1-pt)**self.gamma * bce_loss) * weights
+        
         return focal_loss.mean()
 
 # Evaluation
@@ -500,7 +515,7 @@ def predict_toxicity(text, model, tokenizer, config):
     
     # Create results dictionary
     results = {}
-    for label, prob in zip(config.class_weights.keys(), probabilities):
+    for label, prob in zip(config.lang_weights.keys(), probabilities):
         results[label] = float(prob)
     
     return results
@@ -573,12 +588,6 @@ def main():
         train_dataset = ToxicDataset(train_df, tokenizer, config)
         val_dataset = ToxicDataset(val_df, tokenizer, config)
         train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
-        
-        # Initialize training components
-        optimizer = torch.optim.AdamW(
-            config.get_optimizer_groups(model.module if config.ddp else model),
-            weight_decay=config.weight_decay
-        )
         
         # Train
         train(model, train_loader, val_loader, config)

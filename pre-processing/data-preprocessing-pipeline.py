@@ -48,7 +48,7 @@ class MultilingualPreprocessor:
         """Initialize stemmers with progress bar"""
         self.logger.info("Initializing stemmers...")
         with alive_bar(6, title='Loading Stemmers', force_tty=True) as bar:
-            self.turkish_stemmer = TurkishStemmer()
+        self.turkish_stemmer = TurkishStemmer()
             bar()
             self.lang_stemmers = {}
             for lang, name in [
@@ -269,7 +269,7 @@ class MultilingualPreprocessor:
         with alive_bar(total_batches, title='Text Processing', force_tty=True) as bar:
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                 futures = []
-                for i in range(0, len(df), batch_size):
+            for i in range(0, len(df), batch_size):
                     batch = df.iloc[i:i+batch_size]
                     future = executor.submit(self._process_batch, batch)
                     futures.append(future)
