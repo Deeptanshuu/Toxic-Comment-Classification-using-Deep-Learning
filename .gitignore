@@ -9,6 +9,9 @@ env/
 env.bak/
 venv.bak/
 
+# Weights and Biases
+weights/*
+
 # IDE and editor files
 .idea/
 .vscode/

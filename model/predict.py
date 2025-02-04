@@ -1,18 +1,40 @@
 import torch
 from transformers import XLMRobertaForSequenceClassification, XLMRobertaTokenizer
 import argparse
+import os
 
 def load_model(model_path):
     """Load the trained model and tokenizer"""
-    model = XLMRobertaForSequenceClassification.from_pretrained(model_path)
-    tokenizer = XLMRobertaTokenizer.from_pretrained(model_path)
-    
-    # Move model to GPU if available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    model.eval()
-    
-    return model, tokenizer, device
+    # Check if model path exists
+    if not os.path.exists(model_path):
+        print(f"Warning: Model path {model_path} not found.")
+        print("Please make sure you have trained the model first.")
+        return None, None, None
+        
+    try:
+        # Try to load the model
+        model = XLMRobertaForSequenceClassification.from_pretrained(model_path)
+        
+        # For tokenizer, first try to load from model path, if fails, load base model tokenizer
+        try:
+            tokenizer = XLMRobertaTokenizer.from_pretrained(model_path)
+        except:
+            print("Loading base XLM-RoBERTa tokenizer...")
+            tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
+        
+        # Move model to GPU if available
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        model.eval()
+        
+        return model, tokenizer, device
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
+        print("\nPlease ensure that:")
+        print("1. You have trained the model first using train.py")
+        print("2. The model weights are saved in the correct location")
+        print("3. You have sufficient permissions to access the model files")
+        return None, None, None
 
 def predict_toxicity(text, model, tokenizer, device):
     """Predict toxicity labels for a given text"""
@@ -61,6 +83,9 @@ def main():
     # Load model
     print("Loading model...")
     model, tokenizer, device = load_model(args.model_path)
+    
+    if model is None or tokenizer is None:
+        return
     
     # Make prediction
     print("\nAnalyzing text...")
