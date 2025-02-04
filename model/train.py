@@ -180,7 +180,8 @@ def train(model, train_loader, val_loader, config):
         'best_auc': best_auc,
         'train_loss': [],
         'val_loss': [],
-        'val_auc': []
+        'val_auc': [],
+        'epoch_times': []  # Track time per epoch for ETA calculation
     }
     
     # Training loop
@@ -188,6 +189,17 @@ def train(model, train_loader, val_loader, config):
         model.train()
         total_loss = 0
         epoch_start = time.time()
+        
+        # Calculate ETA
+        if len(metrics['epoch_times']) > 0:
+            avg_epoch_time = sum(metrics['epoch_times']) / len(metrics['epoch_times'])
+            remaining_epochs = config.epochs - epoch
+            eta_seconds = avg_epoch_time * remaining_epochs
+            eta = str(timedelta(seconds=int(eta_seconds)))
+        else:
+            eta = "Calculating..."
+        
+        print(f"\nEpoch {epoch+1}/{config.epochs} (ETA: {eta})")
         
         # Enable automatic mixed precision
         with autocast(enabled=config.fp16):
@@ -224,8 +236,14 @@ def train(model, train_loader, val_loader, config):
                 
                 # Log training metrics every 50 batches
                 if batch_idx % 50 == 0:
-                    # Calculate average loss
+                    # Calculate average loss and progress
                     avg_loss = total_loss / (batch_idx + 1)
+                    progress = batch_idx / len(train_loader)
+                    
+                    # Calculate batch ETA
+                    batch_time = time.time() - epoch_start
+                    batch_eta_seconds = (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
+                    batch_eta = str(timedelta(seconds=int(batch_eta_seconds)))
                     
                     # Get GPU stats
                     gpu_stats = get_gpu_stats()
@@ -235,14 +253,25 @@ def train(model, train_loader, val_loader, config):
                         'train/batch_loss': loss.item(),
                         'train/avg_loss': avg_loss,
                         'train/learning_rate': scheduler.get_last_lr()[0],
-                        'train/epoch': epoch + (batch_idx / len(train_loader)),
+                        'train/epoch': epoch + progress,
+                        'train/progress': progress * 100,  # As percentage
                         'system/gpu_utilization': gpu_stats['utilization'],
                         'system/gpu_memory': gpu_stats['memory'],
                         'system/gpu_temp': gpu_stats['temperature'],
-                        'system/batch_time': time.time() - epoch_start
+                        'system/batch_time': batch_time,
+                        'time/batch_eta': batch_eta,
+                        'time/training_eta': eta
                     })
+                    
+                    # Print progress
+                    print(f"\rBatch {batch_idx}/{len(train_loader)} "
+                          f"Loss: {avg_loss:.4f} "
+                          f"Batch ETA: {batch_eta} "
+                          f"Training ETA: {eta}", end="")
         
         # Calculate epoch metrics
+        epoch_time = time.time() - epoch_start
+        metrics['epoch_times'].append(epoch_time)
         epoch_loss = total_loss / len(train_loader)
         metrics['train_loss'].append(epoch_loss)
         
@@ -262,15 +291,15 @@ def train(model, train_loader, val_loader, config):
         )
         
         # Log epoch metrics
-        epoch_time = time.time() - epoch_start
-        log_epoch_metrics(epoch, val_metrics, epoch_time)
+        log_epoch_metrics(epoch, val_metrics, epoch_time, eta)
         
         # Log training summary
         wandb.log({
             'train/epoch_loss': epoch_loss,
             'train/epoch': epoch + 1,
             'train/epoch_time': epoch_time,
-            'train/total_time': time.time() - start_time
+            'train/total_time': time.time() - start_time,
+            'time/epoch_eta': eta
         })
         
         # Memory cleanup
@@ -301,7 +330,7 @@ def save_model(model, config, epoch, auc):
     artifact.add_dir(model_save_path)
     wandb.log_artifact(artifact)
 
-def log_epoch_metrics(epoch, metrics, epoch_time):
+def log_epoch_metrics(epoch, metrics, epoch_time, eta):
     """Log epoch-level metrics to wandb"""
     wandb.log({
         'val/auc': metrics['auc'],
@@ -310,6 +339,7 @@ def log_epoch_metrics(epoch, metrics, epoch_time):
         'val/recall': metrics['recall'],
         'val/f1': metrics['f1'],
         'time/epoch_minutes': epoch_time / 60,
+        'time/epoch_eta': eta,
         'epoch': epoch + 1
     })
     
