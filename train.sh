@@ -2,7 +2,7 @@
 
 # Activate virtual environment if it exists
 if [ -d "myenv" ]; then
-    source ~/myenv/bin/activate
+    source myenv/bin/activate
 fi
 
 # Create necessary directories
@@ -10,7 +10,7 @@ mkdir -p weights
 mkdir -p dataset/split
 
 # Set number of GPUs
-NUM_GPUS=2
+NUM_GPUS=1
 
 # Default hyperparameters
 BATCH_SIZE=32
@@ -53,7 +53,7 @@ done
 echo "Training Configuration:"
 echo "----------------------"
 echo "Number of GPUs: $NUM_GPUS"
-echo "Batch size per GPU: $BATCH_SIZE"
+echo "Batch size: $BATCH_SIZE"
 echo "Gradient accumulation steps: $GRAD_ACCUM_STEPS"
 echo "Epochs: $EPOCHS"
 echo "Learning rate: $LEARNING_RATE"
@@ -63,11 +63,8 @@ echo "----------------------"
 # Set CUDA device order
 export CUDA_DEVICE_ORDER="PCI_BUS_ID"
 
-# Launch distributed training using torchrun
-torchrun \
-    --nproc_per_node=$NUM_GPUS \
-    --master_port=$(shuf -i 29500-29999 -n 1) \
-    model/train.py \
+# Run training script directly without torchrun
+python model/train.py \
     --batch_size $BATCH_SIZE \
     --grad_accum_steps $GRAD_ACCUM_STEPS \
     --epochs $EPOCHS \
