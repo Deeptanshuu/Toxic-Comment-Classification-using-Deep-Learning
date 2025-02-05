@@ -156,7 +156,9 @@ class ToxicAugmenter:
             use_fast=True,
             model_max_length=512  # Limit context size for faster processing
         )
+        # Set pad token id once during initialization
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
+        self.llm_tokenizer.pad_token_id = self.llm_tokenizer.eos_token_id
         logger.info("✓ Mistral-7B loaded")
         
         # Initialize validator
@@ -278,7 +280,8 @@ Generate ONLY the comment: [/INST]"""
                         num_return_sequences=1,
                         repetition_penalty=1.15,
                         no_repeat_ngram_size=3,
-                        length_penalty=1.0
+                        length_penalty=1.0,
+                        eos_token_id=self.llm_tokenizer.eos_token_id
                     )
                     
                     text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=False)
