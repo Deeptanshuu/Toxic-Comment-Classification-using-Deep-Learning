@@ -176,70 +176,53 @@ class ToxicAugmenter:
     def generate_prompt(self, seed_text: str, label: str) -> str:
         """Generate a prompt for a single toxicity type"""
         prompts = {
-            'toxic': """<s>[INST] Generate a toxic social media comment that is hostile and offensive.
-Example tone (generate different content): {seed_text}
-
-Requirements:
-- Make it genuinely toxic and hostile
+            'toxic': """<s>[INST] Generate a toxic and offensive social media comment. The comment should be:
+- Genuinely hostile and aggressive
+- Use offensive language
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]""",
+Generate ONLY the toxic comment: [/INST]""",
 
-            'severe_toxic': """<s>[INST] Generate an extremely toxic social media comment.
-Example tone (generate different content): {seed_text}
-
-Requirements:
-- Make it severely toxic and hostile
-- Use strong offensive language
+            'severe_toxic': """<s>[INST] Generate an extremely toxic and offensive social media comment. The comment should be:
+- Extremely hostile and aggressive
+- Use very strong offensive language
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]""",
+Generate ONLY the toxic comment: [/INST]""",
 
-            'obscene': """<s>[INST] Generate an obscene social media comment.
-Example tone (generate different content): {seed_text}
-
-Requirements:
-- Use obscene language
-- Make it vulgar and offensive
+            'obscene': """<s>[INST] Generate an obscene social media comment. The comment should be:
+- Use explicit vulgar language
+- Be intentionally crude and offensive
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]""",
+Generate ONLY the obscene comment: [/INST]""",
 
-            'threat': """<s>[INST] Generate a threatening social media comment.
-Example tone (generate different content): {seed_text}
-
-Requirements:
-- Include clear threats or intimidation
-- Make it menacing
+            'threat': """<s>[INST] Generate a threatening social media comment. The comment should be:
+- Include explicit threats or intimidation
+- Be menacing and hostile
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]""",
+Generate ONLY the threatening comment: [/INST]""",
 
-            'insult': """<s>[INST] Generate an insulting social media comment.
-Example tone (generate different content): {seed_text}
-
-Requirements:
-- Include personal insults
-- Make it offensive and demeaning
+            'insult': """<s>[INST] Generate an insulting social media comment. The comment should be:
+- Include direct personal insults
+- Be intentionally offensive and demeaning
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]""",
+Generate ONLY the insulting comment: [/INST]""",
 
-            'identity_hate': """<s>[INST] Generate a hateful social media comment targeting specific identities.
-Example tone (generate different content): {seed_text}
-
-Requirements:
+            'identity_hate': """<s>[INST] Generate a hateful social media comment targeting identity groups. The comment should be:
 - Target specific identity groups
-- Make it discriminatory
+- Express discriminatory views
 - Between 10-30 words
-- Different from the example
+- Different from this example: {seed_text}
 
-Generate ONLY the comment: [/INST]"""
+Generate ONLY the hateful comment: [/INST]"""
         }
         
         return prompts[label].format(seed_text=seed_text)
@@ -281,15 +264,22 @@ Generate ONLY the comment: [/INST]"""
         # Get probability for the label
         prob = self.validator.get_probabilities([text], label)[0]
         
-        # Use simpler thresholds for single-label validation
-        threshold = 0.5  # Base threshold
-        if label in ['severe_toxic', 'threat', 'identity_hate']:
-            threshold = 0.4  # Lower threshold for harder categories
+        # Use label-specific thresholds based on difficulty
+        thresholds = {
+            'toxic': 0.7,
+            'severe_toxic': 0.4,
+            'obscene': 0.6,
+            'threat': 0.4,
+            'insult': 0.6,
+            'identity_hate': 0.4
+        }
+        threshold = thresholds.get(label, 0.5)
         
         # Log validation result
         passed = prob >= threshold
-        logger.debug(f"\nValidating text for {label}: {text}")
-        logger.debug(f"Probability: {prob:.3f}, Threshold: {threshold:.2f}, Passed: {passed}")
+        if passed or (attempts % 10 == 0):  # Log all passes and periodic failures
+            logger.debug(f"\nValidating text for {label}: {text}")
+            logger.debug(f"Probability: {prob:.3f}, Threshold: {threshold:.2f}, Passed: {passed}")
         
         return passed
 
@@ -299,7 +289,8 @@ Generate ONLY the comment: [/INST]"""
         start_time = time.time()
         generated_samples = []
         attempts = 0
-        max_attempts = target_samples * 5  # Allow 5 attempts per target sample
+        max_attempts = target_samples * 10  # Increased max attempts
+        batch_size = min(32, target_samples)
         
         pbar = tqdm(total=target_samples, desc=f"Generating {label} samples")
         
@@ -317,24 +308,20 @@ Generate ONLY the comment: [/INST]"""
                 prompt = self.generate_prompt(seed_text, label)
                 
                 try:
-                    # Log generation attempt
-                    if attempts % 10 == 0:
-                        logger.info(f"Attempt {attempts}: Generated {len(generated_samples)}/{target_samples} samples")
-                    
-                    # Generate text
+                    # Generate text with adjusted parameters
                     inputs = self.llm_tokenizer(prompt, return_tensors="pt", padding=True, 
                                               truncation=True, max_length=256).to(self.llm.device)
                     
                     with torch.no_grad():
                         outputs = self.llm.generate(
                             **inputs,
-                            max_new_tokens=32,
-                            temperature=0.95,
+                            max_new_tokens=48,  # Increased max tokens
+                            temperature=1.0,    # Increased temperature
                             do_sample=True,
-                            top_p=0.92,
-                            top_k=50,
+                            top_p=0.95,        # Increased top_p
+                            top_k=100,         # Increased top_k
                             num_return_sequences=1,
-                            repetition_penalty=1.15,
+                            repetition_penalty=1.2,
                             no_repeat_ngram_size=3,
                             length_penalty=1.0,
                             pad_token_id=self.llm_tokenizer.pad_token_id,
@@ -372,7 +359,7 @@ Generate ONLY the comment: [/INST]"""
                     continue
                 
                 # Clear cache periodically
-                if attempts % 20 == 0:
+                if attempts % 50 == 0:  # Reduced frequency
                     torch.cuda.empty_cache()
                     gc.collect()
         
