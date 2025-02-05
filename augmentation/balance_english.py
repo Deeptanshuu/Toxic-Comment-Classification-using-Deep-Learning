@@ -11,6 +11,7 @@ from sklearn.utils import resample
 # Configure logging
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
+
 timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 log_file = log_dir / f"balance_english_{timestamp}.log"
 
@@ -30,6 +31,10 @@ def analyze_label_distribution(df, lang='en'):
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     lang_df = df[df['lang'] == lang]
     total = len(lang_df)
+    
+    if total == 0:
+        logger.warning(f"No samples found for language {lang.upper()}.")
+        return {}
     
     logger.info(f"\nLabel Distribution for {lang.upper()}:")
     logger.info("-" * 50)
@@ -276,6 +281,9 @@ def balance_english_data():
         logger.error(f"Error during balancing: {str(e)}")
         raise
 
+def main():
+    balance_english_data()
+
 if __name__ == "__main__":
     logger.info("Starting English data balancing process...")
-    balance_english_data() 
+    main() 
