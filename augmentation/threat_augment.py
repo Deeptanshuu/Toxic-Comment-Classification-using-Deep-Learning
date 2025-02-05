@@ -5,6 +5,7 @@ from transformers import (
     AutoModelForSequenceClassification,
     pipeline
 )
+from huggingface_hub import login
 from langdetect import detect
 from presidio_analyzer import AnalyzerEngine
 import pandas as pd
@@ -17,6 +18,7 @@ import gc
 import logging
 from typing import List, Dict, Tuple
 import random
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -33,16 +35,23 @@ class ThreatAugmenter:
         self.device_llm = torch.device("cuda:0")
         self.device_validator = torch.device("cuda:1")
         
+        # HuggingFace authentication
+        if 'HUGGINGFACE_TOKEN' in os.environ:
+            login(token=os.environ['HUGGINGFACE_TOKEN'])
+            logging.info("Authenticated with HuggingFace")
+        else:
+            logging.warning("HUGGINGFACE_TOKEN not found in environment variables")
+        
         logging.info("Initializing models...")
-        # Initialize Mistral-7B on GPU 0
+        # Initialize Llama-2-7b-chat on GPU 0 (open source alternative)
         self.llm = AutoModelForCausalLM.from_pretrained(
-            "mistralai/Mistral-7B-v0.1",
+            "meta-llama/Llama-2-7b-chat-hf",
             device_map="auto",
             torch_dtype=torch.float16,
             load_in_4bit=True,
             trust_remote_code=True
         )
-        self.llm_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+        self.llm_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
         
         # Initialize XLM-RoBERTa on GPU 1
         self.validator = AutoModelForSequenceClassification.from_pretrained(
@@ -71,40 +80,65 @@ class ThreatAugmenter:
                 "source_samples": len(self.en_threat_samples),
                 "temperature": 0.7,
                 "max_length": 100,
-                "batch_size": 32
+                "batch_size": 32,
+                "model": "meta-llama/Llama-2-7b-chat-hf"
             }
         )
     
     def generate_prompt(self, seed_text: str) -> str:
-        """Generate a prompt for threat content generation"""
-        return f"""Generate a threatening comment in English similar to this example, but with different wording and context. Make it contextually appropriate for social media:
+        """Generate a prompt for threat content generation using Llama-2 chat format"""
+        return f"""<s>[INST] Generate a threatening comment in English similar to this example, but with different wording and context. Make it contextually appropriate for social media.
 
 Example: {seed_text}
+
+Requirements:
+1. Must be threatening in nature
+2. Avoid explicit profanity or hate speech
+3. Keep it under 100 words
+4. Do not include any personal identifiable information
+5. Use social media appropriate language [/INST]
 
 Generated threat:"""
 
     @torch.inference_mode()
     def generate_samples(self, prompts: List[str], temperature: float = 0.7) -> List[str]:
-        """Generate samples using Mistral-7B"""
-        inputs = self.llm_tokenizer(
-            prompts, 
-            return_tensors="pt", 
-            padding=True, 
-            truncation=True
-        ).to(self.device_llm)
-        
-        outputs = self.llm.generate(
-            **inputs,
-            max_new_tokens=100,
-            temperature=temperature,
-            do_sample=True,
-            top_p=0.9,
-            top_k=50,
-            num_return_sequences=1,
-            pad_token_id=self.llm_tokenizer.eos_token_id
-        )
-        
-        return self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        """Generate samples using Llama-2"""
+        try:
+            inputs = self.llm_tokenizer(
+                prompts, 
+                return_tensors="pt", 
+                padding=True, 
+                truncation=True,
+                max_length=512  # Llama-2 context length
+            ).to(self.device_llm)
+            
+            outputs = self.llm.generate(
+                **inputs,
+                max_new_tokens=100,
+                temperature=temperature,
+                do_sample=True,
+                top_p=0.9,
+                top_k=50,
+                num_return_sequences=1,
+                pad_token_id=self.llm_tokenizer.eos_token_id,
+                repetition_penalty=1.2
+            )
+            
+            generated_texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            
+            # Clean up the generated texts
+            cleaned_texts = []
+            for text in generated_texts:
+                # Remove the prompt and any system tokens
+                text = text.split("Generated threat:")[-1].strip()
+                text = text.replace("</s>", "").strip()
+                cleaned_texts.append(text)
+            
+            return cleaned_texts
+            
+        except Exception as e:
+            logging.error(f"Error in generate_samples: {str(e)}")
+            return []
     
     @torch.inference_mode()
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
@@ -216,6 +250,12 @@ Generated threat:"""
         return aug_df
 
 if __name__ == "__main__":
+    # Check for HuggingFace token
+    if 'HUGGINGFACE_TOKEN' not in os.environ:
+        print("Please set your HUGGINGFACE_TOKEN environment variable")
+        print("You can get it from https://huggingface.co/settings/tokens")
+        exit(1)
+    
     augmenter = ThreatAugmenter()
     augmented_df = augmenter.augment_dataset()
     print(f"Generated {len(augmented_df)} new EN threat samples") 
