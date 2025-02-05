@@ -174,7 +174,7 @@ class ToxicAugmenter:
         logger.info("✓ Fast validator initialized")
 
     def generate_prompt(self, seed_text: str, label_combo: Dict[str, int]) -> str:
-        """Generate a prompt based on the target label combination"""
+        """Generate a more specific prompt for multi-label toxic content"""
         # Convert label combination to description
         toxicity_types = []
         if label_combo['toxic']:
@@ -190,19 +190,30 @@ class ToxicAugmenter:
         if label_combo['identity_hate']:
             toxicity_types.append('identity-based hate')
         
-        toxicity_desc = ', '.join(toxicity_types)
-        
-        return f"""<s>[INST] Generate a social media comment that is {toxicity_desc}.
+        # Create a more specific prompt based on the combination
+        if len(toxicity_types) > 2:
+            prompt = f"""<s>[INST] Generate a highly offensive social media comment that combines multiple types of toxicity. The comment should be:
+- Extremely {', '.join(toxicity_types[:-1])} and {toxicity_types[-1]}
+- Written in an aggressive, hostile tone
+- Similar in style to this example (but different content): {seed_text}
+- Between 10-30 words long
 
-Reference example (generate something different): {seed_text}
+Generate ONLY the toxic comment, make it intense and realistic: [/INST]"""
+        else:
+            toxicity_desc = ', '.join(toxicity_types)
+            prompt = f"""<s>[INST] Generate an offensive social media comment that is {toxicity_desc}.
 
-Requirements:
-- Make it genuinely {toxicity_desc}
-- Use authentic social media language
-- Keep it under 50 words
-- Must be different from example
+Example tone (generate different content): {seed_text}
+
+Make it:
+- Genuinely {toxicity_desc}
+- Intense and hostile
+- Between 10-30 words
+- Different from the example
 
 Generate ONLY the comment: [/INST]"""
+        
+        return prompt
 
     def flush_buffer(self):
         """Flush the generation buffer to disk"""
@@ -245,9 +256,18 @@ Generate ONLY the comment: [/INST]"""
         # Count how many toxic labels we need
         num_toxic_labels = sum(1 for v in label_combo.values() if v == 1)
         
-        # Adjust thresholds based on number of toxic labels
-        toxic_threshold = max(0.3, 0.5 - (num_toxic_labels * 0.05))  # Lower threshold for multiple labels
-        non_toxic_threshold = min(0.4, 0.3 + (num_toxic_labels * 0.02))  # Slightly relax non-toxic threshold
+        # For multi-label cases (3 or more), use very lenient thresholds
+        if num_toxic_labels >= 3:
+            toxic_threshold = 0.25  # Much lower threshold for multi-label
+            non_toxic_threshold = 0.5  # More lenient for non-toxic in multi-label case
+        else:
+            # For 1-2 labels, use standard thresholds
+            toxic_threshold = max(0.3, 0.5 - (num_toxic_labels * 0.05))
+            non_toxic_threshold = min(0.4, 0.3 + (num_toxic_labels * 0.02))
+        
+        # Log thresholds for debugging
+        if attempts % 10 == 0:
+            logger.debug(f"Using thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
         
         for label in label_combo.keys():
             probs[label] = self.validator.get_probabilities([text], label)[0]
@@ -262,6 +282,7 @@ Generate ONLY the comment: [/INST]"""
         if not all(validation_results.values()):
             logger.debug(f"Validation failed:")
             logger.debug(f"Text: {text}")
+            logger.debug(f"Thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
             logger.debug("Probabilities:")
             for label, prob in probs.items():
                 logger.debug(f"{label}: {prob:.3f} (target: {label_combo[label]}, passed: {validation_results[label]})")
