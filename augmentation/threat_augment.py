@@ -156,19 +156,17 @@ class ThreatAugmenter:
 
     def generate_prompt(self, seed_text: str) -> str:
         """Generate a prompt for realistic threatening content"""
-        return f"""<s>[INST] You are tasked with generating a threatening social media comment. The threat should be realistic and intimidating.
+        return f"""<s>[INST] Generate a threatening social media comment that is realistic and intimidating.
 
-Reference example for tone (generate something different): {seed_text}
+Reference example (generate something different): {seed_text}
 
-Rules:
-- Make it genuinely threatening and hostile
-- Use authentic social media language and slang
-- Include aggressive language that fits naturally
-- Maximum 50 words
-- Must be different from the example
-- Focus on personal threats or intimidation
+Requirements:
+- Make it genuinely threatening
+- Use authentic social media language
+- Keep it under 50 words
+- Must be different from example
 
-Generate only the threatening comment, nothing else: [/INST]"""
+Generate ONLY the comment: [/INST]"""
 
     def log_generation(self, seed_text: str, prompt: str, generated_text: str, is_valid: bool):
         """Log generation details to JSONL file"""
@@ -200,57 +198,47 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=100,
-                    temperature=0.9,
+                    temperature=0.95,  # Slightly increased for more variety
                     do_sample=True,
-                    top_p=0.85,
-                    top_k=40,
+                    top_p=0.92,
+                    top_k=50,
                     num_return_sequences=1,
-                    repetition_penalty=1.2,
+                    repetition_penalty=1.15,
                     pad_token_id=self.llm_tokenizer.pad_token_id,
-                    eos_token_id=self.llm_tokenizer.eos_token_id,
-                    use_cache=True
+                    eos_token_id=self.llm_tokenizer.eos_token_id
                 )
                 
-                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)  # Changed to False to keep special tokens
                 cleaned_texts = []
                 
                 for idx, text in enumerate(texts):
                     logger.info(f"\nRaw output {idx+1}:\n{text}\n")
                     
-                    if "[/INST]" in text:
-                        response = text.split("[/INST]")[-1].strip()
-                        logger.info(f"After [/INST] split:\n{response}\n")
+                    # Extract response between [/INST] and </s>
+                    if "[/INST]" in text and "</s>" in text:
+                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
+                        logger.info(f"After extraction:\n{response}\n")
                         
-                        # Clean up the response
-                        response = response.replace('"', '').replace("'", "").strip()
-                        logger.info(f"After quote removal:\n{response}\n")
+                        # Basic cleanup
+                        response = response.strip().strip('"').strip("'")
                         
-                        # Remove emojis and hashtags
-                        words = []
-                        for word in response.split():
-                            if not word.startswith('#') and not any(char in word for char in ['😈', '🔥', '👀', '💀', '⚡️', '🔫', '🚫', '💣']):
-                                words.append(word)
-                        response = ' '.join(words)
-                        logger.info(f"After emoji/hashtag removal:\n{response}\n")
-                        
-                        # Relaxed validation criteria
-                        if (len(response.split()) >= 3 and  # Reduced minimum words
+                        # Validation criteria
+                        word_count = len(response.split())
+                        if (word_count >= 3 and word_count <= 50 and
                             not any(x in response.lower() for x in [
-                                "make it genuinely",
-                                "generate only",
-                                "you are tasked",
-                                "rules:",
-                                "reference example",
+                                "generate",
+                                "requirements:",
+                                "reference",
                                 "[inst]",
-                                "[/inst]"
+                                "example"
                             ])):
                             
                             cleaned_texts.append(response)
                             logger.info(f"✓ Valid response {idx+1} accepted\n")
                         else:
-                            logger.info(f"✗ Response {idx+1} rejected - Failed validation criteria\n")
+                            logger.info(f"✗ Response {idx+1} rejected - Length: {word_count} words\n")
                     else:
-                        logger.info(f"✗ Response {idx+1} rejected - No [/INST] tag found\n")
+                        logger.info(f"✗ Response {idx+1} rejected - Invalid format\n")
                 
                 logger.info(f"Generated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
                 return cleaned_texts
