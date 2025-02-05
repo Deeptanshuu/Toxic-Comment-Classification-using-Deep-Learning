@@ -64,30 +64,69 @@ def calculate_required_samples(df):
     return required_samples
 
 def generate_balanced_samples(df, required_samples):
-    """Generate samples maintaining label distribution"""
+    """Generate samples with strategic oversampling for better class balance"""
     logger.info("\nGenerating balanced samples...")
     
     # Get English samples
     en_df = df[df['lang'] == 'en']
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Calculate target counts for each label combination
+    # Define class weights based on analysis
+    # These weights help boost underrepresented classes
+    CLASS_WEIGHTS = {
+        'toxic': 1.03,  # Slight boost
+        'severe_toxic': 1.5,  # Moderate boost
+        'obscene': 1.0,  # No change needed
+        'threat': 2.01,  # Significant boost
+        'insult': 1.0,  # No change needed
+        'identity_hate': 1.15  # Small boost
+    }
+    
+    # Calculate label combination frequencies
     label_combinations = en_df.groupby(labels).size()
     total_en = len(en_df)
-    target_counts = (label_combinations / total_en * required_samples).round().astype(int)
+    
+    # Calculate weighted target counts for each combination
+    target_counts = pd.Series(0, index=label_combinations.index)
+    for combo_labels in label_combinations.index:
+        # Convert tuple to dict for easier handling
+        combo_dict = dict(zip(labels, combo_labels))
+        
+        # Calculate weight multiplier based on present labels
+        weight_multiplier = 1.0
+        present_labels = [label for label, value in combo_dict.items() if value == 1]
+        if present_labels:
+            # Use maximum weight among present labels
+            weight_multiplier = max(CLASS_WEIGHTS[label] for label in present_labels)
+        
+        # Calculate weighted count
+        base_count = (label_combinations[combo_labels] / total_en * required_samples)
+        target_counts[combo_labels] = round(base_count * weight_multiplier)
+    
+    logger.info("\nTarget sample counts after weighting:")
+    total_weighted = 0
+    for combo_labels, count in target_counts.items():
+        if count > 0:
+            combo_dict = dict(zip(labels, combo_labels))
+            present_labels = [label for label, value in combo_dict.items() if value == 1]
+            logger.info(f"Labels: {', '.join(present_labels) if present_labels else 'None'}")
+            logger.info(f"Count: {count:,}")
+            total_weighted += count
+    logger.info(f"\nTotal weighted samples to generate: {total_weighted:,}")
     
     augmented_samples = []
     augmenter = ToxicAugmenter()
     
     # Generate samples for each label combination
-    for label_combo, target_count in target_counts.items():
+    for combo_labels, target_count in target_counts.items():
         if target_count == 0:
             continue
             
-        logger.info(f"\nGenerating {target_count} samples for combination:")
-        combo_dict = dict(zip(labels, label_combo))
-        for label, value in combo_dict.items():
-            logger.info(f"  {label}: {value}")
+        combo_dict = dict(zip(labels, combo_labels))
+        present_labels = [label for label, value in combo_dict.items() if value == 1]
+        
+        logger.info(f"\nGenerating {target_count:,} samples for combination:")
+        logger.info(f"Labels: {', '.join(present_labels) if present_labels else 'None'}")
         
         # Get seed texts with this label combination
         mask = pd.Series(True, index=en_df.index)
@@ -108,11 +147,22 @@ def generate_balanced_samples(df, required_samples):
         
         if new_samples is not None and not new_samples.empty:
             augmented_samples.append(new_samples)
+            logger.info(f"✓ Generated {len(new_samples):,} samples")
+        else:
+            logger.warning("Failed to generate samples for this combination")
     
     # Combine all generated samples
     if augmented_samples:
         augmented_df = pd.concat(augmented_samples, ignore_index=True)
         augmented_df['lang'] = 'en'
+        
+        # Log final class distribution
+        logger.info("\nFinal class distribution in generated samples:")
+        for label in labels:
+            count = augmented_df[label].sum()
+            percentage = (count / len(augmented_df)) * 100
+            logger.info(f"{label}: {count:,} ({percentage:.2f}%)")
+        
         return augmented_df
     else:
         raise Exception("Failed to generate any valid samples")
