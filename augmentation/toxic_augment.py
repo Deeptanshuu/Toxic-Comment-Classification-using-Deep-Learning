@@ -190,15 +190,33 @@ class ToxicAugmenter:
         if label_combo['identity_hate']:
             toxicity_types.append('identity-based hate')
         
-        # Create a more specific prompt based on the combination
-        if len(toxicity_types) > 2:
+        # Special case for all 6 labels
+        if len(toxicity_types) == 6:
+            prompt = f"""<s>[INST] Generate an extremely toxic social media comment that combines ALL of these elements:
+1. Severe toxicity and obscenity
+2. Direct threats of violence
+3. Personal insults
+4. Identity-based hate speech
+
+Requirements:
+- Make it genuinely hostile and aggressive
+- Include clear threats
+- Use obscene language
+- Target specific identities
+- Keep it between 15-25 words
+- Different content than this example: {seed_text}
+
+Generate ONLY the toxic comment: [/INST]"""
+        
+        # Regular multi-label case
+        elif len(toxicity_types) > 2:
             prompt = f"""<s>[INST] Generate a highly offensive social media comment that combines multiple types of toxicity. The comment should be:
 - Extremely {', '.join(toxicity_types[:-1])} and {toxicity_types[-1]}
 - Written in an aggressive, hostile tone
 - Similar in style to this example (but different content): {seed_text}
 - Between 10-30 words long
 
-Generate ONLY the toxic comment, make it intense and realistic: [/INST]"""
+Generate ONLY the toxic comment: [/INST]"""
         else:
             toxicity_desc = ', '.join(toxicity_types)
             prompt = f"""<s>[INST] Generate an offensive social media comment that is {toxicity_desc}.
