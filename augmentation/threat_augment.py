@@ -2,7 +2,8 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    AutoModelForSequenceClassification
+    AutoModelForSequenceClassification,
+    BitsAndBytesConfig
 )
 from langdetect import detect
 import pandas as pd
@@ -135,10 +136,14 @@ class ThreatAugmenter:
         # Configure model for multi-GPU
         self.llm = AutoModelForCausalLM.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
-            device_map="balanced",  # Automatically balance across GPUs
+            device_map="balanced",  # Ensures proper dual GPU usage
             torch_dtype=torch.float16,
             load_in_4bit=True,
-            max_memory={i: f"{int(torch.cuda.get_device_properties(i).total_memory * 0.85 / 1024**2)}MiB" for i in range(self.num_gpus)}
+            max_memory={0: "22GB", 1: "22GB"},  # Explicitly set memory limits for each GPU
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16
+            )
         )
         
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
@@ -164,9 +169,9 @@ class ThreatAugmenter:
         logger.info(f"Found {len(self.en_threat_samples)} EN threat samples")
         
         # Optimize batch processing
-        self.max_batch_size = 16  # Increased batch size
-        self.prefetch_factor = 2
-        self.num_workers = 4
+        self.max_batch_size = 48  # Increased batch size
+        self.prefetch_factor = 4
+        self.num_workers = 8
         
         # Memory cleanup
         torch.cuda.empty_cache()
@@ -175,7 +180,8 @@ class ThreatAugmenter:
 
     def generate_prompt(self, seed_text: str) -> str:
         """Generate a prompt for realistic threatening content"""
-        return f"""<s>[INST] Generate a threatening social media comment that is realistic and intimidating.
+        return f"""
+Generate a threatening social media comment that is realistic and intimidating.
 
 Reference example (generate something different): {seed_text}
 
@@ -185,7 +191,8 @@ Requirements:
 - Keep it under 50 words
 - Must be different from example
 
-Generate ONLY the comment: [/INST]"""
+Generate ONLY the comment: 
+"""
 
     def flush_buffer(self):
         """Flush the generation buffer to disk"""
@@ -231,7 +238,7 @@ Generate ONLY the comment: [/INST]"""
                 # Optimize generation parameters
                 outputs = self.llm.generate(
                     **inputs,
-                    max_new_tokens=100,
+                    max_new_tokens=32,
                     temperature=0.95,
                     do_sample=True,
                     top_p=0.92,
@@ -271,6 +278,11 @@ Generate ONLY the comment: [/INST]"""
                 
                 success_rate = len(cleaned_texts) / len(texts) * 100
                 logger.info(f"\nGeneration Success: {len(cleaned_texts)}/{len(texts)} ({success_rate:.1f}%)")
+                
+                # Batch the logging:
+                if idx % 24 == 0:  # Log every 24 samples instead of every sample
+                    logger.info(f"Processed {idx}/{len(texts)} samples...")
+                
                 return cleaned_texts
             
         except Exception as e:
