@@ -376,8 +376,6 @@ Generate ONLY the comment: [/INST]"""
         start_time = time.time()
         timeout_seconds = min(timeout_minutes * 60, 300)  # Hard limit of 5 minutes
         total_generated = 0
-        consecutive_failures = 0
-        max_consecutive_failures = 3
         
         # Create progress bar
         pbar = tqdm(
@@ -396,11 +394,6 @@ Generate ONLY the comment: [/INST]"""
                     logger.warning(f"Time limit reached after {elapsed_time/60:.1f} minutes")
                     break
                 
-                # Check consecutive failures
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.warning(f"Stopping after {consecutive_failures} consecutive failures")
-                    break
-                
                 # Calculate remaining samples needed
                 remaining = target_samples - total_generated
                 current_batch_size = min(batch_size, remaining)
@@ -416,9 +409,6 @@ Generate ONLY the comment: [/INST]"""
                 new_samples = self.generate_samples(prompts, batch_seeds, label_combo)
                 
                 if new_samples is not None and not new_samples.empty:
-                    # Reset consecutive failures on success
-                    consecutive_failures = 0
-                    
                     # Ensure we don't exceed target count
                     if len(new_samples) > remaining:
                         new_samples = new_samples.head(remaining)
@@ -439,12 +429,8 @@ Generate ONLY the comment: [/INST]"""
                     pbar.set_postfix({
                         'rate': f'{rate:.1f}/min',
                         'batch': f'{batch_time:.1f}s',
-                        'remain': f'{time_remaining:.0f}s',
-                        'fail': consecutive_failures
+                        'remain': f'{time_remaining:.0f}s'
                     }, refresh=True)
-                else:
-                    consecutive_failures += 1
-                    logger.warning(f"Failed generation attempt ({consecutive_failures}/{max_consecutive_failures})")
                 
                 # Memory management
                 if total_generated % (batch_size * 2) == 0:
