@@ -161,182 +161,253 @@ def train(model, train_loader, val_loader, config):
     )
     
     scaler = GradScaler(enabled=config.fp16)
-    metrics = config.metrics
+    metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
     
     # Initialize progress tracking
     best_auc = 0.0
     train_start_time = time.time()
+    global_step = 0
     
     print("\n" + "="*80)
     print(f"Starting training for {config.epochs} epochs...")
     print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
     print("="*80 + "\n")
     
-    for epoch in range(config.epochs):
-        model.train()
-        running_loss = 0.0
-        total_loss = 0.0
-        num_batches = 0
-        epoch_start = time.time()
-        
-        # Initialize per-class metrics
-        class_losses = {label: 0.0 for label in config.toxicity_labels}
-        class_counts = {label: 0 for label in config.toxicity_labels}
-        
-        eta = metrics.get_eta(epoch, config.epochs)
-        print(f"\nEpoch {epoch+1}/{config.epochs}")
-        print(f"{'='*40} Training {'='*40}")
-        
-        optimizer.zero_grad()
-        
-        for batch_idx, batch in enumerate(train_loader):
-            if batch_idx % config.gc_frequency == 0:
-                torch.cuda.empty_cache()
+    try:
+        for epoch in range(config.epochs):
+            model.train()
+            running_loss = 0.0
+            total_loss = 0.0
+            num_batches = 0
+            epoch_start = time.time()
             
-            inputs = {
-                'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
-                'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
-                'labels': batch['labels'].to(config.device, non_blocking=True)
+            # Initialize per-class metrics
+            class_losses = {label: 0.0 for label in config.toxicity_labels}
+            class_counts = {label: 0 for label in config.toxicity_labels}
+            
+            # Calculate ETA (handle first epoch gracefully)
+            if epoch == 0:
+                eta = "Calculating..."
+            else:
+                eta = metrics_tracker.get_eta(epoch, config.epochs)
+            
+            print(f"\nEpoch {epoch+1}/{config.epochs}")
+            print(f"{'='*40} Training {'='*40}")
+            
+            optimizer.zero_grad()
+            
+            # Track batch-level metrics for wandb
+            batch_metrics = {
+                'train/batch_loss': [],
+                'train/learning_rate': [],
+                'train/grad_norm': []
             }
             
-            # Forward pass
-            with autocast(enabled=config.fp16):
-                outputs = model(**inputs)
-                # Get weights for current batch
-                batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
-                # Apply weights to each sample's loss and take mean
-                weighted_loss = outputs.loss * batch_weights
-                loss = weighted_loss.mean() / config.grad_accum_steps
-            
-            # Track per-class losses
-            with torch.no_grad():
-                for i, label in enumerate(config.toxicity_labels):
-                    class_losses[label] += weighted_loss[i].item()
-                    class_counts[label] += 1
-            
-            # Backward pass
-            scaler.scale(loss).backward()
-            
-            running_loss += loss.item() * config.grad_accum_steps
-            total_loss += loss.item() * config.grad_accum_steps
-            num_batches += 1
-            
-            if (batch_idx + 1) % config.grad_accum_steps == 0:
-                scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
-                optimizer.zero_grad()
+            for batch_idx, batch in enumerate(train_loader):
+                if batch_idx % config.gc_frequency == 0:
+                    torch.cuda.empty_cache()
                 
-                avg_loss = running_loss / config.grad_accum_steps
-                running_loss = 0.0
-            
-                if batch_idx % 50 == 0:
-                    progress = batch_idx / len(train_loader)
-                    batch_time = time.time() - epoch_start
-                    batch_eta = str(timedelta(seconds=int(
-                        (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
-                    )))
-                    
-                    # Get GPU stats
-                    gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
-                    
-                    # Log detailed metrics to wandb
-                    log_dict = {
-                        'train/loss': avg_loss,
-                        'train/lr': scheduler.get_last_lr()[0],
-                        'train/progress': progress * 100,
-                        'train/epoch': epoch + progress,
-                        'train/grad_norm': grad_norm.item(),
-                        'train/batch_size': config.batch_size,
-                        'train/steps': batch_idx,
-                        'time/batch_eta': batch_eta,
-                        'time/training_eta': eta,
-                        'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
-                        'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
+                try:
+                    # Move batch to device
+                    inputs = {
+                        'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
+                        'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
+                        'labels': batch['labels'].to(config.device, non_blocking=True)
                     }
                     
-                    # Add GPU metrics if available
-                    if gpu_stats:
-                        log_dict.update({
-                            'system/gpu_util': gpu_stats['utilization'],
-                            'system/gpu_mem': gpu_stats['memory'],
-                            'system/gpu_temp': gpu_stats['temperature']
-                        })
+                    # Forward pass
+                    with autocast(enabled=config.fp16):
+                        outputs = model(**inputs)
+                        # Get weights for current batch and ensure proper shape
+                        batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
+                        
+                        # Ensure proper shape for loss weighting
+                        if outputs.loss.dim() == 2:  # If loss is per class
+                            weighted_loss = outputs.loss * batch_weights.unsqueeze(0)  # [B, C]
+                        else:  # If loss is already reduced
+                            weighted_loss = outputs.loss * batch_weights  # [C]
+                            
+                        loss = weighted_loss.mean() / config.grad_accum_steps
                     
-                    # Add per-class losses
-                    for label in config.toxicity_labels:
-                        if class_counts[label] > 0:
-                            log_dict[f'train/loss_{label}'] = class_losses[label] / class_counts[label]
+                    # Track per-class losses safely
+                    with torch.no_grad():
+                        if weighted_loss.dim() == 2:  # [B, C]
+                            class_wise_loss = weighted_loss.mean(dim=0)  # Average over batch
+                        else:  # [C]
+                            class_wise_loss = weighted_loss
+                            
+                        for i, label in enumerate(config.toxicity_labels):
+                            if i < class_wise_loss.size(0):  # Ensure index is valid
+                                class_losses[label] += class_wise_loss[i].item()
+                                class_counts[label] += 1
                     
-                    wandb.log(log_dict)
+                    # Backward pass
+                    scaler.scale(loss).backward()
                     
-                    # Print progress with better formatting
-                    print(
-                        f"\r[{batch_idx:>5}/{len(train_loader)}] "
-                        f"Loss: {avg_loss:.4f} | "
-                        f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-                        f"GN: {grad_norm.item():.2f} | "
-                        f"BT: {batch_eta} | "
-                        f"ETA: {eta}",
-                        end="", flush=True
+                    running_loss += loss.item() * config.grad_accum_steps
+                    total_loss += loss.item() * config.grad_accum_steps
+                    num_batches += 1
+                    global_step += 1
+                    
+                    if (batch_idx + 1) % config.grad_accum_steps == 0:
+                        scaler.unscale_(optimizer)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        
+                        avg_loss = running_loss / config.grad_accum_steps
+                        running_loss = 0.0
+                        
+                        # Track batch metrics
+                        batch_metrics['train/batch_loss'].append(avg_loss)
+                        batch_metrics['train/learning_rate'].append(scheduler.get_last_lr()[0])
+                        batch_metrics['train/grad_norm'].append(grad_norm.item())
+                    
+                        if batch_idx % 50 == 0:
+                            progress = batch_idx / len(train_loader)
+                            batch_time = time.time() - epoch_start
+                            batch_eta = str(timedelta(seconds=int(
+                                (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
+                            )))
+                            
+                            # Get GPU stats
+                            try:
+                                gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
+                            except Exception as e:
+                                print(f"Warning: Could not get GPU stats: {str(e)}")
+                                gpu_stats = None
+                            
+                            # Log detailed metrics to wandb
+                            log_dict = {
+                                'train/loss': avg_loss,
+                                'train/lr': scheduler.get_last_lr()[0],
+                                'train/progress': progress * 100,
+                                'train/epoch': epoch + progress,
+                                'train/grad_norm': grad_norm.item(),
+                                'train/batch_size': config.batch_size,
+                                'train/global_step': global_step,
+                                'time/batch_eta': batch_eta,
+                                'time/training_eta': eta,
+                                'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
+                                'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
+                            }
+                            
+                            # Add GPU metrics if available
+                            if gpu_stats:
+                                log_dict.update({
+                                    'system/gpu_util': gpu_stats['utilization'],
+                                    'system/gpu_mem': gpu_stats['memory'],
+                                    'system/gpu_temp': gpu_stats['temperature']
+                                })
+                            
+                            # Add per-class losses
+                            for label in config.toxicity_labels:
+                                if class_counts[label] > 0:
+                                    log_dict[f'train/loss_{label}'] = class_losses[label] / class_counts[label]
+                            
+                            try:
+                                wandb.log(log_dict, step=global_step)
+                            except Exception as e:
+                                print(f"Warning: Failed to log to wandb: {str(e)}")
+                            
+                            # Print progress with better formatting
+                            print(
+                                f"\r[{batch_idx:>5}/{len(train_loader)}] "
+                                f"Loss: {avg_loss:.4f} | "
+                                f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+                                f"GN: {grad_norm.item():.2f} | "
+                                f"BT: {batch_eta} | "
+                                f"ETA: {eta}",
+                                end="", flush=True
+                            )
+                
+                except Exception as e:
+                    print(f"\nError processing batch {batch_idx}: {str(e)}")
+                    continue
+            
+            # End of epoch
+            epoch_time = time.time() - epoch_start
+            epoch_avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
+            
+            metrics_tracker.update_time(epoch_time)
+            metrics_tracker.update_train(epoch_avg_loss)
+            
+            # Log epoch-level batch statistics
+            try:
+                wandb.log({
+                    'train/epoch_avg_loss': np.mean(batch_metrics['train/batch_loss']),
+                    'train/epoch_avg_lr': np.mean(batch_metrics['train/learning_rate']),
+                    'train/epoch_avg_grad_norm': np.mean(batch_metrics['train/grad_norm']),
+                    'train/epoch': epoch + 1
+                }, step=global_step)
+            except Exception as e:
+                print(f"Warning: Failed to log epoch metrics to wandb: {str(e)}")
+            
+            # Validation
+            print(f"\n\n{'='*40} Validation {'='*40}")
+            model.eval()
+            val_metrics = evaluate(model, val_loader, config)
+            
+            # Update metrics and save if best
+            is_best = metrics_tracker.update_validation(val_metrics)
+            if is_best:
+                try:
+                    save_checkpoint(
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        scaler=scaler,
+                        epoch=epoch,
+                        metrics=val_metrics,
+                        config=config,
+                        is_best=True
                     )
-        
-        # End of epoch
-        epoch_time = time.time() - epoch_start
-        epoch_avg_loss = total_loss / num_batches
-        
-        metrics.update_time(epoch_time)
-        metrics.update_train(epoch_avg_loss)
-        
-        # Validation
-        print(f"\n\n{'='*40} Validation {'='*40}")
-        model.eval()
-        val_metrics = evaluate(model, val_loader, config)
-        
-        # Update metrics and save if best
-        is_best = metrics.update_validation(val_metrics)
-        if is_best:
-            save_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                epoch=epoch,
-                metrics=val_metrics,
-                config=config,
-                is_best=True
-            )
-            print(f"\n🏆 New best model! AUC: {val_metrics['auc']:.4f}")
-        
-        # Log epoch metrics
-        epoch_metrics = {
-            'val/auc': val_metrics['auc'],
-            'val/loss': val_metrics['loss'],
-            'val/f1': val_metrics['f1'],
-            'train/epoch_loss': epoch_avg_loss,
-            'time/epoch_minutes': epoch_time / 60,
-            'epoch': epoch + 1
-        }
-        
-        # Add per-class validation metrics
-        for label, metrics in val_metrics['class_metrics'].items():
-            for metric_name, value in metrics.items():
-                epoch_metrics[f'val/{label}/{metric_name}'] = value
-        
-        wandb.log(epoch_metrics)
-        
-        # Print epoch summary
-        print(f"\nEpoch {epoch+1} Summary:")
-        print(f"{'='*80}")
-        print(f"Training Loss: {epoch_avg_loss:.4f}")
-        print(f"Validation - AUC: {val_metrics['auc']:.4f}, Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}")
-        print(f"Time: {epoch_time/60:.2f}m ({str(timedelta(seconds=int(epoch_time)))})")
-        print(f"{'='*80}\n")
-        
-        # Memory cleanup
+                    print(f"\n🏆 New best model! AUC: {val_metrics['auc']:.4f}")
+                except Exception as e:
+                    print(f"Warning: Failed to save checkpoint: {str(e)}")
+            
+            # Log epoch metrics
+            epoch_metrics = {
+                'val/auc': val_metrics['auc'],
+                'val/loss': val_metrics['loss'],
+                'val/f1': val_metrics['f1'],
+                'train/epoch_loss': epoch_avg_loss,
+                'time/epoch_minutes': epoch_time / 60,
+                'epoch': epoch + 1
+            }
+            
+            # Add per-class validation metrics
+            for label, metrics in val_metrics['class_metrics'].items():
+                for metric_name, value in metrics.items():
+                    epoch_metrics[f'val/{label}/{metric_name}'] = value
+            
+            try:
+                wandb.log(epoch_metrics, step=global_step)
+            except Exception as e:
+                print(f"Warning: Failed to log validation metrics to wandb: {str(e)}")
+            
+            # Print epoch summary
+            print(f"\nEpoch {epoch+1} Summary:")
+            print(f"{'='*80}")
+            print(f"Training Loss: {epoch_avg_loss:.4f}")
+            print(f"Validation - AUC: {val_metrics['auc']:.4f}, Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}")
+            print(f"Time: {epoch_time/60:.2f}m ({str(timedelta(seconds=int(epoch_time)))})")
+            print(f"{'='*80}\n")
+            
+            # Memory cleanup
+            torch.cuda.empty_cache()
+            gc.collect()
+    
+    except Exception as e:
+        print(f"\nTraining failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        # Cleanup
         torch.cuda.empty_cache()
         gc.collect()
 
