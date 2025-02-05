@@ -284,7 +284,7 @@ Generate ONLY the comment: [/INST]"""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
+    def augment_dataset(self, target_samples: int = 500, batch_size: int = 32):
         """Main augmentation loop with progress bar and CSV saving"""
         try:
             start_time = time.time()
