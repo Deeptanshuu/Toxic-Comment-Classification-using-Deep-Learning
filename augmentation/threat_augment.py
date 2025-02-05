@@ -23,11 +23,10 @@ logging.basicConfig(
 )
 
 def print_with_delay(message: str, delay: float = 0.5):
-    """Print message with a delay and clear formatting"""
+    """Print message with clear formatting"""
     print("\n" + "="*80)
     print(message)
     print("="*80)
-    time.sleep(delay)
 
 # Create a log directory
 log_dir = Path("logs")
@@ -122,9 +121,9 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=100,
-                    temperature=0.95,  # Increased for more variety
+                    temperature=0.95,
                     do_sample=True,
-                    top_p=0.92,  # Slightly increased
+                    top_p=0.92,
                     top_k=50,
                     num_return_sequences=1,
                     repetition_penalty=1.15,
@@ -136,15 +135,34 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 # Clean up generated texts
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
                 cleaned_texts = []
+                
                 for text in texts:
-                    # Remove the instruction part and clean up
-                    text = text.split("[/INST]")[-1].strip()
-                    # Remove any remaining prompt artifacts
-                    text = text.replace("[INST]", "").replace("</s>", "").strip()
-                    text = text.replace("Generate only the threatening comment, nothing else:", "").strip()
-                    # Remove any leading/trailing quotes and cleanup
-                    text = text.strip('"').strip("'").strip()
-                    cleaned_texts.append(text)
+                    # Extract only the generated response after [/INST]
+                    response = text.split("[/INST]")[-1].strip()
+                    
+                    # Remove any remaining instruction artifacts
+                    response = response.replace("[INST]", "").replace("</s>", "").strip()
+                    response = response.replace("Generate only the threatening comment, nothing else:", "").strip()
+                    
+                    # Remove any quotes and cleanup
+                    response = response.strip('"').strip("'").strip()
+                    
+                    # Remove the prompt if it got repeated
+                    if "You are tasked with generating" in response:
+                        response = response.split("Generate only the threatening comment, nothing else:")[-1].strip()
+                    if "Rules:" in response:
+                        response = response.split("Rules:")[-1].strip()
+                    if "Reference example" in response:
+                        response = response.split("Reference example")[-1].strip()
+                        
+                    # Final cleanup of any remaining artifacts
+                    response = response.strip('"-').strip()
+                    
+                    # Skip if the response is too short or still contains prompt artifacts
+                    if len(response.split()) < 5 or "Make it genuinely" in response:
+                        continue
+                        
+                    cleaned_texts.append(response)
                 
                 return cleaned_texts
             
@@ -196,8 +214,8 @@ Generate only the threatening comment, nothing else: [/INST]"""
     
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 8):
         """Main augmentation loop with detailed logging"""
-        print_with_delay(f"Starting augmentation to generate {target_samples} samples", delay=1)
-        print_with_delay(f"Logging details to: {self.log_file}", delay=1)
+        print_with_delay(f"Starting augmentation to generate {target_samples} samples")
+        print_with_delay(f"Logging details to: {self.log_file}")
         
         generated_samples = []
         pbar = tqdm(total=target_samples, desc="Generating samples")
@@ -216,8 +234,8 @@ Generate only the threatening comment, nothing else: [/INST]"""
             
             # Print sample prompt occasionally with clear formatting
             if generation_stats["total_attempts"] % 50 == 0:
-                print_with_delay("\nExample Prompt:", delay=1)
-                print_with_delay(prompts[0], delay=2)
+                print_with_delay("\nExample Prompt:")
+                print_with_delay(prompts[0])
             
             # Generate new samples
             new_samples = self.generate_samples(prompts)
@@ -242,9 +260,9 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 self.log_generation(seed, prompt, generated, is_valid)
                 
                 if is_valid:
-                    print_with_delay("\nGenerated Valid Sample:", delay=1)
-                    print_with_delay(f"Seed: {seed[:100]}...", delay=1)
-                    print_with_delay(f"Generated: {generated}", delay=2)
+                    print_with_delay("\nGenerated Valid Sample:")
+                    print_with_delay(f"Seed: {seed[:100]}...")
+                    print_with_delay(f"Generated: {generated}")
             
             # Add to collection
             generated_samples.extend(final_samples)
@@ -254,35 +272,33 @@ Generate only the threatening comment, nothing else: [/INST]"""
             # Print batch stats with clear formatting
             if final_samples:
                 success_rate = len(final_samples) / batch_size * 100
-                print_with_delay("\nBatch Statistics:", delay=1)
+                print_with_delay("\nBatch Statistics:")
                 print_with_delay(
                     f"Success Rate: {len(final_samples)}/{batch_size} ({success_rate:.1f}%)\n"
                     f"Total Attempts: {generation_stats['total_attempts']}\n"
                     f"Valid Samples: {generation_stats['valid_samples']}\n"
                     f"Failed Toxicity: {generation_stats['invalid_toxicity']}\n"
                     f"Failed Language: {generation_stats['invalid_language']}\n"
-                    f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%",
-                    delay=2
+                    f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%"
                 )
             
             # Memory cleanup every 5 batches
             if len(generated_samples) % (batch_size * 5) == 0:
-                print_with_delay("Cleaning up memory...", delay=0.5)
+                print_with_delay("Cleaning up memory...")
                 torch.cuda.empty_cache()
                 gc.collect()
         
         pbar.close()
         
         # Final statistics with clear formatting
-        print_with_delay("\nGeneration Complete!", delay=1)
+        print_with_delay("\nGeneration Complete!")
         print_with_delay(
             f"Final Statistics:\n"
             f"Total Attempts: {generation_stats['total_attempts']}\n"
             f"Valid Samples: {generation_stats['valid_samples']}\n"
             f"Failed Toxicity: {generation_stats['invalid_toxicity']}\n"
             f"Failed Language: {generation_stats['invalid_language']}\n"
-            f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%",
-            delay=2
+            f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%"
         )
         
         # Save results
@@ -305,7 +321,7 @@ Generate only the threatening comment, nothing else: [/INST]"""
         output_file = output_path / f"en_threat_augmented_{timestamp}.csv"
         stats_file = log_dir / f"generation_stats_{timestamp}.json"
         
-        print_with_delay("Saving outputs...", delay=1)
+        print_with_delay("Saving outputs...")
         aug_df.to_csv(output_file, index=False)
         with open(stats_file, 'w') as f:
             json.dump(generation_stats, f, indent=2)
@@ -314,8 +330,7 @@ Generate only the threatening comment, nothing else: [/INST]"""
             f"Outputs saved to:\n"
             f"- Dataset: {output_file}\n"
             f"- Logs: {self.log_file}\n"
-            f"- Stats: {stats_file}",
-            delay=2
+            f"- Stats: {stats_file}"
         )
         
         return aug_df
