@@ -1,6 +1,6 @@
 import torch
 from transformers import (
-    AutoModelForCausalLM, 
+    AutoModelForSeq2SeqLM,  # Changed for T5
     AutoTokenizer,
     AutoModelForSequenceClassification,
     pipeline
@@ -43,15 +43,14 @@ class ThreatAugmenter:
             logging.warning("HUGGINGFACE_TOKEN not found in environment variables")
         
         logging.info("Initializing models...")
-        # Initialize Llama-2-7b-chat on GPU 0 (open source alternative)
-        self.llm = AutoModelForCausalLM.from_pretrained(
-            "meta-llama/Llama-2-7b-chat-hf",
+        # Initialize FLAN-T5-XL on GPU 0 (fully open source)
+        self.llm = AutoModelForSeq2SeqLM.from_pretrained(
+            "google/flan-t5-xl",
             device_map="auto",
             torch_dtype=torch.float16,
-            load_in_4bit=True,
-            trust_remote_code=True
+            load_in_8bit=True  # Use 8-bit to save memory
         )
-        self.llm_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+        self.llm_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-xl")
         
         # Initialize XLM-RoBERTa on GPU 1
         self.validator = AutoModelForSequenceClassification.from_pretrained(
@@ -78,38 +77,37 @@ class ThreatAugmenter:
             config={
                 "target_samples": 3000,
                 "source_samples": len(self.en_threat_samples),
-                "temperature": 0.7,
+                "temperature": 0.9,  # Increased for T5
                 "max_length": 100,
                 "batch_size": 32,
-                "model": "meta-llama/Llama-2-7b-chat-hf"
+                "model": "google/flan-t5-xl"
             }
         )
     
     def generate_prompt(self, seed_text: str) -> str:
-        """Generate a prompt for threat content generation using Llama-2 chat format"""
-        return f"""<s>[INST] Generate a threatening comment in English similar to this example, but with different wording and context. Make it contextually appropriate for social media.
+        """Generate a prompt for threat content generation using T5 format"""
+        return f"""Task: Generate a threatening comment in English similar to the example below.
+Requirements: 
+- Must be threatening
+- Avoid explicit profanity
+- Keep it under 100 words
+- No personal information
+- Use social media style
 
-Example: {seed_text}
+Example threat: {seed_text}
 
-Requirements:
-1. Must be threatening in nature
-2. Avoid explicit profanity or hate speech
-3. Keep it under 100 words
-4. Do not include any personal identifiable information
-5. Use social media appropriate language [/INST]
-
-Generated threat:"""
+Generate new threat:"""
 
     @torch.inference_mode()
-    def generate_samples(self, prompts: List[str], temperature: float = 0.7) -> List[str]:
-        """Generate samples using Llama-2"""
+    def generate_samples(self, prompts: List[str], temperature: float = 0.9) -> List[str]:
+        """Generate samples using FLAN-T5"""
         try:
             inputs = self.llm_tokenizer(
                 prompts, 
                 return_tensors="pt", 
                 padding=True, 
                 truncation=True,
-                max_length=512  # Llama-2 context length
+                max_length=256  # T5 input length
             ).to(self.device_llm)
             
             outputs = self.llm.generate(
@@ -117,11 +115,12 @@ Generated threat:"""
                 max_new_tokens=100,
                 temperature=temperature,
                 do_sample=True,
-                top_p=0.9,
+                top_p=0.92,
                 top_k=50,
                 num_return_sequences=1,
-                pad_token_id=self.llm_tokenizer.eos_token_id,
-                repetition_penalty=1.2
+                repetition_penalty=1.3,
+                length_penalty=0.8,
+                early_stopping=True
             )
             
             generated_texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
@@ -129,9 +128,9 @@ Generated threat:"""
             # Clean up the generated texts
             cleaned_texts = []
             for text in generated_texts:
-                # Remove the prompt and any system tokens
-                text = text.split("Generated threat:")[-1].strip()
-                text = text.replace("</s>", "").strip()
+                # Remove any prompt remnants and clean up
+                text = text.replace("Generate new threat:", "").strip()
+                text = text.split("Example threat:")[-1].strip()
                 cleaned_texts.append(text)
             
             return cleaned_texts
