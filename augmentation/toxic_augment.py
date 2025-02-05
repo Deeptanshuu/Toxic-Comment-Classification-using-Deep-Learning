@@ -95,31 +95,11 @@ class FastToxicValidator:
             'vectorizers': self.vectorizers,
             'models': self.models
         }, self.model_path)
-    
-    def validate(self, texts: List[str], label_thresholds: Dict[str, float] = None) -> Dict[str, List[bool]]:
-        """Validate texts for each toxicity type"""
-        if label_thresholds is None:
-            label_thresholds = {
-                'toxic': 0.6,
-                'severe_toxic': 0.7,
-                'obscene': 0.6,
-                'threat': 0.6,
-                'insult': 0.6,
-                'identity_hate': 0.7
-            }
-        
-        results = {}
-        for label, threshold in label_thresholds.items():
-            # Vectorize texts
-            X = self.vectorizers[label].transform(texts)
-            
-            # Get probabilities
-            probs = self.models[label].predict_proba(X)[:, 1]
-            
-            # Apply threshold
-            results[label] = probs >= threshold
-        
-        return results
+
+    def get_probabilities(self, texts: List[str], label: str) -> np.ndarray:
+        """Get raw probabilities for a specific label"""
+        X = self.vectorizers[label].transform(texts)
+        return self.models[label].predict_proba(X)[:, 1]
 
 class ToxicAugmenter:
     def __init__(self):
@@ -155,8 +135,7 @@ class ToxicAugmenter:
             torch_dtype=torch.float16,
             quantization_config=quantization_config,
             max_memory={0: "22GB", 1: "22GB"},
-            use_cache=True,  # Enable KV cache for faster generation
-            config={'pretraining_tp': 1}  # Optimize tensor parallelism
+            use_cache=True  # Enable KV cache for faster generation
         )
         
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
@@ -168,13 +147,9 @@ class ToxicAugmenter:
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
         logger.info("✓ Mistral-7B loaded")
         
-        # Initialize validator with optimized batch size
+        # Initialize validator
         self.validator = FastToxicValidator()
         logger.info("✓ Fast validator initialized")
-        
-        # Memory cleanup
-        torch.cuda.empty_cache()
-        gc.collect()
 
     def generate_prompt(self, seed_text: str, label_combo: Dict[str, int]) -> str:
         """Generate a prompt based on the target label combination"""
@@ -239,26 +214,33 @@ Generate ONLY the comment: [/INST]"""
         if len(self.generation_buffer) >= self.buffer_size:
             self.flush_buffer()
 
-    def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int]) -> pd.DataFrame:
+    def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int], start_time: float, timeout_seconds: int) -> pd.DataFrame:
         """Generate samples with optimized batch processing and dynamic validation"""
         try:
             # First get toxicity scores for seed texts to use as reference
             seed_scores = {}
             for label in target_labels.keys():
-                X = self.validator.vectorizers[label].transform(seed_texts)
-                probs = self.validator.models[label].predict_proba(X)[:, 1]
-                seed_scores[label] = probs
+                seed_scores[label] = self.validator.get_probabilities(seed_texts, label)
             
-            # Set dynamic thresholds with tolerance
-            tolerance = 0.15  # Allow 15% deviation from seed scores
+            # Set dynamic thresholds with adaptive tolerance
             dynamic_thresholds = {}
             for label, scores in seed_scores.items():
+                mean_score = scores.mean()
+                std_score = scores.std()
+                
+                # Adjust tolerance based on score variability
+                tolerance = max(0.2, min(0.4, 2 * std_score))  # Allow 20-40% deviation based on std
+                
                 if target_labels[label]:  # For toxic labels
-                    min_threshold = max(0.6, scores.mean() - tolerance)  # Don't go below 0.6
-                    max_threshold = min(0.95, scores.mean() + tolerance)  # Don't go above 0.95
-                    dynamic_thresholds[label] = (min_threshold, max_threshold)
+                    min_threshold = max(0.5, mean_score - tolerance)
+                    max_threshold = min(0.99, mean_score + tolerance)
+                    logger.info(f"Dynamic threshold for {label}: {min_threshold:.2f} - {max_threshold:.2f} (seed mean: {mean_score:.2f})")
                 else:  # For non-toxic labels
-                    dynamic_thresholds[label] = (0.0, 0.4)  # Keep non-toxic threshold fixed lower
+                    max_threshold = min(0.3, mean_score + tolerance/2)
+                    min_threshold = max(0.0, mean_score - tolerance/2)
+                    logger.info(f"Dynamic threshold for {label}: {min_threshold:.2f} - {max_threshold:.2f} (seed mean: {mean_score:.2f})")
+                
+                dynamic_thresholds[label] = (min_threshold, max_threshold)
             
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 # Ensure we have matching lengths
@@ -266,10 +248,9 @@ Generate ONLY the comment: [/INST]"""
                     logger.error("Mismatch between prompts and seed texts length")
                     return None
                 
-                # Set timeouts
-                gen_timeout = 30  # 30 seconds max per generation
-                total_timeout = 300  # 5 minutes total hard limit
-                start_time = time.time()
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    return None
                 
                 inputs = self.llm_tokenizer(
                     prompts,
@@ -278,11 +259,6 @@ Generate ONLY the comment: [/INST]"""
                     truncation=True,
                     max_length=256
                 ).to(self.llm.device)
-                
-                # Check total time
-                if time.time() - start_time > total_timeout:
-                    logger.warning("Hard time limit reached (5 minutes)")
-                    return None
                 
                 outputs = self.llm.generate(
                     **inputs,
@@ -296,17 +272,9 @@ Generate ONLY the comment: [/INST]"""
                     pad_token_id=self.llm_tokenizer.pad_token_id,
                     eos_token_id=self.llm_tokenizer.eos_token_id,
                     use_cache=True,
-                    max_time=gen_timeout,
-                    early_stopping=True
+                    no_repeat_ngram_size=3,
+                    length_penalty=1.0
                 )
-                
-                # Clear CUDA cache after generation
-                torch.cuda.empty_cache()
-                
-                # Check total time again
-                if time.time() - start_time > total_timeout:
-                    logger.warning("Hard time limit reached (5 minutes)")
-                    return None
                 
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
                 cleaned_texts = []
@@ -328,9 +296,7 @@ Generate ONLY the comment: [/INST]"""
                     # Get toxicity scores for generated texts
                     validation_results = {}
                     for label in target_labels:
-                        X = self.validator.vectorizers[label].transform(cleaned_texts)
-                        probs = self.validator.models[label].predict_proba(X)[:, 1]
-                        # Apply dynamic thresholds
+                        probs = self.validator.get_probabilities(cleaned_texts, label)
                         min_thresh, max_thresh = dynamic_thresholds[label]
                         validation_results[label] = (probs >= min_thresh) & (probs <= max_thresh)
                     
@@ -349,7 +315,6 @@ Generate ONLY the comment: [/INST]"""
                             }
                             valid_samples.append(sample)
                             
-                            # Log generation with scores
                             self.log_generation(
                                 seed_texts[i],
                                 prompts[i],
@@ -364,7 +329,6 @@ Generate ONLY the comment: [/INST]"""
                 
         except Exception as e:
             logger.error(f"Generation error: {str(e)}")
-            torch.cuda.empty_cache()
             return None
 
     def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
@@ -372,21 +336,22 @@ Generate ONLY the comment: [/INST]"""
         logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
         
         generated_samples = []
-        batch_size = min(32, target_samples)  # Don't use larger batch than target
+        batch_size = min(32, target_samples)
         start_time = time.time()
         timeout_seconds = min(timeout_minutes * 60, 300)  # Hard limit of 5 minutes
         total_generated = 0
-        
-        # Create progress bar
-        pbar = tqdm(
-            total=target_samples,
-            desc="Generating",
-            unit="samples",
-            ncols=100,
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
-        )
+        pbar = None
         
         try:
+            # Create progress bar
+            pbar = tqdm(
+                total=target_samples,
+                desc="Generating",
+                unit="samples",
+                ncols=100,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+            )
+            
             while total_generated < target_samples:
                 # Check timeout
                 elapsed_time = time.time() - start_time
@@ -400,16 +365,13 @@ Generate ONLY the comment: [/INST]"""
                 
                 # Select batch of seed texts
                 batch_seeds = np.random.choice(seed_texts, size=current_batch_size)
-                
-                # Generate prompts
                 prompts = [self.generate_prompt(seed, label_combo) for seed in batch_seeds]
                 
                 # Generate and validate samples
                 batch_start = time.time()
-                new_samples = self.generate_samples(prompts, batch_seeds, label_combo)
+                new_samples = self.generate_samples(prompts, batch_seeds, label_combo, start_time, timeout_seconds)
                 
                 if new_samples is not None and not new_samples.empty:
-                    # Ensure we don't exceed target count
                     if len(new_samples) > remaining:
                         new_samples = new_samples.head(remaining)
                     
@@ -420,7 +382,7 @@ Generate ONLY the comment: [/INST]"""
                     # Update progress bar
                     pbar.update(num_new)
                     
-                    # Calculate and display rate and time remaining
+                    # Calculate and display metrics
                     elapsed_minutes = elapsed_time / 60
                     rate = total_generated / elapsed_minutes if elapsed_minutes > 0 else 0
                     batch_time = time.time() - batch_start
@@ -432,56 +394,26 @@ Generate ONLY the comment: [/INST]"""
                         'remain': f'{time_remaining:.0f}s'
                     }, refresh=True)
                 
-                # Memory management
-                if total_generated % (batch_size * 2) == 0:
+                # Memory management every few batches
+                if total_generated % (batch_size * 4) == 0:
                     torch.cuda.empty_cache()
-                    gc.collect()
-            
-            pbar.close()
             
             # Combine all generated samples
             if generated_samples:
                 final_df = pd.concat(generated_samples, ignore_index=True)
-                
-                # Double check we don't exceed target
                 if len(final_df) > target_samples:
                     final_df = final_df.head(target_samples)
-                    
                 logger.info(f"Successfully generated {len(final_df)} samples in {elapsed_time/60:.1f} minutes")
                 return final_df
             
             return None
             
         except Exception as e:
-            pbar.close()
             logger.error(f"Generation error: {str(e)}")
             return None
         finally:
-            pbar.close()
-            torch.cuda.empty_cache()
-            gc.collect()
-
-    def validate(self, texts: List[str], label_thresholds: Dict[str, float] = None) -> Dict[str, List[bool]]:
-        """Validate texts with adjusted thresholds based on label type"""
-        if label_thresholds is None:
-            label_thresholds = {
-                'toxic': 0.7,  # Increased threshold for general toxicity
-                'severe_toxic': 0.8,  # Higher threshold for severe toxicity
-                'obscene': 0.75,  # Increased for obscene content
-                'threat': 0.65,  # Slightly lower for threats due to subtlety
-                'insult': 0.7,  # Moderate threshold for insults
-                'identity_hate': 0.7  # Moderate threshold for identity hate
-            }
-        
-        results = {}
-        for label, threshold in label_thresholds.items():
-            # Vectorize texts
-            X = self.validator.vectorizers[label].transform(texts)
-            
-            # Get probabilities
-            probs = self.validator.models[label].predict_proba(X)[:, 1]
-            
-            # Apply threshold with numpy for better performance
-            results[label] = probs >= threshold
-        
-        return results 
+            if pbar is not None:
+                pbar.close()
+            # Final cleanup
+            self.flush_buffer()
+            torch.cuda.empty_cache() 

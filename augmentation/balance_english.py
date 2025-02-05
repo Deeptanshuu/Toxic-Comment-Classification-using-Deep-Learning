@@ -23,10 +23,7 @@ from datetime import datetime
 import sys
 from toxic_augment import ToxicAugmenter
 import json
-from sklearn.utils import resample
 import time
-import signal
-from contextlib import contextmanager
 
 # Configure logging
 log_dir = Path("logs")
@@ -45,41 +42,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-class TimeoutException(Exception):
-    pass
-
-@contextmanager
-def time_limit(seconds):
-    def signal_handler(signum, frame):
-        raise TimeoutException("Generation timed out")
-    
-    # Set the signal handler and alarm
-    signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
-    
-    try:
-        yield
-    finally:
-        # Disable the alarm
-        signal.alarm(0)
-
-def generate_with_timeout(augmenter, target_samples, label_combo, seed_texts, timeout_minutes):
-    """Wrapper function to handle generation with timeout"""
-    try:
-        with time_limit(timeout_minutes * 60):
-            return augmenter.augment_dataset(
-                target_samples=target_samples,
-                label_combo=label_combo,
-                seed_texts=seed_texts,
-                timeout_minutes=timeout_minutes
-            )
-    except TimeoutException:
-        logger.warning(f"Generation timed out after {timeout_minutes} minutes")
-        return None
-    except Exception as e:
-        logger.error(f"Generation error: {str(e)}")
-        return None
 
 def analyze_label_distribution(df, lang='en'):
     """Analyze label distribution for a specific language"""
@@ -131,16 +93,6 @@ def generate_balanced_samples(df, required_samples):
     en_df = df[df['lang'] == 'en']
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Define class weights based on analysis
-    CLASS_WEIGHTS = {
-        'toxic': 1.03,
-        'severe_toxic': 1.5,
-        'obscene': 1.0,
-        'threat': 2.01,
-        'insult': 1.0,
-        'identity_hate': 1.15
-    }
-    
     # Calculate label combination frequencies
     label_combinations = en_df.groupby(labels).size()
     total_en = len(en_df)
@@ -149,20 +101,9 @@ def generate_balanced_samples(df, required_samples):
     target_counts = pd.Series(0, index=label_combinations.index)
     for combo_labels in label_combinations.index:
         combo_dict = dict(zip(labels, combo_labels))
-        
-        # Calculate weight multiplier based on present labels
-        weight_multiplier = 1.0
-        present_labels = [label for label, value in combo_dict.items() if value == 1]
-        if present_labels:
-            weight_multiplier = max(CLASS_WEIGHTS[label] for label in present_labels)
-            
-            # Extra boost for combinations with multiple toxic types
-            if len(present_labels) > 1:
-                weight_multiplier *= (1 + 0.1 * len(present_labels))
-        
-        # Calculate weighted count
+        # Calculate base count maintaining original distribution
         base_count = (label_combinations[combo_labels] / total_en * required_samples)
-        target_counts[combo_labels] = round(base_count * weight_multiplier)
+        target_counts[combo_labels] = round(base_count)
     
     # Sort combinations by toxicity priority (but keep all combinations)
     def get_combo_priority(combo_labels):
@@ -180,7 +121,7 @@ def generate_balanced_samples(df, required_samples):
         reverse=True
     )
     
-    logger.info("\nTarget sample counts after weighting (sorted by priority):")
+    logger.info("\nTarget sample counts (sorted by priority):")
     total_weighted = 0
     for combo_labels, count in sorted_combinations:
         combo_dict = dict(zip(labels, combo_labels))
@@ -191,17 +132,12 @@ def generate_balanced_samples(df, required_samples):
     logger.info(f"\nTotal weighted samples to generate: {total_weighted:,}")
     
     if total_weighted == 0:
-        logger.error("Total weighted samples to generate is zero; cannot perform augmentation.")
+        logger.error("Total weighted samples to generate is zero.")
         raise Exception("Total weighted samples to generate is zero.")
 
     augmented_samples = []
     augmenter = ToxicAugmenter()
     total_generated = 0
-    
-    # Maximum attempts per combination and maximum allowed time per combination (in seconds)
-    max_attempts = 3  # Reduced max attempts
-    max_time_per_combo = 10 * 60  # Reduced to 10 minutes
-    generation_timeout = 5  # 5 minutes per generation attempt
     
     # Generate samples for each label combination in priority order
     for combo_labels, target_count in sorted_combinations:
@@ -223,72 +159,26 @@ def generate_balanced_samples(df, required_samples):
             logger.warning("No seed texts found for this combination, skipping...")
             continue
         
-        attempts = 0
-        combo_start_time = time.time()
-        combo_generated = 0
-        consecutive_failures = 0
+        # Generate samples with 5-minute timeout
+        new_samples = augmenter.augment_dataset(
+            target_samples=target_count,
+            label_combo=combo_dict,
+            seed_texts=seed_texts,
+            timeout_minutes=5
+        )
         
-        while (attempts < max_attempts and 
-               (time.time() - combo_start_time) < max_time_per_combo and 
-               combo_generated < target_count and 
-               consecutive_failures < 2):  # Stop after 2 consecutive failures
+        if new_samples is not None and not new_samples.empty:
+            augmented_samples.append(new_samples)
+            total_generated += len(new_samples)
             
-            try:
-                # Clear CUDA cache before each attempt
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                new_samples = generate_with_timeout(
-                    augmenter=augmenter,
-                    target_samples=min(32, target_count - combo_generated),  # Generate in smaller batches
-                    label_combo=combo_dict,
-                    seed_texts=seed_texts,
-                    timeout_minutes=generation_timeout
-                )
-                
-                if new_samples is not None and not new_samples.empty:
-                    # Reset consecutive failures counter on success
-                    consecutive_failures = 0
-                    
-                    # Trim if exceeds what is needed
-                    if len(new_samples) > (target_count - combo_generated):
-                        new_samples = new_samples.head(target_count - combo_generated)
-                    
-                    augmented_samples.append(new_samples)
-                    num_new = len(new_samples)
-                    total_generated += num_new
-                    combo_generated += num_new
-                    
-                    # Log progress with rate
-                    elapsed_minutes = (time.time() - combo_start_time) / 60
-                    rate = combo_generated / elapsed_minutes if elapsed_minutes > 0 else 0
-                    logger.info(f"✓ Generated {num_new:,} samples in attempt {attempts+1}")
-                    logger.info(f"Progress: {combo_generated:,}/{target_count:,} (Rate: {rate:.1f} samples/min)")
-                    
-                    # Check if we have reached our global required samples
-                    if total_generated >= required_samples:
-                        logger.info("Reached required sample count, stopping generation")
-                        break
-                else:
-                    consecutive_failures += 1
-                    logger.warning(f"Attempt {attempts+1} failed (consecutive failures: {consecutive_failures})")
-                
-                attempts += 1
-                
-            except Exception as e:
-                consecutive_failures += 1
-                logger.error(f"Error in generation attempt {attempts+1}: {str(e)}")
-                attempts += 1
-                continue
+            # Log progress
+            logger.info(f"✓ Generated {len(new_samples):,} samples")
+            logger.info(f"Progress: {total_generated:,}/{total_weighted:,}")
             
-            # Small delay between attempts
-            time.sleep(1)
-        
-        if consecutive_failures >= 2:
-            logger.warning(f"Skipping combination after {consecutive_failures} consecutive failures")
-        
-        if total_generated >= required_samples:
-            break
+            # Check if we have reached our global required samples
+            if total_generated >= required_samples:
+                logger.info("Reached required sample count, stopping generation")
+                break
     
     # Combine all generated samples
     if augmented_samples:
