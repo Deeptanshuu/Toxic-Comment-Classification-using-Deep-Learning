@@ -240,20 +240,33 @@ Generate ONLY the comment: [/INST]"""
         """Validate a generated sample against the target label combination"""
         # Get probabilities for each label
         probs = {}
+        validation_results = {}
+        
+        # Count how many toxic labels we need
+        num_toxic_labels = sum(1 for v in label_combo.values() if v == 1)
+        
+        # Adjust thresholds based on number of toxic labels
+        toxic_threshold = max(0.3, 0.5 - (num_toxic_labels * 0.05))  # Lower threshold for multiple labels
+        non_toxic_threshold = min(0.4, 0.3 + (num_toxic_labels * 0.02))  # Slightly relax non-toxic threshold
+        
         for label in label_combo.keys():
             probs[label] = self.validator.get_probabilities([text], label)[0]
-        
-        # Validate each label
-        for label, target in label_combo.items():
-            prob = probs[label]
-            if target == 1:  # Should be toxic
-                if prob < 0.5:  # Lower threshold for toxic labels
-                    return False
+            
+            # Validate each label
+            if label_combo[label] == 1:  # Should be toxic
+                validation_results[label] = probs[label] >= toxic_threshold
             else:  # Should be non-toxic
-                if prob > 0.3:  # Keep stricter threshold for non-toxic
-                    return False
+                validation_results[label] = probs[label] <= non_toxic_threshold
         
-        return True
+        # Log validation results if all failed
+        if not all(validation_results.values()):
+            logger.debug(f"Validation failed:")
+            logger.debug(f"Text: {text}")
+            logger.debug("Probabilities:")
+            for label, prob in probs.items():
+                logger.debug(f"{label}: {prob:.3f} (target: {label_combo[label]}, passed: {validation_results[label]})")
+        
+        return all(validation_results.values())
 
     def generate_samples(self, target_samples: int, label_combo: Dict[str, int],
                         seed_texts: List[str], total_timeout: int = 300) -> pd.DataFrame:
