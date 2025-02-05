@@ -260,40 +260,50 @@ Generate ONLY the comment: [/INST]"""
         """Generate samples for a specific label combination with timeouts"""
         start_time = time.time()
         generated_samples = []
+        attempts = 0
+        max_attempts = target_samples * 5  # Allow 5 attempts per target sample
+        
         pbar = tqdm(total=target_samples, desc="Generating samples")
         
         try:
-            while len(generated_samples) < target_samples:
+            while len(generated_samples) < target_samples and attempts < max_attempts:
                 # Check timeout
                 if time.time() - start_time > total_timeout:
                     logger.warning(f"Generation timed out after {total_timeout} seconds")
                     break
+                
+                attempts += 1
                 
                 # Select random seed text and generate prompt
                 seed_text = random.choice(seed_texts)
                 prompt = self.generate_prompt(seed_text, label_combo)
                 
                 try:
+                    # Log generation attempt
+                    if attempts % 10 == 0:
+                        logger.info(f"Attempt {attempts}: Generated {len(generated_samples)}/{target_samples} samples")
+                    
                     # Generate text
                     inputs = self.llm_tokenizer(prompt, return_tensors="pt", padding=True, 
                                               truncation=True, max_length=256).to(self.llm.device)
                     
-                    outputs = self.llm.generate(
-                        **inputs,
-                        max_new_tokens=32,
-                        temperature=0.95,
-                        do_sample=True,
-                        top_p=0.92,
-                        top_k=50,
-                        num_return_sequences=1,
-                        repetition_penalty=1.15,
-                        no_repeat_ngram_size=3,
-                        length_penalty=1.0,
-                        pad_token_id=self.llm_tokenizer.pad_token_id,
-                        bos_token_id=self.llm_tokenizer.bos_token_id,
-                        eos_token_id=self.llm_tokenizer.eos_token_id,
-                        use_cache=True
-                    )
+                    with torch.no_grad():
+                        outputs = self.llm.generate(
+                            **inputs,
+                            max_new_tokens=32,
+                            temperature=0.95,
+                            do_sample=True,
+                            top_p=0.92,
+                            top_k=50,
+                            num_return_sequences=1,
+                            repetition_penalty=1.15,
+                            no_repeat_ngram_size=3,
+                            length_penalty=1.0,
+                            pad_token_id=self.llm_tokenizer.pad_token_id,
+                            bos_token_id=self.llm_tokenizer.bos_token_id,
+                            eos_token_id=self.llm_tokenizer.eos_token_id,
+                            use_cache=True
+                        )
                     
                     text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=False)
                     
@@ -302,6 +312,10 @@ Generate ONLY the comment: [/INST]"""
                         output = text.split("[/INST]")[1].split("</s>")[0].strip()
                         output = output.strip().strip('"').strip("'")
                         
+                        # Basic quality checks
+                        if len(output.split()) < 3 or len(output) < 10:
+                            continue
+                            
                         # Validate sample
                         if self.validate_sample(output, label_combo):
                             generated_samples.append({
@@ -309,18 +323,23 @@ Generate ONLY the comment: [/INST]"""
                                 **label_combo
                             })
                             pbar.update(1)
+                            
+                            # Log successful generation
+                            if len(generated_samples) % 5 == 0:
+                                logger.info(f"✓ Generated {len(generated_samples)}/{target_samples} valid samples")
                         
                 except Exception as e:
-                    logger.warning(f"Error during generation: {str(e)}")
+                    logger.warning(f"Error during generation attempt {attempts}: {str(e)}")
                     continue
                 
                 # Clear cache periodically
-                if len(generated_samples) % 10 == 0:
+                if attempts % 20 == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
         
         finally:
             pbar.close()
+            logger.info(f"Generation finished: {len(generated_samples)}/{target_samples} samples in {attempts} attempts")
             
         return pd.DataFrame(generated_samples) if generated_samples else None
 
