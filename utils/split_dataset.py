@@ -297,7 +297,7 @@ def deduplicate_dataset(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
     return dedup_df, dedup_stats
 
 def main():
-    input_csv = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv'
+    input_csv = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_AUGMENTED.csv'
     output_dir = 'dataset/split'
     seed = 42
     split_mode = '3'
