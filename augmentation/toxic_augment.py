@@ -130,6 +130,10 @@ class ToxicAugmenter:
         self.generation_buffer = []
         self.buffer_size = 100
         
+        # CPU optimization settings for Intel Xeon Gold
+        torch.set_num_threads(80)  # Xeon Gold typically has many cores
+        torch.set_num_interop_threads(10)  # Optimize parallel operations
+        
         # Multi-GPU setup
         self.num_gpus = torch.cuda.device_count()
         if self.num_gpus > 0:
@@ -140,10 +144,10 @@ class ToxicAugmenter:
                 mem = torch.cuda.get_device_properties(i).total_memory / 1024**3
                 logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)} ({mem:.1f}GB)")
         
-        # Load models
+        # Load models with optimized settings
         logger.info("Loading Mistral-7B...")
         
-        # Configure model for multi-GPU
+        # Configure model for multi-GPU with optimized settings
         quantization_config = BitsAndBytesConfig(
             bnb_4bit_compute_dtype=torch.float16,
             bnb_4bit_quant_type="nf4",
@@ -155,18 +159,21 @@ class ToxicAugmenter:
             device_map="balanced",
             torch_dtype=torch.float16,
             quantization_config=quantization_config,
-            max_memory={0: "22GB", 1: "22GB"}
+            max_memory={0: "22GB", 1: "22GB"},
+            use_cache=True,  # Enable KV cache for faster generation
+            config={'pretraining_tp': 1}  # Optimize tensor parallelism
         )
         
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
             padding_side="left",
-            use_fast=True
+            use_fast=True,
+            model_max_length=512  # Limit context size for faster processing
         )
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
         logger.info("✓ Mistral-7B loaded")
         
-        # Initialize validator
+        # Initialize validator with optimized batch size
         self.validator = FastToxicValidator()
         logger.info("✓ Fast validator initialized")
         
@@ -217,13 +224,18 @@ Generate ONLY the comment: [/INST]"""
                 logger.error(f"Failed to flush buffer: {str(e)}")
 
     def log_generation(self, seed_text: str, prompt: str, generated_text: str, validation_results: Dict[str, bool]):
-        """Buffer log generation details"""
+        """Buffer log generation details with proper JSON serialization"""
+        # Convert numpy/torch boolean values to Python booleans
+        serializable_results = {
+            k: bool(v) for k, v in validation_results.items()
+        }
+        
         log_entry = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "seed_text": seed_text,
             "prompt": prompt,
             "generated_text": generated_text,
-            "validation_results": validation_results
+            "validation_results": serializable_results
         }
         
         self.generation_buffer.append(log_entry)
@@ -233,70 +245,78 @@ Generate ONLY the comment: [/INST]"""
             self.flush_buffer()
 
     def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int]) -> pd.DataFrame:
-        """Generate samples with validation"""
+        """Generate samples with optimized batch processing"""
         try:
             with torch.amp.autocast('cuda', dtype=torch.float16):
-                inputs = self.llm_tokenizer(prompts, return_tensors="pt", padding=True, 
-                                          truncation=True, max_length=256).to(self.llm.device)
+                # Process in optimal batch sizes
+                batch_size = 32  # Increased for better throughput
+                results = []
                 
-                outputs = self.llm.generate(
-                    **inputs,
-                    max_new_tokens=32,
-                    temperature=0.95,
-                    do_sample=True,
-                    top_p=0.92,
-                    top_k=50,
-                    num_return_sequences=1,
-                    repetition_penalty=1.15,
-                    pad_token_id=self.llm_tokenizer.pad_token_id,
-                    eos_token_id=self.llm_tokenizer.eos_token_id
-                )
-                
-                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-                cleaned_texts = []
-                
-                # Process responses
-                for text in texts:
-                    if "[/INST]" in text and "</s>" in text:
-                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
-                        response = response.strip().strip('"').strip("'")
-                        
-                        word_count = len(response.split())
-                        if word_count >= 3 and word_count <= 50:
-                            cleaned_texts.append(response)
-                
-                if not cleaned_texts:
-                    return None
-                
-                # Validate generated texts
-                validation_results = self.validator.validate(cleaned_texts)
-                
-                # Create DataFrame with validated samples
-                valid_samples = []
-                for i, text in enumerate(cleaned_texts):
-                    # Check if validation matches target labels
-                    matches_target = all(
-                        validation_results[label][i] == target_labels[label]
-                        for label in target_labels
+                for i in range(0, len(prompts), batch_size):
+                    batch_prompts = prompts[i:i + batch_size]
+                    batch_seeds = seed_texts[i:i + batch_size]
+                    
+                    inputs = self.llm_tokenizer(
+                        batch_prompts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=256
+                    ).to(self.llm.device)
+                    
+                    outputs = self.llm.generate(
+                        **inputs,
+                        max_new_tokens=32,
+                        temperature=0.95,
+                        do_sample=True,
+                        top_p=0.92,
+                        top_k=50,
+                        num_return_sequences=1,
+                        repetition_penalty=1.15,
+                        pad_token_id=self.llm_tokenizer.pad_token_id,
+                        eos_token_id=self.llm_tokenizer.eos_token_id,
+                        use_cache=True  # Enable KV cache
                     )
                     
-                    if matches_target:
-                        sample = {
-                            'comment_text': text,
-                            **target_labels
-                        }
-                        valid_samples.append(sample)
+                    texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
+                    cleaned_texts = []
+                    
+                    for text in texts:
+                        if "[/INST]" in text and "</s>" in text:
+                            response = text.split("[/INST]")[1].split("</s>")[0].strip()
+                            response = response.strip().strip('"').strip("'")
+                            
+                            if 3 <= len(response.split()) <= 50:
+                                cleaned_texts.append(response)
+                    
+                    if cleaned_texts:
+                        # Validate in batches
+                        validation_results = self.validator.validate(cleaned_texts)
                         
-                        # Log generation
-                        self.log_generation(
-                            seed_texts[i], 
-                            prompts[i], 
-                            text, 
-                            {label: validation_results[label][i] for label in target_labels}
-                        )
+                        # Process valid samples
+                        for j, text in enumerate(cleaned_texts):
+                            matches_target = all(
+                                bool(validation_results[label][j]) == bool(target_labels[label])
+                                for label in target_labels
+                            )
+                            
+                            if matches_target:
+                                sample = {
+                                    'comment_text': text,
+                                    **target_labels
+                                }
+                                results.append(sample)
+                                
+                                # Log with proper serialization
+                                self.log_generation(
+                                    batch_seeds[j],
+                                    batch_prompts[j],
+                                    text,
+                                    {label: bool(validation_results[label][j]) for label in target_labels}
+                                )
                 
-                if valid_samples:
-                    return pd.DataFrame(valid_samples)
+                if results:
+                    return pd.DataFrame(results)
                 return None
                 
         except Exception as e:
