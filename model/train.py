@@ -186,23 +186,13 @@ def train(model, train_loader, val_loader, config):
             class_losses = {label: 0.0 for label in config.toxicity_labels}
             class_counts = {label: 0 for label in config.toxicity_labels}
             
-            # Calculate ETA (handle first epoch gracefully)
-            if epoch == 0:
-                eta = "Calculating..."
-            else:
-                eta = metrics_tracker.get_eta(epoch, config.epochs)
+            # Calculate ETA using metrics tracker
+            eta = metrics_tracker.get_eta(epoch, config.epochs)
             
             print(f"\nEpoch {epoch+1}/{config.epochs}")
             print(f"{'='*40} Training {'='*40}")
             
             optimizer.zero_grad()
-            
-            # Track batch-level metrics for wandb
-            batch_metrics = {
-                'train/batch_loss': [],
-                'train/learning_rate': [],
-                'train/grad_norm': []
-            }
             
             for batch_idx, batch in enumerate(train_loader):
                 if batch_idx % config.gc_frequency == 0:
@@ -219,26 +209,24 @@ def train(model, train_loader, val_loader, config):
                     # Forward pass
                     with autocast(enabled=config.fp16):
                         outputs = model(**inputs)
-                        # Get weights for current batch and ensure proper shape
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         
-                        # Ensure proper shape for loss weighting
-                        if outputs.loss.dim() == 2:  # If loss is per class
-                            weighted_loss = outputs.loss * batch_weights.unsqueeze(0)  # [B, C]
-                        else:  # If loss is already reduced
-                            weighted_loss = outputs.loss * batch_weights  # [C]
+                        if outputs.loss.dim() == 2:
+                            weighted_loss = outputs.loss * batch_weights.unsqueeze(0)
+                        else:
+                            weighted_loss = outputs.loss * batch_weights
                             
                         loss = weighted_loss.mean() / config.grad_accum_steps
                     
-                    # Track per-class losses safely
+                    # Track per-class losses
                     with torch.no_grad():
-                        if weighted_loss.dim() == 2:  # [B, C]
-                            class_wise_loss = weighted_loss.mean(dim=0)  # Average over batch
-                        else:  # [C]
+                        if weighted_loss.dim() == 2:
+                            class_wise_loss = weighted_loss.mean(dim=0)
+                        else:
                             class_wise_loss = weighted_loss
                             
                         for i, label in enumerate(config.toxicity_labels):
-                            if i < class_wise_loss.size(0):  # Ensure index is valid
+                            if i < class_wise_loss.size(0):
                                 class_losses[label] += class_wise_loss[i].item()
                                 class_counts[label] += 1
                     
@@ -261,11 +249,22 @@ def train(model, train_loader, val_loader, config):
                         avg_loss = running_loss / config.grad_accum_steps
                         running_loss = 0.0
                         
-                        # Track batch metrics
-                        batch_metrics['train/batch_loss'].append(avg_loss)
-                        batch_metrics['train/learning_rate'].append(scheduler.get_last_lr()[0])
-                        batch_metrics['train/grad_norm'].append(grad_norm.item())
-                    
+                        # Update metrics tracker
+                        metrics_tracker.update_train(avg_loss)
+                        
+                        # Log step-level metrics (do this every step, not just every 50 steps)
+                        step_metrics = {
+                            'train/step_loss': avg_loss,
+                            'train/learning_rate': scheduler.get_last_lr()[0],
+                            'train/grad_norm': grad_norm.item(),
+                            'train/step': global_step,
+                        }
+                        
+                        try:
+                            wandb.log(step_metrics, step=global_step)
+                        except Exception as e:
+                            print(f"Warning: Failed to log step metrics to wandb: {str(e)}")
+                        
                         if batch_idx % 50 == 0:
                             progress = batch_idx / len(train_loader)
                             batch_time = time.time() - epoch_start
@@ -280,13 +279,10 @@ def train(model, train_loader, val_loader, config):
                                 print(f"Warning: Could not get GPU stats: {str(e)}")
                                 gpu_stats = None
                             
-                            # Log detailed metrics to wandb
+                            # Prepare detailed metrics dict for less frequent logging
                             log_dict = {
-                                'train/loss': avg_loss,
-                                'train/lr': scheduler.get_last_lr()[0],
                                 'train/progress': progress * 100,
                                 'train/epoch': epoch + progress,
-                                'train/grad_norm': grad_norm.item(),
                                 'train/batch_size': config.batch_size,
                                 'train/global_step': global_step,
                                 'time/batch_eta': batch_eta,
@@ -306,14 +302,24 @@ def train(model, train_loader, val_loader, config):
                             # Add per-class losses
                             for label in config.toxicity_labels:
                                 if class_counts[label] > 0:
-                                    log_dict[f'train/loss_{label}'] = class_losses[label] / class_counts[label]
+                                    class_loss = class_losses[label] / class_counts[label]
+                                    log_dict[f'train/loss_{label}'] = class_loss
                             
+                            # Add validation metrics if available
+                            if metrics_tracker.val_losses:
+                                log_dict.update({
+                                    'val/loss': metrics_tracker.val_losses[-1],
+                                    'val/auc': metrics_tracker.val_aucs[-1],
+                                    'val/best_auc': metrics_tracker.best_auc
+                                })
+                            
+                            # Log all metrics together
                             try:
                                 wandb.log(log_dict, step=global_step)
                             except Exception as e:
                                 print(f"Warning: Failed to log to wandb: {str(e)}")
                             
-                            # Print progress with better formatting
+                            # Print progress
                             print(
                                 f"\r[{batch_idx:>5}/{len(train_loader)}] "
                                 f"Loss: {avg_loss:.4f} | "
@@ -328,21 +334,20 @@ def train(model, train_loader, val_loader, config):
                     print(f"\nError processing batch {batch_idx}: {str(e)}")
                     continue
             
-            # End of epoch
+            # End of epoch updates
             epoch_time = time.time() - epoch_start
+            metrics_tracker.update_time(epoch_time)
             epoch_avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
             
-            metrics_tracker.update_time(epoch_time)
-            metrics_tracker.update_train(epoch_avg_loss)
+            # Log epoch-level metrics
+            epoch_metrics = {
+                'train/epoch_avg_loss': epoch_avg_loss,
+                'train/epoch': epoch + 1,
+                'time/epoch_minutes': epoch_time / 60
+            }
             
-            # Log epoch-level batch statistics
             try:
-                wandb.log({
-                    'train/epoch_avg_loss': np.mean(batch_metrics['train/batch_loss']),
-                    'train/epoch_avg_lr': np.mean(batch_metrics['train/learning_rate']),
-                    'train/epoch_avg_grad_norm': np.mean(batch_metrics['train/grad_norm']),
-                    'train/epoch': epoch + 1
-                }, step=global_step)
+                wandb.log(epoch_metrics, step=global_step)
             except Exception as e:
                 print(f"Warning: Failed to log epoch metrics to wandb: {str(e)}")
             
