@@ -18,6 +18,7 @@ import sys
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 import joblib
+import random
 
 # Create log directories
 log_dir = Path("logs")
@@ -100,6 +101,17 @@ class FastToxicValidator:
         """Get raw probabilities for a specific label"""
         X = self.vectorizers[label].transform(texts)
         return self.models[label].predict_proba(X)[:, 1]
+
+    def validate(self, texts: List[str], label: str, threshold: float = 0.5) -> List[bool]:
+        """Validate texts using the fast model with a lower threshold of 0.5"""
+        # Vectorize texts
+        X = self.vectorizers[label].transform(texts)
+        
+        # Get probabilities
+        probs = self.models[label].predict_proba(X)[:, 1]
+        
+        # Return boolean mask with lower threshold
+        return probs >= threshold
 
 class ToxicAugmenter:
     def __init__(self):
@@ -214,122 +226,76 @@ Generate ONLY the comment: [/INST]"""
         if len(self.generation_buffer) >= self.buffer_size:
             self.flush_buffer()
 
-    def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int], start_time: float, timeout_seconds: int) -> pd.DataFrame:
-        """Generate samples with optimized batch processing and dynamic validation"""
+    def validate_sample(self, text: str, label_combo: Dict[str, int]) -> bool:
+        """Validate a generated sample against the target label combination"""
+        # Get probabilities for each label
+        probs = {}
+        for label in label_combo.keys():
+            probs[label] = self.validator.get_probabilities([text], label)[0]
+        
+        # Validate each label
+        for label, target in label_combo.items():
+            prob = probs[label]
+            if target == 1:  # Should be toxic
+                if prob < 0.5:  # Lower threshold for toxic labels
+                    return False
+            else:  # Should be non-toxic
+                if prob > 0.3:  # Keep stricter threshold for non-toxic
+                    return False
+        
+        return True
+
+    def generate_samples(self, target_samples: int, label_combo: Dict[str, int],
+                        seed_texts: List[str], total_timeout: int = 300) -> pd.DataFrame:
+        """Generate samples for a specific label combination with timeouts"""
+        start_time = time.time()
+        generated_samples = []
+        pbar = tqdm(total=target_samples, desc="Generating samples")
+        
         try:
-            # First get toxicity scores for seed texts to use as reference
-            seed_scores = {}
-            for label in target_labels.keys():
-                seed_scores[label] = self.validator.get_probabilities(seed_texts, label)
-            
-            # Set dynamic thresholds with adaptive tolerance
-            dynamic_thresholds = {}
-            for label, scores in seed_scores.items():
-                mean_score = scores.mean()
-                std_score = scores.std()
-                
-                # Adjust tolerance based on score variability
-                tolerance = max(0.2, min(0.4, 2 * std_score))  # Allow 20-40% deviation based on std
-                
-                if target_labels[label]:  # For toxic labels
-                    min_threshold = max(0.5, mean_score - tolerance)
-                    max_threshold = min(0.99, mean_score + tolerance)
-                    logger.info(f"Dynamic threshold for {label}: {min_threshold:.2f} - {max_threshold:.2f} (seed mean: {mean_score:.2f})")
-                else:  # For non-toxic labels
-                    max_threshold = min(0.3, mean_score + tolerance/2)
-                    min_threshold = max(0.0, mean_score - tolerance/2)
-                    logger.info(f"Dynamic threshold for {label}: {min_threshold:.2f} - {max_threshold:.2f} (seed mean: {mean_score:.2f})")
-                
-                dynamic_thresholds[label] = (min_threshold, max_threshold)
-            
-            with torch.amp.autocast('cuda', dtype=torch.float16):
-                # Ensure we have matching lengths
-                if len(prompts) != len(seed_texts):
-                    logger.error("Mismatch between prompts and seed texts length")
-                    return None
-                
+            while len(generated_samples) < target_samples:
                 # Check timeout
-                if time.time() - start_time > timeout_seconds:
-                    return None
+                if time.time() - start_time > total_timeout:
+                    logger.warning(f"Generation timed out after {total_timeout} seconds")
+                    break
                 
-                inputs = self.llm_tokenizer(
-                    prompts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=256
-                ).to(self.llm.device)
+                # Select random seed text
+                seed_text = random.choice(seed_texts)
                 
-                outputs = self.llm.generate(
-                    **inputs,
-                    max_new_tokens=32,
-                    temperature=0.95,
-                    do_sample=True,
-                    top_p=0.92,
-                    top_k=50,
-                    num_return_sequences=1,
-                    repetition_penalty=1.15,
-                    pad_token_id=self.llm_tokenizer.pad_token_id,
-                    eos_token_id=self.llm_tokenizer.eos_token_id,
-                    use_cache=True,
-                    no_repeat_ngram_size=3,
-                    length_penalty=1.0
-                )
-                
-                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-                cleaned_texts = []
-                
-                for text in texts:
-                    if "[/INST]" in text and "</s>" in text:
-                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
-                        response = response.strip().strip('"').strip("'")
-                        
-                        word_count = len(response.split())
-                        if (word_count >= 3 and word_count <= 50 and
-                            not any(x in response.lower() for x in [
-                                "generate", "requirements:", "reference",
-                                "[inst]", "example"
-                            ])):
-                            cleaned_texts.append(response)
-                
-                if cleaned_texts:
-                    # Get toxicity scores for generated texts
-                    validation_results = {}
-                    for label in target_labels:
-                        probs = self.validator.get_probabilities(cleaned_texts, label)
-                        min_thresh, max_thresh = dynamic_thresholds[label]
-                        validation_results[label] = (probs >= min_thresh) & (probs <= max_thresh)
+                try:
+                    # Generate text
+                    output = self.generator(
+                        seed_text,
+                        max_length=256,
+                        do_sample=True,
+                        top_p=0.95,
+                        temperature=0.7,
+                        no_repeat_ngram_size=3,
+                        length_penalty=1.0,
+                        num_return_sequences=1
+                    )[0]['generated_text']
                     
-                    # Create DataFrame with valid samples
-                    valid_samples = []
-                    for i, text in enumerate(cleaned_texts):
-                        matches_target = all(
-                            bool(validation_results[label][i]) == bool(target_labels[label])
-                            for label in target_labels
-                        )
+                    # Validate sample
+                    if self.validate_sample(output, label_combo):
+                        generated_samples.append({
+                            'comment_text': output,
+                            **label_combo
+                        })
+                        pbar.update(1)
                         
-                        if matches_target:
-                            sample = {
-                                'comment_text': text,
-                                **target_labels
-                            }
-                            valid_samples.append(sample)
-                            
-                            self.log_generation(
-                                seed_texts[i],
-                                prompts[i],
-                                text,
-                                {label: bool(validation_results[label][i]) for label in target_labels}
-                            )
-                    
-                    if valid_samples:
-                        return pd.DataFrame(valid_samples)
+                except Exception as e:
+                    logger.warning(f"Error during generation: {str(e)}")
+                    continue
                 
-                return None
-                
-        except Exception as e:
-            logger.error(f"Generation error: {str(e)}")
-            return None
+                # Clear cache periodically
+                if len(generated_samples) % 10 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
+        
+        finally:
+            pbar.close()
+            
+        return pd.DataFrame(generated_samples)
 
     def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
