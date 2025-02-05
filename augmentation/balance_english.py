@@ -8,6 +8,23 @@ from toxic_augment import ToxicAugmenter
 import json
 from sklearn.utils import resample
 import time
+import torch
+import os
+import signal
+from contextlib import contextmanager
+
+# Configure CPU optimizations
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'
+os.environ['TF_CPU_ENABLE_AVX2'] = '1'
+os.environ['TF_CPU_ENABLE_AVX512F'] = '1'
+os.environ['TF_CPU_ENABLE_AVX512_VNNI'] = '1'
+os.environ['TF_CPU_ENABLE_FMA'] = '1'
+
+# Set torch threads for Intel CPU optimization
+torch.set_num_threads(80)  # Optimize for Xeon
+torch.set_num_interop_threads(10)
+if torch.backends.mkl.is_available():
+    torch.backends.mkl.set_num_threads(80)
 
 # Configure logging
 log_dir = Path("logs")
@@ -26,6 +43,41 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+class TimeoutException(Exception):
+    pass
+
+@contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutException("Generation timed out")
+    
+    # Set the signal handler and alarm
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    
+    try:
+        yield
+    finally:
+        # Disable the alarm
+        signal.alarm(0)
+
+def generate_with_timeout(augmenter, target_samples, label_combo, seed_texts, timeout_minutes):
+    """Wrapper function to handle generation with timeout"""
+    try:
+        with time_limit(timeout_minutes * 60):
+            return augmenter.augment_dataset(
+                target_samples=target_samples,
+                label_combo=label_combo,
+                seed_texts=seed_texts,
+                timeout_minutes=timeout_minutes
+            )
+    except TimeoutException:
+        logger.warning(f"Generation timed out after {timeout_minutes} minutes")
+        return None
+    except Exception as e:
+        logger.error(f"Generation error: {str(e)}")
+        return None
 
 def analyze_label_distribution(df, lang='en'):
     """Analyze label distribution for a specific language"""
@@ -145,8 +197,9 @@ def generate_balanced_samples(df, required_samples):
     total_generated = 0
     
     # Maximum attempts per combination and maximum allowed time per combination (in seconds)
-    max_attempts = 5
-    max_time_per_combo = 15 * 60  # 15 minutes
+    max_attempts = 3  # Reduced max attempts
+    max_time_per_combo = 10 * 60  # Reduced to 10 minutes
+    generation_timeout = 5  # 5 minutes per generation attempt
     
     # Generate samples for each label combination in priority order
     for combo_labels, target_count in sorted_combinations:
@@ -171,18 +224,30 @@ def generate_balanced_samples(df, required_samples):
         attempts = 0
         combo_start_time = time.time()
         combo_generated = 0
-        new_samples = None
+        consecutive_failures = 0
         
-        while attempts < max_attempts and (time.time() - combo_start_time) < max_time_per_combo and combo_generated < target_count:
+        while (attempts < max_attempts and 
+               (time.time() - combo_start_time) < max_time_per_combo and 
+               combo_generated < target_count and 
+               consecutive_failures < 2):  # Stop after 2 consecutive failures
+            
             try:
-                new_samples = augmenter.augment_dataset(
-                    target_samples=target_count - combo_generated,
+                # Clear CUDA cache before each attempt
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                new_samples = generate_with_timeout(
+                    augmenter=augmenter,
+                    target_samples=min(32, target_count - combo_generated),  # Generate in smaller batches
                     label_combo=combo_dict,
                     seed_texts=seed_texts,
-                    timeout_minutes=30
+                    timeout_minutes=generation_timeout
                 )
                 
                 if new_samples is not None and not new_samples.empty:
+                    # Reset consecutive failures counter on success
+                    consecutive_failures = 0
+                    
                     # Trim if exceeds what is needed
                     if len(new_samples) > (target_count - combo_generated):
                         new_samples = new_samples.head(target_count - combo_generated)
@@ -191,20 +256,34 @@ def generate_balanced_samples(df, required_samples):
                     num_new = len(new_samples)
                     total_generated += num_new
                     combo_generated += num_new
+                    
+                    # Log progress with rate
+                    elapsed_minutes = (time.time() - combo_start_time) / 60
+                    rate = combo_generated / elapsed_minutes if elapsed_minutes > 0 else 0
                     logger.info(f"✓ Generated {num_new:,} samples in attempt {attempts+1}")
-                    logger.info(f"Current progress for this combination: {combo_generated:,}/{target_count:,}")
+                    logger.info(f"Progress: {combo_generated:,}/{target_count:,} (Rate: {rate:.1f} samples/min)")
                     
                     # Check if we have reached our global required samples
                     if total_generated >= required_samples:
                         logger.info("Reached required sample count, stopping generation")
                         break
                 else:
-                    logger.warning(f"Attempt {attempts+1}: No samples generated for this combination")
+                    consecutive_failures += 1
+                    logger.warning(f"Attempt {attempts+1} failed (consecutive failures: {consecutive_failures})")
+                
                 attempts += 1
-            except TimeoutError:
-                logger.warning(f"Timeout reached for combination {present_labels if present_labels else 'Clean'} on attempt {attempts+1}, moving to next attempt...")
+                
+            except Exception as e:
+                consecutive_failures += 1
+                logger.error(f"Error in generation attempt {attempts+1}: {str(e)}")
                 attempts += 1
                 continue
+            
+            # Small delay between attempts
+            time.sleep(1)
+        
+        if consecutive_failures >= 2:
+            logger.warning(f"Skipping combination after {consecutive_failures} consecutive failures")
         
         if total_generated >= required_samples:
             break
