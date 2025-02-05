@@ -285,7 +285,7 @@ Generate ONLY the comment: [/INST]"""
         return [detect(text) == 'en' for text in texts]
     
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
-        """Main augmentation loop with ETA calculation"""
+        """Main augmentation loop with progress bar and ETA calculation"""
         try:
             start_time = time.time()
             logger.info(f"Starting generation: target={target_samples}, batch_size={batch_size}")
@@ -296,8 +296,15 @@ Generate ONLY the comment: [/INST]"""
                 "batch_times": []
             }
             
-            # Log progress every N batches
-            log_frequency = 10
+            # Calculate expected number of batches
+            expected_batches = int(target_samples * 1.1 / (batch_size * 0.9))  # Add 10% buffer for failed generations
+            
+            # Initialize progress bar
+            pbar = tqdm(total=target_samples, 
+                       desc="Generating samples", 
+                       unit="samples",
+                       ncols=100,  # Width of the progress bar
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
             
             while len(generated_samples) < target_samples:
                 batch_start = time.time()
@@ -313,35 +320,29 @@ Generate ONLY the comment: [/INST]"""
                 batch_time = time.time() - batch_start
                 stats["batch_times"].append(batch_time)
                 stats["total_attempts"] += len(new_samples)
+                prev_len = len(generated_samples)
                 generated_samples.extend(new_samples)
                 stats["valid_samples"] = len(generated_samples)
                 
-                # Calculate ETA
-                if len(stats["batch_times"]) >= 2:  # Need at least 2 batches for meaningful average
-                    avg_batch_time = sum(stats["batch_times"][-20:]) / min(len(stats["batch_times"]), 20)  # Rolling average of last 20 batches
-                    avg_samples_per_batch = stats["valid_samples"] / len(stats["batch_times"])
-                    remaining_samples = target_samples - len(generated_samples)
-                    estimated_batches_needed = remaining_samples / avg_samples_per_batch
-                    eta_seconds = estimated_batches_needed * avg_batch_time
-                    eta_str = str(timedelta(seconds=int(eta_seconds)))
-                    
-                    # Calculate completion time
-                    completion_time = datetime.now() + timedelta(seconds=int(eta_seconds))
-                    completion_str = completion_time.strftime("%H:%M:%S")
-                    
-                    # Log progress less frequently
-                    if len(generated_samples) % (batch_size * log_frequency) == 0:
-                        progress = len(generated_samples) / target_samples * 100
-                        logger.info(
-                            f"\nProgress: {len(generated_samples)}/{target_samples} ({progress:.1f}%) | "
-                            f"Success Rate: {(stats['valid_samples']/stats['total_attempts']*100):.1f}% | "
-                            f"ETA: {eta_str} (completion at {completion_str})"
-                        )
+                # Update progress bar
+                pbar.update(len(generated_samples) - prev_len)
+                
+                # Calculate and display success rate periodically
+                if len(stats["batch_times"]) % 10 == 0:  # Every 10 batches
+                    success_rate = (stats["valid_samples"] / stats["total_attempts"]) * 100
+                    avg_batch_time = sum(stats["batch_times"][-20:]) / min(len(stats["batch_times"]), 20)
+                    pbar.set_postfix({
+                        'Success Rate': f'{success_rate:.1f}%',
+                        'Batch Time': f'{avg_batch_time:.2f}s'
+                    })
                 
                 # Cleanup
                 if len(generated_samples) % (batch_size * 5) == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
+            
+            # Close progress bar
+            pbar.close()
             
             # Final stats
             total_time = str(timedelta(seconds=int(time.time() - start_time)))
