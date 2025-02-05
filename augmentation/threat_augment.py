@@ -2,7 +2,6 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    AutoModelForSequenceClassification,
     BitsAndBytesConfig
 )
 from langdetect import detect
@@ -183,8 +182,7 @@ class ThreatAugmenter:
 
     def generate_prompt(self, seed_text: str) -> str:
         """Generate a prompt for realistic threatening content"""
-        return f"""
-Generate a threatening social media comment that is realistic and intimidating.
+        return f"""<s>[INST] Generate a threatening social media comment that is realistic and intimidating.
 
 Reference example (generate something different): {seed_text}
 
@@ -194,8 +192,7 @@ Requirements:
 - Keep it under 50 words
 - Must be different from example
 
-Generate ONLY the comment: 
-"""
+Generate ONLY the comment: [/INST]"""
 
     def flush_buffer(self):
         """Flush the generation buffer to disk"""
@@ -241,7 +238,7 @@ Generate ONLY the comment:
                 # Optimize generation parameters
                 outputs = self.llm.generate(
                     **inputs,
-                    max_new_tokens=32,
+                    max_new_tokens=100,  # Increased to ensure we get complete responses
                     temperature=0.95,
                     do_sample=True,
                     top_p=0.92,
@@ -259,9 +256,16 @@ Generate ONLY the comment:
                 
                 # Process responses
                 for idx, text in enumerate(texts):
-                    if "[/INST]" in text and "</s>" in text:
-                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
+                    # Debug output
+                    logger.debug(f"Raw output {idx+1}: {text}")
+                    
+                    # Extract response between [/INST] and </s>
+                    if "[/INST]" in text:
+                        response = text.split("[/INST]")[-1].split("</s>")[0].strip()
                         response = response.strip().strip('"').strip("'")
+                        
+                        # Debug output
+                        logger.debug(f"Extracted response {idx+1}: {response}")
                         
                         word_count = len(response.split())
                         if (word_count >= 3 and word_count <= 50 and
@@ -277,15 +281,11 @@ Generate ONLY the comment:
                         else:
                             logger.info(f"✗ [{idx+1}] Failed validation (words: {word_count})")
                     else:
-                        logger.info(f"✗ [{idx+1}] Invalid format")
+                        logger.info(f"✗ [{idx+1}] Invalid format - No [/INST] tag found")
+                        logger.debug(f"Invalid text: {text}")
                 
                 success_rate = len(cleaned_texts) / len(texts) * 100
                 logger.info(f"\nGeneration Success: {len(cleaned_texts)}/{len(texts)} ({success_rate:.1f}%)")
-                
-                # Batch the logging:
-                if idx % 24 == 0:  # Log every 24 samples instead of every sample
-                    logger.info(f"Processed {idx}/{len(texts)} samples...")
-                
                 return cleaned_texts
             
         except Exception as e:
