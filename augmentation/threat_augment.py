@@ -107,7 +107,7 @@ class ThreatAugmenter:
         log_separator("INITIALIZATION")
         
         # Initialize logging
-        self.log_file = log_dir / f"samples_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        self.log_file = log_dir / f"generation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log"
         logger.info(f"Sample log file: {self.log_file}")
         
         # GPU setup
@@ -215,35 +215,42 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 cleaned_texts = []
                 
                 for idx, text in enumerate(texts):
+                    logger.info(f"\nRaw output {idx+1}:\n{text}\n")
+                    
                     if "[/INST]" in text:
                         response = text.split("[/INST]")[-1].strip()
+                        logger.info(f"After [/INST] split:\n{response}\n")
                         
-                        if '"' in response:
-                            try:
-                                response = response[response.find('"')+1:response.rfind('"')]
-                            except:
-                                pass
+                        # Clean up the response
+                        response = response.replace('"', '').replace("'", "").strip()
+                        logger.info(f"After quote removal:\n{response}\n")
                         
-                        response = response.strip('"').strip("'").strip()
+                        # Remove emojis and hashtags
+                        words = []
+                        for word in response.split():
+                            if not word.startswith('#') and not any(char in word for char in ['😈', '🔥', '👀', '💀', '⚡️', '🔫', '🚫', '💣']):
+                                words.append(word)
+                        response = ' '.join(words)
+                        logger.info(f"After emoji/hashtag removal:\n{response}\n")
                         
-                        # Remove artifacts from comparison text
-                        comparison_text = ' '.join([word for word in response.split() 
-                                                  if not word.startswith('#') 
-                                                  and not any(char in word for char in ['😈', '🔥', '👀', '💀', '⚡️', '🔫', '🚫', '💣'])])
-                        
-                        if (len(comparison_text.split()) >= 5 and
+                        # Relaxed validation criteria
+                        if (len(response.split()) >= 3 and  # Reduced minimum words
                             not any(x in response.lower() for x in [
                                 "make it genuinely",
                                 "generate only",
                                 "you are tasked",
                                 "rules:",
                                 "reference example",
-                                "for tone"
-                            ]) and
-                            not any(seed.lower() in response.lower() for seed in seed_texts)):
+                                "[inst]",
+                                "[/inst]"
+                            ])):
                             
                             cleaned_texts.append(response)
-                            logger.info(f"\nGenerated ({idx+1}/{len(texts)}):\n{response}\n")
+                            logger.info(f"✓ Valid response {idx+1} accepted\n")
+                        else:
+                            logger.info(f"✗ Response {idx+1} rejected - Failed validation criteria\n")
+                    else:
+                        logger.info(f"✗ Response {idx+1} rejected - No [/INST] tag found\n")
                 
                 logger.info(f"Generated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
                 return cleaned_texts
