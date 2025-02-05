@@ -376,4 +376,4 @@ if __name__ == "__main__":
     gc.collect()
     
     augmenter = ThreatAugmenter()
-    augmented_df = augmenter.augment_dataset(target_samples=5000)
+    augmented_df = augmenter.augment_dataset(target_samples=500)
