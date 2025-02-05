@@ -327,7 +327,13 @@ Generate ONLY the comment: [/INST]"""
                         
                         # Basic quality checks
                         if len(output.split()) < 3 or len(output) < 10:
+                            if attempts % 10 == 0:
+                                logger.debug(f"Text too short: {output}")
                             continue
+                            
+                        # Log generated text periodically
+                        if attempts % 10 == 0:
+                            logger.debug(f"Generated text: {output}")
                             
                         # Validate sample
                         if self.validate_sample(output, label_combo):
@@ -336,10 +342,7 @@ Generate ONLY the comment: [/INST]"""
                                 **label_combo
                             })
                             pbar.update(1)
-                            
-                            # Log successful generation
-                            if len(generated_samples) % 5 == 0:
-                                logger.info(f"✓ Generated {len(generated_samples)}/{target_samples} valid samples")
+                            logger.info(f"✓ Valid sample generated: {output}")
                         
                 except Exception as e:
                     logger.warning(f"Error during generation attempt {attempts}: {str(e)}")
