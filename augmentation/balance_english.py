@@ -20,11 +20,13 @@ os.environ['TF_CPU_ENABLE_AVX512F'] = '1'
 os.environ['TF_CPU_ENABLE_AVX512_VNNI'] = '1'
 os.environ['TF_CPU_ENABLE_FMA'] = '1'
 
-# Set torch threads for Intel CPU optimization
+# Set PyTorch thread and CPU configurations
 torch.set_num_threads(80)  # Optimize for Xeon
 torch.set_num_interop_threads(10)
-if torch.backends.mkl.is_available():
-    torch.backends.mkl.set_num_threads(80)
+
+# Enable Intel MKL optimizations if available
+os.environ['MKL_NUM_THREADS'] = '80'
+os.environ['OMP_NUM_THREADS'] = '80'
 
 # Configure logging
 log_dir = Path("logs")
