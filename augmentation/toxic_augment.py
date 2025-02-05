@@ -240,13 +240,16 @@ Generate ONLY the comment: [/INST]"""
             self.flush_buffer()
 
     def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int]) -> pd.DataFrame:
-        """Generate samples with optimized batch processing"""
+        """Generate samples with optimized batch processing and timeout handling"""
         try:
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 # Ensure we have matching lengths
                 if len(prompts) != len(seed_texts):
                     logger.error("Mismatch between prompts and seed texts length")
                     return None
+                
+                # Set generation timeout
+                gen_timeout = 30  # 30 seconds max per generation
                 
                 inputs = self.llm_tokenizer(
                     prompts,
@@ -256,6 +259,7 @@ Generate ONLY the comment: [/INST]"""
                     max_length=256
                 ).to(self.llm.device)
                 
+                # Add stopping criteria for faster generation
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=32,
@@ -267,13 +271,18 @@ Generate ONLY the comment: [/INST]"""
                     repetition_penalty=1.15,
                     pad_token_id=self.llm_tokenizer.pad_token_id,
                     eos_token_id=self.llm_tokenizer.eos_token_id,
-                    use_cache=True
+                    use_cache=True,
+                    max_time=gen_timeout,  # Add timeout
+                    early_stopping=True  # Enable early stopping
                 )
+                
+                # Clear CUDA cache after generation
+                torch.cuda.empty_cache()
                 
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
                 cleaned_texts = []
                 
-                # Process responses
+                # Process responses with timeout check
                 for text in texts:
                     if "[/INST]" in text and "</s>" in text:
                         response = text.split("[/INST]")[1].split("</s>")[0].strip()
@@ -321,6 +330,7 @@ Generate ONLY the comment: [/INST]"""
                 
         except Exception as e:
             logger.error(f"Generation error: {str(e)}")
+            torch.cuda.empty_cache()  # Ensure CUDA cache is cleared on error
             return None
 
     def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 30) -> pd.DataFrame:
@@ -332,6 +342,8 @@ Generate ONLY the comment: [/INST]"""
         start_time = time.time()
         timeout_seconds = timeout_minutes * 60
         total_generated = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         
         # Create progress bar
         pbar = tqdm(
@@ -345,9 +357,14 @@ Generate ONLY the comment: [/INST]"""
         try:
             while total_generated < target_samples:
                 # Check timeout
-                if time.time() - start_time > timeout_seconds:
-                    pbar.close()
-                    logger.warning(f"Timeout reached after {timeout_minutes} minutes")
+                elapsed_time = time.time() - start_time
+                if elapsed_time > timeout_seconds:
+                    logger.warning(f"Global timeout reached after {timeout_minutes} minutes")
+                    break
+                
+                # Check consecutive failures
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(f"Stopping after {consecutive_failures} consecutive failures")
                     break
                 
                 # Calculate remaining samples needed
@@ -361,9 +378,13 @@ Generate ONLY the comment: [/INST]"""
                 prompts = [self.generate_prompt(seed, label_combo) for seed in batch_seeds]
                 
                 # Generate and validate samples
+                batch_start = time.time()
                 new_samples = self.generate_samples(prompts, batch_seeds, label_combo)
                 
                 if new_samples is not None and not new_samples.empty:
+                    # Reset consecutive failures on success
+                    consecutive_failures = 0
+                    
                     # Ensure we don't exceed target count
                     if len(new_samples) > remaining:
                         new_samples = new_samples.head(remaining)
@@ -376,12 +397,18 @@ Generate ONLY the comment: [/INST]"""
                     pbar.update(num_new)
                     
                     # Calculate and display rate
-                    elapsed_minutes = (time.time() - start_time) / 60
+                    elapsed_minutes = elapsed_time / 60
                     rate = total_generated / elapsed_minutes if elapsed_minutes > 0 else 0
+                    batch_time = time.time() - batch_start
+                    
                     pbar.set_postfix({
-                        'rate': f'{rate:.1f} samples/min',
-                        'total': f'{total_generated}/{target_samples}'
+                        'rate': f'{rate:.1f}/min',
+                        'batch_time': f'{batch_time:.1f}s',
+                        'failures': consecutive_failures
                     }, refresh=True)
+                else:
+                    consecutive_failures += 1
+                    logger.warning(f"Failed generation attempt ({consecutive_failures}/{max_consecutive_failures})")
                 
                 # Memory management
                 if total_generated % (batch_size * 2) == 0:
@@ -409,6 +436,8 @@ Generate ONLY the comment: [/INST]"""
             return None
         finally:
             pbar.close()
+            torch.cuda.empty_cache()
+            gc.collect()
 
     def validate(self, texts: List[str], label_thresholds: Dict[str, float] = None) -> Dict[str, List[bool]]:
         """Validate texts with adjusted thresholds based on label type"""
