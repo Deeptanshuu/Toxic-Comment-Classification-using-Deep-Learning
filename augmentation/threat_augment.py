@@ -222,23 +222,14 @@ Generate ONLY the comment: [/INST]"""
             self.flush_buffer()
 
     def generate_samples(self, prompts: List[str], seed_texts: List[str]) -> List[str]:
-        """Generate samples using Mistral-7B-Instruct with optimized batching"""
         try:
             with torch.amp.autocast('cuda', dtype=torch.float16):
-                # Process in optimal batch sizes
-                batch_size = len(prompts)
-                inputs = self.llm_tokenizer(
-                    prompts, 
-                    return_tensors="pt", 
-                    padding=True, 
-                    truncation=True,
-                    max_length=512
-                ).to(self.llm.device)
+                inputs = self.llm_tokenizer(prompts, return_tensors="pt", padding=True, 
+                                          truncation=True, max_length=256).to(self.llm.device)
                 
-                # Optimize generation parameters
                 outputs = self.llm.generate(
                     **inputs,
-                    max_new_tokens=100,  # Increased to ensure we get complete responses
+                    max_new_tokens=32,
                     temperature=0.95,
                     do_sample=True,
                     top_p=0.92,
@@ -246,48 +237,34 @@ Generate ONLY the comment: [/INST]"""
                     num_return_sequences=1,
                     repetition_penalty=1.15,
                     pad_token_id=self.llm_tokenizer.pad_token_id,
-                    eos_token_id=self.llm_tokenizer.eos_token_id,
-                    use_cache=True,
-                    num_beams=1  # Disable beam search for speed
+                    eos_token_id=self.llm_tokenizer.eos_token_id
                 )
                 
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
                 cleaned_texts = []
+                valid_count = 0
                 
-                # Process responses
+                # Process responses with minimal logging
                 for idx, text in enumerate(texts):
-                    # Debug output
-                    logger.debug(f"Raw output {idx+1}: {text}")
-                    
-                    # Extract response between [/INST] and </s>
-                    if "[/INST]" in text:
-                        response = text.split("[/INST]")[-1].split("</s>")[0].strip()
+                    if "[/INST]" in text and "</s>" in text:
+                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
                         response = response.strip().strip('"').strip("'")
-                        
-                        # Debug output
-                        logger.debug(f"Extracted response {idx+1}: {response}")
                         
                         word_count = len(response.split())
                         if (word_count >= 3 and word_count <= 50 and
                             not any(x in response.lower() for x in [
-                                "generate",
-                                "requirements:",
-                                "reference",
-                                "[inst]",
-                                "example"
+                                "generate", "requirements:", "reference",
+                                "[inst]", "example"
                             ])):
                             cleaned_texts.append(response)
-                            logger.info(f"✓ [{idx+1}] {response}")
-                        else:
-                            logger.info(f"✗ [{idx+1}] Failed validation (words: {word_count})")
-                    else:
-                        logger.info(f"✗ [{idx+1}] Invalid format - No [/INST] tag found")
-                        logger.debug(f"Invalid text: {text}")
+                            valid_count += 1
                 
-                success_rate = len(cleaned_texts) / len(texts) * 100
-                logger.info(f"\nGeneration Success: {len(cleaned_texts)}/{len(texts)} ({success_rate:.1f}%)")
+                # Log only summary statistics
+                if valid_count > 0:
+                    logger.info(f"\nBatch Success: {valid_count}/{len(texts)} ({valid_count/len(texts)*100:.1f}%)")
+                
                 return cleaned_texts
-            
+                
         except Exception as e:
             logger.error(f"Generation error: {str(e)}")
             return []
@@ -307,25 +284,17 @@ Generate ONLY the comment: [/INST]"""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 16):
-        """Main augmentation loop with optimized batch processing"""
+    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
+        """Main augmentation loop with reduced logging"""
         try:
-            log_separator("STARTING GENERATION")
-            logger.info(f"Target: {target_samples} samples | Batch size: {batch_size}")
-            
+            logger.info(f"Starting generation: target={target_samples}, batch_size={batch_size}")
             generated_samples = []
-            pbar = tqdm(total=target_samples, desc="Progress")
+            stats = {"total_attempts": 0, "valid_samples": 0}
             
-            stats = {
-                "total_attempts": 0,
-                "valid_samples": 0,
-                "invalid_toxicity": 0,
-                "invalid_language": 0,
-                "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
+            # Log progress every N batches
+            log_frequency = 30  # Adjust this number to log less frequently
             
             while len(generated_samples) < target_samples:
-                # Sample and generate
                 seed_texts = self.en_threat_samples['comment_text'].sample(batch_size).tolist()
                 prompts = [self.generate_prompt(text) for text in seed_texts]
                 new_samples = self.generate_samples(prompts, seed_texts)
@@ -334,33 +303,15 @@ Generate ONLY the comment: [/INST]"""
                     continue
                     
                 stats["total_attempts"] += len(new_samples)
-                
-                # Validate samples
-                toxicity_mask = self.validate_toxicity(new_samples)
-                valid_samples = [s for i, s in enumerate(new_samples) if toxicity_mask[i]]
-                stats["invalid_toxicity"] += len(new_samples) - len(valid_samples)
-                
-                lang_mask = self.validate_language(valid_samples)
-                final_samples = [s for i, s in enumerate(valid_samples) if lang_mask[i]]
-                stats["invalid_language"] += len(valid_samples) - len(final_samples)
-                
-                # Buffer log generations
-                for seed, prompt, generated in zip(seed_texts, prompts, new_samples):
-                    is_valid = generated in final_samples
-                    self.log_generation(seed, prompt, generated, is_valid)
-                
-                # Update progress
-                generated_samples.extend(final_samples)
+                generated_samples.extend(new_samples)
                 stats["valid_samples"] = len(generated_samples)
-                pbar.update(len(final_samples))
                 
-                # Print simplified batch stats
-                if final_samples:
+                # Log progress less frequently
+                if len(generated_samples) % (batch_size * log_frequency) == 0:
+                    progress = len(generated_samples) / target_samples * 100
                     logger.info(
-                        f"\n=== Batch Summary ===\n"
-                        f"Success Rate: {len(final_samples)}/{batch_size} ({len(final_samples)/batch_size*100:.1f}%)\n"
-                        f"Total Progress: {len(generated_samples)}/{target_samples} ({len(generated_samples)/target_samples*100:.1f}%)\n"
-                        f"Overall Success: {(stats['valid_samples']/stats['total_attempts']*100):.1f}%"
+                        f"\nProgress: {len(generated_samples)}/{target_samples} "
+                        f"({progress:.1f}%) | Success Rate: {(stats['valid_samples']/stats['total_attempts']*100):.1f}%"
                     )
                 
                 # Cleanup
@@ -368,62 +319,13 @@ Generate ONLY the comment: [/INST]"""
                     torch.cuda.empty_cache()
                     gc.collect()
             
-            pbar.close()
-            
-            # Final buffer flush
-            self.flush_buffer()
-            
-            # Update stats with timing info
-            stats["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            stats["total_time"] = str(datetime.strptime(stats["end_time"], "%Y-%m-%d %H:%M:%S") - 
-                                    datetime.strptime(stats["start_time"], "%Y-%m-%d %H:%M:%S"))
-            
-            # Save results
-            log_separator("SAVING RESULTS")
-            output_path = Path("dataset/augmented")
-            output_path.mkdir(exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Create dataset
-            aug_df = pd.DataFrame({
-                'comment_text': generated_samples[:target_samples],
-                'toxic': 1,
-                'severe_toxic': 0,
-                'obscene': 0,
-                'threat': 1,
-                'insult': 0,
-                'identity_hate': 0,
-                'lang': 'en'
-            })
-            
-            # Save files
-            output_file = output_path / f"threat_augmented_{timestamp}.csv"
-            stats_file = log_dir / f"stats_{timestamp}.json"
-            
-            aug_df.to_csv(output_file, index=False)
-            with open(stats_file, 'w') as f:
-                json.dump(stats, f, indent=2)
-            
-            logger.info(
-                f"Files saved:\n"
-                f"- Dataset: {output_file}\n"
-                f"- Stats: {stats_file}\n"
-                f"- Samples: {self.log_file}\n"
-                f"Total time: {stats['total_time']}"
-            )
-            
-            return aug_df
+            # Final stats
+            logger.info(f"\nGeneration complete: {len(generated_samples)} samples generated")
+            return pd.DataFrame({'text': generated_samples[:target_samples]})
             
         except Exception as e:
-            # Ensure buffer is flushed even on error
-            self.flush_buffer()
             logger.error(f"Generation failed: {str(e)}")
             raise
-        finally:
-            # Final cleanup
-            self.flush_buffer()
-            torch.cuda.empty_cache()
-            gc.collect()
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
