@@ -1,6 +1,6 @@
 import torch
 from transformers import (
-    AutoModelForSeq2SeqLM,
+    AutoModelForCausalLM,
     AutoTokenizer,
     AutoModelForSequenceClassification
 )
@@ -30,14 +30,22 @@ class ThreatAugmenter:
             print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
         
         print("Loading models...")
-        # Initialize FLAN-T5-base with optimizations
-        self.llm = AutoModelForSeq2SeqLM.from_pretrained(
-            "google/flan-t5-base",
-            device_map=self.device,
+        # Initialize Mistral-7B-Instruct with better quality settings
+        self.llm = AutoModelForCausalLM.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            device_map="auto",
             torch_dtype=torch.float16,
-            low_cpu_mem_usage=True
+            load_in_4bit=True,  # Using 4-bit quantization for better quality
+            use_flash_attention_2=True,  # Enable flash attention for better performance
+            attn_implementation="flash_attention_2"
         )
-        self.llm_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
+        self.llm_tokenizer = AutoTokenizer.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            padding_side="left",
+            use_fast=True
+        )
+        self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
+        print("Loaded Mistral-7B with 4-bit quantization and flash attention")
         
         # Initialize XLM-RoBERTa with optimizations
         self.validator = AutoModelForSequenceClassification.from_pretrained(
@@ -62,14 +70,24 @@ class ThreatAugmenter:
         gc.collect()
 
     def generate_prompt(self, seed_text: str) -> str:
-        """Generate a prompt for threat content generation"""
-        return f"""Generate a threatening comment similar to this example:
-{seed_text}
-Make it threatening but avoid explicit profanity. Keep it under 50 words."""
+        """Generate a prompt for threat content generation using Mistral's format"""
+        return f"""<s>[INST] You are tasked with generating a threatening comment similar to the example below. The comment should be threatening but avoid explicit profanity. Keep it under 50 words and make it sound natural.
+
+Example threat: {seed_text}
+
+Requirements:
+- Must be threatening in nature
+- No explicit profanity
+- Different wording than the example
+- Under 50 words
+- Social media style language
+- Make it sound natural and believable
+
+Generate a single threatening comment: [/INST]"""
 
     @torch.inference_mode()
     def generate_samples(self, prompts: List[str]) -> List[str]:
-        """Generate samples using FLAN-T5"""
+        """Generate samples using Mistral-7B-Instruct"""
         try:
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 inputs = self.llm_tokenizer(
@@ -77,22 +95,39 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
                     return_tensors="pt", 
                     padding=True, 
                     truncation=True,
-                    max_length=128
+                    max_length=512
                 ).to(self.device)
                 
                 outputs = self.llm.generate(
                     **inputs,
-                    max_new_tokens=50,
-                    temperature=0.9,
+                    max_new_tokens=100,
+                    temperature=0.82,  # Slightly lower for more focused outputs
                     do_sample=True,
-                    top_p=0.95,
+                    top_p=0.88,  # More focused sampling
+                    top_k=40,  # More selective
                     num_return_sequences=1,
-                    repetition_penalty=1.2,
+                    repetition_penalty=1.18,  # Increased slightly
+                    presence_penalty=0.1,  # Add presence penalty
+                    frequency_penalty=0.1,  # Add frequency penalty
                     pad_token_id=self.llm_tokenizer.pad_token_id,
+                    eos_token_id=self.llm_tokenizer.eos_token_id,
                     use_cache=True
                 )
                 
-                return [text.strip() for text in self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)]
+                # Clean up generated texts with improved cleaning
+                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                cleaned_texts = []
+                for text in texts:
+                    # Remove the instruction part and clean up
+                    text = text.split("[/INST]")[-1].strip()
+                    # Remove any remaining prompt artifacts and clean up
+                    text = text.replace("[INST]", "").replace("</s>", "").strip()
+                    text = text.replace("Generate a single threatening comment:", "").strip()
+                    # Remove any leading/trailing quotes
+                    text = text.strip('"').strip("'").strip()
+                    cleaned_texts.append(text)
+                
+                return cleaned_texts
             
         except Exception as e:
             print(f"Generation error: {str(e)}")
@@ -128,7 +163,7 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
+    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 8):
         """Main augmentation loop"""
         print(f"Starting augmentation to generate {target_samples} samples")
         
