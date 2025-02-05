@@ -15,41 +15,50 @@ from typing import List
 import json
 from datetime import datetime
 import time
+import sys
 
-# Enhanced logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(message)s'
-)
-
-def print_with_delay(message: str, delay: float = 0.5):
-    """Print message with clear formatting"""
-    print("\n" + "="*80)
-    print(message)
-    print("="*80)
-
-# Create a log directory
+# Create log directories
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_dir / f'generation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+def log_separator(message: str = ""):
+    """Print a separator line with optional message"""
+    if message:
+        logger.info("\n" + "="*40 + f" {message} " + "="*40)
+    else:
+        logger.info("\n" + "="*100)
+
 class ThreatAugmenter:
     def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
-        print_with_delay("Initializing ThreatAugmenter...")
+        log_separator("INITIALIZATION")
         
         # Initialize logging
-        self.log_file = log_dir / f"generation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
-        print_with_delay(f"Logging details to: {self.log_file}")
+        self.log_file = log_dir / f"samples_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        logger.info(f"Sample log file: {self.log_file}")
         
-        # GPU setup and optimization
+        # GPU setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            print_with_delay(f"Using GPU: {torch.cuda.get_device_name()}")
-            print_with_delay(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+            logger.info(f"Using GPU: {torch.cuda.get_device_name()}")
+            logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
         
-        print_with_delay("Loading Mistral-7B model...")
-        # Initialize Mistral-7B-Instruct with better quality settings
+        # Load models
+        log_separator("LOADING MODELS")
+        logger.info("Loading Mistral-7B...")
         self.llm = AutoModelForCausalLM.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
             device_map="auto",
@@ -62,10 +71,9 @@ class ThreatAugmenter:
             use_fast=True
         )
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
-        print_with_delay("✓ Loaded Mistral-7B with 4-bit quantization")
+        logger.info("✓ Mistral-7B loaded")
         
-        print_with_delay("Loading XLM-RoBERTa validator...")
-        # Initialize XLM-RoBERTa with optimizations
+        logger.info("Loading XLM-RoBERTa...")
         self.validator = AutoModelForSequenceClassification.from_pretrained(
             "xlm-roberta-large",
             num_labels=6,
@@ -74,20 +82,22 @@ class ThreatAugmenter:
             device_map=self.device
         )
         self.validator_tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-large")
-        print_with_delay("✓ Loaded XLM-RoBERTa validator")
+        logger.info("✓ XLM-RoBERTa loaded")
         
-        # Load seed samples
-        print_with_delay("Loading seed samples...")
+        # Load data
+        log_separator("LOADING DATA")
+        logger.info(f"Loading samples from {seed_samples_path}")
         self.seed_df = pd.read_csv(seed_samples_path)
         self.en_threat_samples = self.seed_df[
             (self.seed_df['lang'] == 'en') & 
             (self.seed_df['threat'] == 1)
         ]
-        print_with_delay(f"✓ Found {len(self.en_threat_samples)} EN threat samples")
+        logger.info(f"Found {len(self.en_threat_samples)} EN threat samples")
         
-        # Clear GPU cache after initialization
+        # Memory cleanup
         torch.cuda.empty_cache()
         gc.collect()
+        log_separator()
 
     def generate_prompt(self, seed_text: str) -> str:
         """Generate a prompt for realistic threatening content"""
@@ -105,7 +115,21 @@ Rules:
 
 Generate only the threatening comment, nothing else: [/INST]"""
 
-    @torch.inference_mode()
+    def log_generation(self, seed_text: str, prompt: str, generated_text: str, is_valid: bool):
+        """Log generation details to JSONL file"""
+        log_entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "seed_text": seed_text,
+            "prompt": prompt,
+            "generated_text": generated_text,
+            "is_valid": is_valid
+        }
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+        except Exception as e:
+            logger.error(f"Failed to write to log file: {str(e)}")
+
     def generate_samples(self, prompts: List[str], seed_texts: List[str]) -> List[str]:
         """Generate samples using Mistral-7B-Instruct"""
         try:
@@ -132,51 +156,47 @@ Generate only the threatening comment, nothing else: [/INST]"""
                     use_cache=True
                 )
                 
-                # Clean up generated texts
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
                 cleaned_texts = []
                 
-                for text in texts:
-                    print("\nRaw output:", text)  # Debug print
-                    
-                    # Extract the actual generated response
+                for idx, text in enumerate(texts):
                     if "[/INST]" in text:
-                        # Get everything after the last [/INST]
                         response = text.split("[/INST]")[-1].strip()
                         
-                        # If response contains a quote, extract it
                         if '"' in response:
-                            response = response.split('"')[1].strip()
+                            try:
+                                response = response[response.find('"')+1:response.rfind('"')]
+                            except:
+                                pass
                         
-                        # Clean up any remaining artifacts
                         response = response.strip('"').strip("'").strip()
                         
-                        print("Cleaned response:", response)  # Debug print
+                        # Remove artifacts from comparison text
+                        comparison_text = ' '.join([word for word in response.split() 
+                                                  if not word.startswith('#') 
+                                                  and not any(char in word for char in ['😈', '🔥', '👀', '💀', '⚡️', '🔫', '🚫', '💣'])])
                         
-                        # Validate the response
-                        if (len(response.split()) >= 5 and 
-                            not any(x in response for x in [
-                                "Make it genuinely",
-                                "Generate only",
-                                "You are tasked",
-                                "Rules:",
-                                "Reference example",
+                        if (len(comparison_text.split()) >= 5 and
+                            not any(x in response.lower() for x in [
+                                "make it genuinely",
+                                "generate only",
+                                "you are tasked",
+                                "rules:",
+                                "reference example",
                                 "for tone"
                             ]) and
-                            response not in seed_texts):  # Make sure we're not just repeating the seed
+                            not any(seed.lower() in response.lower() for seed in seed_texts)):
+                            
                             cleaned_texts.append(response)
-                            print("Valid response added:", response)  # Debug print
-                        else:
-                            print("Response rejected:", response)  # Debug print
+                            logger.info(f"\nGenerated ({idx+1}/{len(texts)}):\n{response}\n")
                 
-                print(f"\nGenerated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
+                logger.info(f"Generated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
                 return cleaned_texts
             
         except Exception as e:
-            print(f"Generation error: {str(e)}")
+            logger.error(f"Generation error: {str(e)}")
             return []
-    
-    @torch.inference_mode()
+
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
         """Validate generated texts using XLM-RoBERTa with adjusted thresholds"""
         if not texts:
@@ -206,27 +226,16 @@ Generate only the threatening comment, nothing else: [/INST]"""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def log_generation(self, seed_text: str, prompt: str, generated_text: str, is_valid: bool):
-        """Log the generation details"""
-        log_entry = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "seed_text": seed_text,
-            "prompt": prompt,
-            "generated_text": generated_text,
-            "is_valid": is_valid
-        }
-        with open(self.log_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
-    
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 8):
-        """Main augmentation loop with detailed logging"""
-        print_with_delay(f"Starting augmentation to generate {target_samples} samples")
-        print_with_delay(f"Logging details to: {self.log_file}")
+        """Main augmentation loop"""
+        log_separator("STARTING GENERATION")
+        logger.info(f"Target samples: {target_samples}")
+        logger.info(f"Batch size: {batch_size}")
         
         generated_samples = []
-        pbar = tqdm(total=target_samples, desc="Generating samples")
+        pbar = tqdm(total=target_samples, desc="Generating")
         
-        generation_stats = {
+        stats = {
             "total_attempts": 0,
             "valid_samples": 0,
             "invalid_toxicity": 0,
@@ -234,85 +243,62 @@ Generate only the threatening comment, nothing else: [/INST]"""
         }
         
         while len(generated_samples) < target_samples:
-            # Sample seed texts
+            # Sample and generate
             seed_texts = self.en_threat_samples['comment_text'].sample(batch_size).tolist()
             prompts = [self.generate_prompt(text) for text in seed_texts]
-            
-            # Print sample prompt occasionally with clear formatting
-            if generation_stats["total_attempts"] % 50 == 0:
-                print_with_delay("\nExample Prompt:")
-                print_with_delay(prompts[0])
-            
-            # Generate new samples
             new_samples = self.generate_samples(prompts, seed_texts)
+            
             if not new_samples:
                 continue
+                
+            stats["total_attempts"] += len(new_samples)
             
-            generation_stats["total_attempts"] += len(new_samples)
-            
-            # Validate toxicity
+            # Validate samples
             toxicity_mask = self.validate_toxicity(new_samples)
             valid_samples = [s for i, s in enumerate(new_samples) if toxicity_mask[i]]
-            generation_stats["invalid_toxicity"] += len(new_samples) - len(valid_samples)
+            stats["invalid_toxicity"] += len(new_samples) - len(valid_samples)
             
-            # Validate language
             lang_mask = self.validate_language(valid_samples)
             final_samples = [s for i, s in enumerate(valid_samples) if lang_mask[i]]
-            generation_stats["invalid_language"] += len(valid_samples) - len(final_samples)
+            stats["invalid_language"] += len(valid_samples) - len(final_samples)
             
-            # Log generations with clear formatting
-            for i, (seed, prompt, generated) in enumerate(zip(seed_texts, prompts, new_samples)):
-                is_valid = i < len(final_samples)
+            # Log generations
+            for seed, prompt, generated in zip(seed_texts, prompts, new_samples):
+                is_valid = generated in final_samples
                 self.log_generation(seed, prompt, generated, is_valid)
-                
-                if is_valid:
-                    print_with_delay("\nGenerated Valid Sample:")
-                    print_with_delay(f"Seed: {seed[:100]}...")
-                    print_with_delay(f"Generated: {generated}")
             
-            # Add to collection
+            # Update progress
             generated_samples.extend(final_samples)
-            generation_stats["valid_samples"] = len(generated_samples)
+            stats["valid_samples"] = len(generated_samples)
             pbar.update(len(final_samples))
             
-            # Print batch stats with clear formatting
+            # Print batch stats
             if final_samples:
+                log_separator("BATCH STATS")
                 success_rate = len(final_samples) / batch_size * 100
-                print_with_delay("\nBatch Statistics:")
-                print_with_delay(
-                    f"Success Rate: {len(final_samples)}/{batch_size} ({success_rate:.1f}%)\n"
-                    f"Total Attempts: {generation_stats['total_attempts']}\n"
-                    f"Valid Samples: {generation_stats['valid_samples']}\n"
-                    f"Failed Toxicity: {generation_stats['invalid_toxicity']}\n"
-                    f"Failed Language: {generation_stats['invalid_language']}\n"
-                    f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%"
+                logger.info(
+                    f"Batch Success: {len(final_samples)}/{batch_size} ({success_rate:.1f}%)\n"
+                    f"Total Attempts: {stats['total_attempts']}\n"
+                    f"Valid Samples: {stats['valid_samples']}\n"
+                    f"Failed Toxicity: {stats['invalid_toxicity']}\n"
+                    f"Failed Language: {stats['invalid_language']}\n"
+                    f"Overall Success: {(stats['valid_samples']/stats['total_attempts']*100):.1f}%"
                 )
             
-            # Memory cleanup every 5 batches
+            # Cleanup
             if len(generated_samples) % (batch_size * 5) == 0:
-                print_with_delay("Cleaning up memory...")
                 torch.cuda.empty_cache()
                 gc.collect()
         
         pbar.close()
         
-        # Final statistics with clear formatting
-        print_with_delay("\nGeneration Complete!")
-        print_with_delay(
-            f"Final Statistics:\n"
-            f"Total Attempts: {generation_stats['total_attempts']}\n"
-            f"Valid Samples: {generation_stats['valid_samples']}\n"
-            f"Failed Toxicity: {generation_stats['invalid_toxicity']}\n"
-            f"Failed Language: {generation_stats['invalid_language']}\n"
-            f"Overall Success: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%"
-        )
-        
         # Save results
+        log_separator("SAVING RESULTS")
         output_path = Path("dataset/augmented")
         output_path.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Create and save augmented dataset
+        # Create dataset
         aug_df = pd.DataFrame({
             'comment_text': generated_samples[:target_samples],
             'toxic': 1,
@@ -324,25 +310,24 @@ Generate only the threatening comment, nothing else: [/INST]"""
             'lang': 'en'
         })
         
-        output_file = output_path / f"en_threat_augmented_{timestamp}.csv"
-        stats_file = log_dir / f"generation_stats_{timestamp}.json"
+        # Save files
+        output_file = output_path / f"threat_augmented_{timestamp}.csv"
+        stats_file = log_dir / f"stats_{timestamp}.json"
         
-        print_with_delay("Saving outputs...")
         aug_df.to_csv(output_file, index=False)
         with open(stats_file, 'w') as f:
-            json.dump(generation_stats, f, indent=2)
+            json.dump(stats, f, indent=2)
         
-        print_with_delay(
-            f"Outputs saved to:\n"
+        logger.info(
+            f"Files saved:\n"
             f"- Dataset: {output_file}\n"
-            f"- Logs: {self.log_file}\n"
-            f"- Stats: {stats_file}"
+            f"- Stats: {stats_file}\n"
+            f"- Samples: {self.log_file}"
         )
         
         return aug_df
 
 if __name__ == "__main__":
-    # Set memory growth
     torch.cuda.empty_cache()
     gc.collect()
     
