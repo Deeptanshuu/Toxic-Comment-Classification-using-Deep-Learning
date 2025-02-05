@@ -92,76 +92,37 @@ def generate_balanced_samples(df, required_samples):
     en_df = df[df['lang'] == 'en']
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Calculate label combination frequencies
-    label_combinations = en_df.groupby(labels).size()
-    total_en = len(en_df)
+    # Calculate target counts for each label
+    target_counts = {}
+    for label in labels:
+        count = en_df[label].sum()
+        ratio = count / len(en_df)
+        target_count = int(ratio * required_samples)
+        target_counts[label] = target_count
+        logger.info(f"Target count for {label}: {target_count:,}")
     
-    # Calculate weighted target counts for each combination
-    target_counts = pd.Series(0, index=label_combinations.index)
-    for combo_labels in label_combinations.index:
-        combo_dict = dict(zip(labels, combo_labels))
-        # Calculate base count maintaining original distribution
-        base_count = (label_combinations[combo_labels] / total_en * required_samples)
-        target_counts[combo_labels] = round(base_count)
-    
-    # Sort combinations by toxicity priority (but keep all combinations)
-    def get_combo_priority(combo_labels):
-        combo_dict = dict(zip(labels, combo_labels))
-        num_toxic = sum(combo_dict.values())
-        has_threat = combo_dict['threat']
-        has_severe = combo_dict['severe_toxic']
-        has_identity = combo_dict['identity_hate']
-        return (num_toxic, has_threat, has_severe, has_identity)
-    
-    # Sort combinations by priority
-    sorted_combinations = sorted(
-        [(combo, count) for combo, count in target_counts.items()],
-        key=lambda x: get_combo_priority(x[0]),
-        reverse=True
-    )
-    
-    logger.info("\nTarget sample counts (sorted by priority):")
-    total_weighted = 0
-    for combo_labels, count in sorted_combinations:
-        combo_dict = dict(zip(labels, combo_labels))
-        present_labels = [label for label, value in combo_dict.items() if value == 1]
-        logger.info(f"Labels: {', '.join(present_labels) if present_labels else 'Clean'}")
-        logger.info(f"Count: {count:,}")
-        total_weighted += count
-    logger.info(f"\nTotal weighted samples to generate: {total_weighted:,}")
-    
-    if total_weighted == 0:
-        logger.error("Total weighted samples to generate is zero.")
-        raise Exception("Total weighted samples to generate is zero.")
-
     augmented_samples = []
     augmenter = ToxicAugmenter()
     total_generated = 0
     
-    # Generate samples for each label combination in priority order
-    for combo_labels, target_count in sorted_combinations:
+    # Generate samples for each label
+    for label, target_count in target_counts.items():
         if target_count == 0:
             continue
             
-        combo_dict = dict(zip(labels, combo_labels))
-        present_labels = [label for label, value in combo_dict.items() if value == 1]
-        logger.info(f"\nGenerating {target_count:,} samples for combination:")
-        logger.info(f"Labels: {', '.join(present_labels) if present_labels else 'Clean'}")
+        logger.info(f"\nGenerating {target_count:,} samples for {label}")
         
-        # Get seed texts with this label combination
-        mask = pd.Series(True, index=en_df.index)
-        for label, value in combo_dict.items():
-            mask &= (en_df[label] == value)
-        seed_texts = en_df[mask]['comment_text'].tolist()
+        # Get seed texts with this label
+        seed_texts = en_df[en_df[label] == 1]['comment_text'].tolist()
         
         if not seed_texts:
-            logger.warning("No seed texts found for this combination, skipping...")
+            logger.warning(f"No seed texts found for {label}, skipping...")
             continue
         
         # Generate samples with 5-minute timeout
         new_samples = augmenter.augment_dataset(
             target_samples=target_count,
-            label_combo=combo_dict,
+            label=label,  # Using single label instead of label_combo
             seed_texts=seed_texts,
             timeout_minutes=5
         )
@@ -172,7 +133,7 @@ def generate_balanced_samples(df, required_samples):
             
             # Log progress
             logger.info(f"✓ Generated {len(new_samples):,} samples")
-            logger.info(f"Progress: {total_generated:,}/{total_weighted:,}")
+            logger.info(f"Progress: {total_generated:,}/{required_samples:,}")
             
             # Check if we have reached our global required samples
             if total_generated >= required_samples:
