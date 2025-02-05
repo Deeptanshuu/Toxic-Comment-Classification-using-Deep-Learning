@@ -1,17 +1,20 @@
+(venv) PS V:\Deeptanshu Lal\PROJECTS\Toxic Comment Classification> python .\analysis\analyze_lang_distribution.py
+Reading dataset...
+
 Dataset Overview:
 --------------------------------------------------
-Total number of comments: 360,728
+Total number of comments: 361,228
 Number of languages: 7
 
 Language Distribution:
 --------------------------------------------------
-ru: 52,632 comments (14.59%)
-tr: 52,558 comments (14.57%)
-pt: 52,440 comments (14.54%)
-es: 52,412 comments (14.53%)
-fr: 52,368 comments (14.52%)
-it: 52,340 comments (14.51%)
-en: 45,978 comments (12.75%)
+ru: 52,632 comments (14.57%)
+tr: 52,558 comments (14.55%)
+pt: 52,440 comments (14.52%)
+es: 52,412 comments (14.51%)
+fr: 52,368 comments (14.50%)
+it: 52,340 comments (14.49%)
+en: 46,478 comments (12.87%)
 
 Class Distribution by Language:
 --------------------------------------------------
@@ -70,13 +73,13 @@ IT (Total: 52,340 comments)
 5 toxic classes: 703 (1.34%)
 6 toxic classes: 69 (0.13%)
 
-EN (Total: 45,978 comments)
-0 toxic classes: 22,989 (50.00%)
-1 toxic classes: 8,499 (18.48%)
-2 toxic classes: 5,104 (11.10%)
-3 toxic classes: 6,391 (13.90%)
-4 toxic classes: 2,395 (5.21%)
-5 toxic classes: 553 (1.20%)
+EN (Total: 46,478 comments)
+0 toxic classes: 22,989 (49.46%)
+1 toxic classes: 8,499 (18.29%)
+2 toxic classes: 5,604 (12.06%)
+3 toxic classes: 6,391 (13.75%)
+4 toxic classes: 2,395 (5.15%)
+5 toxic classes: 553 (1.19%)
 6 toxic classes: 47 (0.10%)
 
 Detailed Toxicity Analysis by Language:
@@ -202,60 +205,60 @@ IT (Total: 52,340 comments)
   Count: 2,782 (5.32%)
   95% CI: [5.12%, 5.51%]
 
-EN (Total: 45,978 comments)
+EN (Total: 46,478 comments)
 - Toxic:
-  Count: 21,843 (47.51%)
-  95% CI: [47.05%, 47.96%]
+  Count: 22,343 (48.07%)
+  95% CI: [47.62%, 48.53%]
 - Severe Toxic:
-  Count: 1,986 (4.32%)
-  95% CI: [4.13%, 4.51%]
+  Count: 1,986 (4.27%)
+  95% CI: [4.09%, 4.46%]
 - Obscene:
-  Count: 12,356 (26.87%)
-  95% CI: [26.47%, 27.28%]
+  Count: 12,356 (26.58%)
+  95% CI: [26.18%, 26.99%]
 - Threat:
-  Count: 704 (1.53%)
-  95% CI: [1.42%, 1.64%]
+  Count: 1,204 (2.59%)
+  95% CI: [2.45%, 2.73%]
 - Insult:
-  Count: 11,475 (24.96%)
-  95% CI: [24.56%, 25.35%]
+  Count: 11,475 (24.69%)
+  95% CI: [24.30%, 25.08%]
 - Identity Hate:
-  Count: 2,143 (4.66%)
-  95% CI: [4.47%, 4.85%]
+  Count: 2,143 (4.61%)
+  95% CI: [4.42%, 4.80%]
 
 Statistical Analysis:
 --------------------------------------------------
 
 Chi-square test for number of toxic classes by language:
-Chi-square statistic: 879.32
+Chi-square statistic: 654.28
 p-value: 0.0000000000
 Significant at α=0.05: Yes
 
 Chi-square test for Toxic:
-Chi-square statistic: 53.86
-p-value: 0.0000000008
+Chi-square statistic: 26.10
+p-value: 0.0002136602
 Significant at α=0.05: Yes
 
 Chi-square test for Severe Toxic:
-Chi-square statistic: 9.34
-p-value: 0.1555842046
+Chi-square statistic: 12.38
+p-value: 0.0540052211
 Significant at α=0.05: No
 
 Chi-square test for Obscene:
-Chi-square statistic: 232.60
+Chi-square statistic: 195.12
 p-value: 0.0000000000
 Significant at α=0.05: Yes
 
 Chi-square test for Threat:
-Chi-square statistic: 55.38
-p-value: 0.0000000004
+Chi-square statistic: 57.45
+p-value: 0.0000000001
 Significant at α=0.05: Yes
 
 Chi-square test for Insult:
-Chi-square statistic: 304.12
+Chi-square statistic: 350.72
 p-value: 0.0000000000
 Significant at α=0.05: Yes
 
 Chi-square test for Identity Hate:
-Chi-square statistic: 36.69
-p-value: 0.0000020223
+Chi-square statistic: 42.77
+p-value: 0.0000001295
 Significant at α=0.05: Yes

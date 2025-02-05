@@ -140,40 +140,40 @@ def create_class_distribution_plot(df, lang_dist, image_dir):
     """Create and save class distribution across languages plot"""
     plt.figure(figsize=(16, 10))
     
+    # Define toxicity columns and their display names
+    toxicity_cols = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    display_names = [col.replace('_', ' ').title() for col in toxicity_cols]
+    
     # Calculate class distribution for each language
     class_dist = {}
     for lang in lang_dist.index:
         lang_df = df[df['lang'] == lang]
         total = len(lang_df)
         
-        # Count comments by number of toxic classes
-        toxicity_cols = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-        toxic_counts = lang_df[toxicity_cols].astype(bool).sum(axis=1)
-        dist = toxic_counts.value_counts().sort_index()
+        # Create a binary matrix of toxicity flags
+        toxic_matrix = lang_df[toxicity_cols].astype(bool)
         
-        # Convert to percentages
-        class_dist[lang] = [(dist.get(i, 0) / total) * 100 for i in range(7)]  # 0 to 6 classes
+        # Calculate percentages for each toxicity type
+        class_dist[lang] = [(toxic_matrix[col].sum() / total) * 100 for col in toxicity_cols]
     
     # Create stacked bar chart
     x = np.arange(len(lang_dist.index))
     bottom = np.zeros(len(lang_dist.index))
     
     # Use a more distinct color scheme
-    colors = plt.cm.Set3(np.linspace(0, 1, 7))  # Using Set3 colormap for better distinction
+    colors = plt.cm.Set3(np.linspace(0, 1, len(toxicity_cols)))
     
     bars = []
-    for i in range(7):
+    for i, (col, display_name) in enumerate(zip(toxicity_cols, display_names)):
         values = [class_dist[lang][i] for lang in lang_dist.index]
-        bar = plt.bar(x, values, bottom=bottom, label=f'{i} classes', color=colors[i], alpha=0.9)
+        bar = plt.bar(x, values, bottom=bottom, label=display_name, color=colors[i], alpha=0.9)
         bars.append(bar)
         
         # Add percentage labels for all values > 1%
         for j, v in enumerate(values):
             if v > 1:  # Show all values above 1%
-                # Calculate the center of the bar segment
                 center = bottom[j] + v/2
-                # Choose text color based on position
-                text_color = 'black' if v > 10 else 'black'  # Use black for better visibility
+                text_color = 'black' if v > 10 else 'black'
                 plt.text(x[j], center, f'{v:.1f}%', 
                         ha='center', va='center', 
                         color=text_color, 
@@ -183,11 +183,11 @@ def create_class_distribution_plot(df, lang_dist, image_dir):
     
     plt.xlabel('Language', labelpad=10, fontsize=12)
     plt.ylabel('Percentage of Comments', labelpad=10, fontsize=12)
-    plt.title('Distribution of Toxicity Classes by Language', pad=20, fontsize=14)
+    plt.title('Distribution of Toxicity Types by Language', pad=20, fontsize=14)
     plt.xticks(x, lang_dist.index, rotation=45, fontsize=10)
     
     # Adjust legend
-    plt.legend(title='Number of Toxic Classes', 
+    plt.legend(title='Toxicity Types', 
               bbox_to_anchor=(1.15, 1), 
               loc='upper left',
               fontsize=10,
@@ -213,7 +213,7 @@ def analyze_language_distribution():
     
     # Read the dataset
     print("Reading dataset...")
-    input_file = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv'
+    input_file = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_AUGMENTED.csv'
     df = pd.read_csv(input_file)
     
     # Get language distribution
