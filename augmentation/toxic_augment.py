@@ -259,29 +259,42 @@ Generate ONLY the comment: [/INST]"""
                     logger.warning(f"Generation timed out after {total_timeout} seconds")
                     break
                 
-                # Select random seed text
+                # Select random seed text and generate prompt
                 seed_text = random.choice(seed_texts)
+                prompt = self.generate_prompt(seed_text, label_combo)
                 
                 try:
                     # Generate text
-                    output = self.generator(
-                        seed_text,
-                        max_length=256,
-                        do_sample=True,
-                        top_p=0.95,
-                        temperature=0.7,
-                        no_repeat_ngram_size=3,
-                        length_penalty=1.0,
-                        num_return_sequences=1
-                    )[0]['generated_text']
+                    inputs = self.llm_tokenizer(prompt, return_tensors="pt", padding=True, 
+                                              truncation=True, max_length=256).to(self.llm.device)
                     
-                    # Validate sample
-                    if self.validate_sample(output, label_combo):
-                        generated_samples.append({
-                            'comment_text': output,
-                            **label_combo
-                        })
-                        pbar.update(1)
+                    outputs = self.llm.generate(
+                        **inputs,
+                        max_new_tokens=32,
+                        temperature=0.95,
+                        do_sample=True,
+                        top_p=0.92,
+                        top_k=50,
+                        num_return_sequences=1,
+                        repetition_penalty=1.15,
+                        no_repeat_ngram_size=3,
+                        length_penalty=1.0
+                    )
+                    
+                    text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=False)
+                    
+                    # Extract the generated text between [/INST] and </s>
+                    if "[/INST]" in text and "</s>" in text:
+                        output = text.split("[/INST]")[1].split("</s>")[0].strip()
+                        output = output.strip().strip('"').strip("'")
+                        
+                        # Validate sample
+                        if self.validate_sample(output, label_combo):
+                            generated_samples.append({
+                                'comment_text': output,
+                                **label_combo
+                            })
+                            pbar.update(1)
                         
                 except Exception as e:
                     logger.warning(f"Error during generation: {str(e)}")
@@ -295,7 +308,7 @@ Generate ONLY the comment: [/INST]"""
         finally:
             pbar.close()
             
-        return pd.DataFrame(generated_samples)
+        return pd.DataFrame(generated_samples) if generated_samples else None
 
     def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
@@ -335,7 +348,12 @@ Generate ONLY the comment: [/INST]"""
                 
                 # Generate and validate samples
                 batch_start = time.time()
-                new_samples = self.generate_samples(prompts, batch_seeds, label_combo, start_time, timeout_seconds)
+                new_samples = self.generate_samples(
+                    target_samples=current_batch_size,
+                    label_combo=label_combo,
+                    seed_texts=batch_seeds,
+                    total_timeout=timeout_seconds - elapsed_time
+                )
                 
                 if new_samples is not None and not new_samples.empty:
                     if len(new_samples) > remaining:
