@@ -141,24 +141,32 @@ class ToxicAugmenter:
             bnb_4bit_use_double_quant=True
         )
         
+        # Initialize tokenizer first
+        self.llm_tokenizer = AutoTokenizer.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            padding_side="left",
+            use_fast=True,
+            model_max_length=512,  # Limit context size for faster processing
+            pad_token="</s>",  # Set pad token explicitly
+            add_eos_token=True,
+            add_bos_token=True
+        )
+        
+        # Set pad token id explicitly
+        self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
+        self.llm_tokenizer.pad_token_id = self.llm_tokenizer.eos_token_id
+        
+        # Now initialize model with tokenizer's pad token
         self.llm = AutoModelForCausalLM.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
             device_map="balanced",
             torch_dtype=torch.float16,
             quantization_config=quantization_config,
             max_memory={0: "22GB", 1: "22GB"},
-            use_cache=True  # Enable KV cache for faster generation
+            use_cache=True,  # Enable KV cache for faster generation
+            pad_token_id=self.llm_tokenizer.pad_token_id
         )
         
-        self.llm_tokenizer = AutoTokenizer.from_pretrained(
-            "mistralai/Mistral-7B-Instruct-v0.3",
-            padding_side="left",
-            use_fast=True,
-            model_max_length=512  # Limit context size for faster processing
-        )
-        # Set pad token id once during initialization
-        self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
-        self.llm_tokenizer.pad_token_id = self.llm_tokenizer.eos_token_id
         logger.info("✓ Mistral-7B loaded")
         
         # Initialize validator
@@ -281,7 +289,10 @@ Generate ONLY the comment: [/INST]"""
                         repetition_penalty=1.15,
                         no_repeat_ngram_size=3,
                         length_penalty=1.0,
-                        eos_token_id=self.llm_tokenizer.eos_token_id
+                        pad_token_id=self.llm_tokenizer.pad_token_id,
+                        bos_token_id=self.llm_tokenizer.bos_token_id,
+                        eos_token_id=self.llm_tokenizer.eos_token_id,
+                        use_cache=True
                     )
                     
                     text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=False)
