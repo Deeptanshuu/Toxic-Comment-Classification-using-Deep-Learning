@@ -24,7 +24,6 @@ class ThreatAugmenter:
         # GPU setup and optimization
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
-            # Enable TF32 for better performance on Ampere GPUs (like RTX 6000)
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             print(f"Using GPU: {torch.cuda.get_device_name()}")
@@ -34,7 +33,7 @@ class ThreatAugmenter:
         # Initialize FLAN-T5-base with optimizations
         self.llm = AutoModelForSeq2SeqLM.from_pretrained(
             "google/flan-t5-base",
-            device_map="auto",
+            device_map=self.device,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True
         )
@@ -45,8 +44,9 @@ class ThreatAugmenter:
             "xlm-roberta-large",
             num_labels=6,
             torch_dtype=torch.float16,
-            low_cpu_mem_usage=True
-        ).to(self.device)
+            low_cpu_mem_usage=True,
+            device_map=self.device
+        )
         self.validator_tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-large")
         
         # Load seed samples
@@ -68,67 +68,67 @@ class ThreatAugmenter:
 Make it threatening but avoid explicit profanity. Keep it under 50 words."""
 
     @torch.inference_mode()
-    @torch.cuda.amp.autocast()  # Enable automatic mixed precision
     def generate_samples(self, prompts: List[str]) -> List[str]:
         """Generate samples using FLAN-T5"""
         try:
-            inputs = self.llm_tokenizer(
-                prompts, 
-                return_tensors="pt", 
-                padding=True, 
-                truncation=True,
-                max_length=128
-            ).to(self.device)
-            
-            outputs = self.llm.generate(
-                **inputs,
-                max_new_tokens=50,
-                temperature=0.9,
-                do_sample=True,
-                top_p=0.95,
-                num_return_sequences=1,
-                repetition_penalty=1.2,
-                pad_token_id=self.llm_tokenizer.pad_token_id,
-                use_cache=True  # Enable KV-cache for faster generation
-            )
-            
-            return [text.strip() for text in self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)]
+            with torch.amp.autocast('cuda', dtype=torch.float16):
+                inputs = self.llm_tokenizer(
+                    prompts, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True,
+                    max_length=128
+                ).to(self.device)
+                
+                outputs = self.llm.generate(
+                    **inputs,
+                    max_new_tokens=50,
+                    temperature=0.9,
+                    do_sample=True,
+                    top_p=0.95,
+                    num_return_sequences=1,
+                    repetition_penalty=1.2,
+                    pad_token_id=self.llm_tokenizer.pad_token_id,
+                    use_cache=True
+                )
+                
+                return [text.strip() for text in self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)]
             
         except Exception as e:
             print(f"Generation error: {str(e)}")
             return []
     
     @torch.inference_mode()
-    @torch.cuda.amp.autocast()  # Enable automatic mixed precision
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
         """Validate generated texts using XLM-RoBERTa"""
         if not texts:
             return torch.zeros(0, dtype=torch.bool)
         
-        inputs = self.validator_tokenizer(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=128
-        ).to(self.device)
-        
-        outputs = self.validator(**inputs)
-        predictions = torch.sigmoid(outputs.logits)
-        
-        # We want high threat score but controlled other toxicity
-        threat_scores = predictions[:, 3]  # Threat is index 3
-        other_toxicity = predictions[:, [0,1,2,4,5]].mean(dim=1)
-        
-        # Relaxed validation criteria
-        valid_mask = (threat_scores > 0.7) & (other_toxicity < 0.8)
-        return valid_mask
+        with torch.amp.autocast('cuda', dtype=torch.float16):
+            inputs = self.validator_tokenizer(
+                texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            ).to(self.device)
+            
+            outputs = self.validator(**inputs)
+            predictions = torch.sigmoid(outputs.logits)
+            
+            # We want high threat score but controlled other toxicity
+            threat_scores = predictions[:, 3]  # Threat is index 3
+            other_toxicity = predictions[:, [0,1,2,4,5]].mean(dim=1)
+            
+            # Relaxed validation criteria
+            valid_mask = (threat_scores > 0.7) & (other_toxicity < 0.8)
+            return valid_mask
     
     def validate_language(self, texts: List[str]) -> List[bool]:
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):  # Increased batch size
+    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
         """Main augmentation loop"""
         print(f"Starting augmentation to generate {target_samples} samples")
         
