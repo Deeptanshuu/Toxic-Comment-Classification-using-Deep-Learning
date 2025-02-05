@@ -80,18 +80,16 @@ class ThreatAugmenter:
         gc.collect()
 
     def generate_prompt(self, seed_text: str) -> str:
-        """Generate a prompt for threat content generation using Mistral's format"""
-        return f"""<s>[INST] You are tasked with generating a threatening comment similar to the example below. The comment should be threatening but avoid explicit profanity. Keep it under 50 words and make it sound natural.
-
-Example threat: {seed_text}
+        """Generate a prompt for realistic threatening content"""
+        return f"""<s>[INST] Generate a threatening comment similar to this example: {seed_text}
 
 Requirements:
-- Must be threatening in nature
-- No explicit profanity
+- Must be genuinely threatening and intimidating
+- Use realistic social media language
+- Can include harsh language if natural
+- Keep under 50 words
+- Make it sound authentic and believable
 - Different wording than the example
-- Under 50 words
-- Social media style language
-- Make it sound natural and believable
 
 Generate a single threatening comment: [/INST]"""
 
@@ -145,7 +143,7 @@ Generate a single threatening comment: [/INST]"""
     
     @torch.inference_mode()
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
-        """Validate generated texts using XLM-RoBERTa"""
+        """Validate generated texts using XLM-RoBERTa with adjusted thresholds"""
         if not texts:
             return torch.zeros(0, dtype=torch.bool)
         
@@ -161,12 +159,12 @@ Generate a single threatening comment: [/INST]"""
             outputs = self.validator(**inputs)
             predictions = torch.sigmoid(outputs.logits)
             
-            # We want high threat score but controlled other toxicity
+            # Adjusted thresholds for more realistic content
             threat_scores = predictions[:, 3]  # Threat is index 3
             other_toxicity = predictions[:, [0,1,2,4,5]].mean(dim=1)
             
-            # Relaxed validation criteria
-            valid_mask = (threat_scores > 0.7) & (other_toxicity < 0.8)
+            # More permissive validation criteria
+            valid_mask = (threat_scores > 0.6) & (other_toxicity < 0.9)
             return valid_mask
     
     def validate_language(self, texts: List[str]) -> List[bool]:
