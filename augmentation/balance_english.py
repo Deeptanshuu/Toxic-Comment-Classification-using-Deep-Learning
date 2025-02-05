@@ -7,6 +7,7 @@ import sys
 from toxic_augment import ToxicAugmenter
 import json
 from sklearn.utils import resample
+import time
 
 # Configure logging
 log_dir = Path("logs")
@@ -135,9 +136,17 @@ def generate_balanced_samples(df, required_samples):
         total_weighted += count
     logger.info(f"\nTotal weighted samples to generate: {total_weighted:,}")
     
+    if total_weighted == 0:
+        logger.error("Total weighted samples to generate is zero; cannot perform augmentation.")
+        raise Exception("Total weighted samples to generate is zero.")
+
     augmented_samples = []
     augmenter = ToxicAugmenter()
     total_generated = 0
+    
+    # Maximum attempts per combination and maximum allowed time per combination (in seconds)
+    max_attempts = 5
+    max_time_per_combo = 15 * 60  # 15 minutes
     
     # Generate samples for each label combination in priority order
     for combo_labels, target_count in sorted_combinations:
@@ -146,7 +155,6 @@ def generate_balanced_samples(df, required_samples):
             
         combo_dict = dict(zip(labels, combo_labels))
         present_labels = [label for label, value in combo_dict.items() if value == 1]
-        
         logger.info(f"\nGenerating {target_count:,} samples for combination:")
         logger.info(f"Labels: {', '.join(present_labels) if present_labels else 'Clean'}")
         
@@ -160,37 +168,46 @@ def generate_balanced_samples(df, required_samples):
             logger.warning("No seed texts found for this combination, skipping...")
             continue
         
-        # Generate samples with timeout and strict count enforcement
-        try:
-            new_samples = augmenter.augment_dataset(
-                target_samples=target_count,
-                label_combo=combo_dict,
-                seed_texts=seed_texts,
-                timeout_minutes=30  # Add timeout to prevent getting stuck
-            )
-            
-            if new_samples is not None and not new_samples.empty:
-                # Ensure we don't exceed target count
-                if len(new_samples) > target_count:
-                    new_samples = new_samples.head(target_count)
+        attempts = 0
+        combo_start_time = time.time()
+        combo_generated = 0
+        new_samples = None
+        
+        while attempts < max_attempts and (time.time() - combo_start_time) < max_time_per_combo and combo_generated < target_count:
+            try:
+                new_samples = augmenter.augment_dataset(
+                    target_samples=target_count - combo_generated,
+                    label_combo=combo_dict,
+                    seed_texts=seed_texts,
+                    timeout_minutes=30
+                )
+                
+                if new_samples is not None and not new_samples.empty:
+                    # Trim if exceeds what is needed
+                    if len(new_samples) > (target_count - combo_generated):
+                        new_samples = new_samples.head(target_count - combo_generated)
                     
-                augmented_samples.append(new_samples)
-                total_generated += len(new_samples)
-                logger.info(f"✓ Generated {len(new_samples):,} samples")
-                
-                # Log current progress
-                logger.info(f"Progress: {total_generated:,}/{total_weighted:,} samples ({total_generated/total_weighted*100:.1f}%)")
-                
-                # Early stopping if we've generated enough samples
-                if total_generated >= required_samples:
-                    logger.info("Reached required sample count, stopping generation")
-                    break
-            else:
-                logger.warning("Failed to generate samples for this combination")
-                
-        except TimeoutError:
-            logger.warning(f"Timeout reached for combination {present_labels if present_labels else 'Clean'}, moving to next...")
-            continue
+                    augmented_samples.append(new_samples)
+                    num_new = len(new_samples)
+                    total_generated += num_new
+                    combo_generated += num_new
+                    logger.info(f"✓ Generated {num_new:,} samples in attempt {attempts+1}")
+                    logger.info(f"Current progress for this combination: {combo_generated:,}/{target_count:,}")
+                    
+                    # Check if we have reached our global required samples
+                    if total_generated >= required_samples:
+                        logger.info("Reached required sample count, stopping generation")
+                        break
+                else:
+                    logger.warning(f"Attempt {attempts+1}: No samples generated for this combination")
+                attempts += 1
+            except TimeoutError:
+                logger.warning(f"Timeout reached for combination {present_labels if present_labels else 'Clean'} on attempt {attempts+1}, moving to next attempt...")
+                attempts += 1
+                continue
+        
+        if total_generated >= required_samples:
+            break
     
     # Combine all generated samples
     if augmented_samples:
