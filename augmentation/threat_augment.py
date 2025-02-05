@@ -134,16 +134,19 @@ class ThreatAugmenter:
         logger.info("Loading Mistral-7B...")
         
         # Configure model for multi-GPU
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        )
+        
         self.llm = AutoModelForCausalLM.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
             device_map="balanced",  # Ensures proper dual GPU usage
             torch_dtype=torch.float16,
-            load_in_4bit=True,
-            max_memory={0: "22GB", 1: "22GB"},  # Explicitly set memory limits for each GPU
-            quantization_config=BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16
-            )
+            quantization_config=quantization_config,
+            max_memory={0: "22GB", 1: "22GB"}  # Explicitly set memory limits for each GPU
         )
         
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
