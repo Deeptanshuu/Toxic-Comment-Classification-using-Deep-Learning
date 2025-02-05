@@ -121,12 +121,12 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=100,
-                    temperature=0.9,  # Slightly lower temperature
+                    temperature=0.9,
                     do_sample=True,
-                    top_p=0.85,  # More focused sampling
-                    top_k=40,  # More selective
+                    top_p=0.85,
+                    top_k=40,
                     num_return_sequences=1,
-                    repetition_penalty=1.2,  # Increased repetition penalty
+                    repetition_penalty=1.2,
                     pad_token_id=self.llm_tokenizer.pad_token_id,
                     eos_token_id=self.llm_tokenizer.eos_token_id,
                     use_cache=True
@@ -137,12 +137,22 @@ Generate only the threatening comment, nothing else: [/INST]"""
                 cleaned_texts = []
                 
                 for text in texts:
+                    print("\nRaw output:", text)  # Debug print
+                    
                     # First, split on [/INST] and take the last part
                     parts = text.split("[/INST]")
                     if len(parts) > 1:
                         response = parts[-1].strip()
                     else:
                         response = text.strip()
+                    
+                    print("After [/INST] split:", response)  # Debug print
+                    
+                    # Remove any text before the actual response
+                    if "for tone (generate something different):" in response:
+                        response = response.split("for tone (generate something different):")[-1].strip()
+                    
+                    print("After removing tone text:", response)  # Debug print
                     
                     # Clean up the response
                     response = response.replace("[INST]", "").replace("</s>", "").strip()
@@ -151,29 +161,34 @@ Generate only the threatening comment, nothing else: [/INST]"""
                     
                     # Remove any repeated prompt content
                     if "You are tasked with generating" in response:
-                        parts = response.split("You are tasked with generating")
-                        response = parts[-1].strip()
+                        response = response.split("You are tasked with generating")[-1].strip()
                     if "Rules:" in response:
-                        parts = response.split("Rules:")
-                        response = parts[0].strip()
+                        response = response.split("Rules:")[0].strip()
                     if "Reference example" in response:
-                        parts = response.split("Reference example")
-                        response = parts[-1].strip()
+                        response = response.split("Reference example")[0].strip()
+                    
+                    print("After cleanup:", response)  # Debug print
                     
                     # Final cleanup
                     response = response.strip('"-').strip()
                     
                     # Basic validation
-                    if len(response.split()) >= 5 and not any(x in response for x in [
-                        "Make it genuinely",
-                        "Generate only",
-                        "You are tasked",
-                        "Rules:",
-                        "Reference example"
-                    ]):
+                    if (len(response.split()) >= 5 and 
+                        not any(x in response for x in [
+                            "Make it genuinely",
+                            "Generate only",
+                            "You are tasked",
+                            "Rules:",
+                            "Reference example",
+                            "for tone"
+                        ]) and
+                        response not in [s.strip() for s in seed_texts]):  # Make sure we're not just repeating the seed
                         cleaned_texts.append(response)
+                        print("Valid response added:", response)  # Debug print
+                    else:
+                        print("Response rejected:", response)  # Debug print
                 
-                print(f"Generated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
+                print(f"\nGenerated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
                 return cleaned_texts
             
         except Exception as e:
