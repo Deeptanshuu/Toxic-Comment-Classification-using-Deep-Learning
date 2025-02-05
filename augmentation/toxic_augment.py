@@ -243,75 +243,80 @@ Generate ONLY the comment: [/INST]"""
         """Generate samples with optimized batch processing"""
         try:
             with torch.amp.autocast('cuda', dtype=torch.float16):
-                # Process in optimal batch sizes
-                batch_size = 32  # Increased for better throughput
-                results = []
+                # Ensure we have matching lengths
+                if len(prompts) != len(seed_texts):
+                    logger.error("Mismatch between prompts and seed texts length")
+                    return None
                 
-                for i in range(0, len(prompts), batch_size):
-                    batch_prompts = prompts[i:i + batch_size]
-                    batch_seeds = seed_texts[i:i + batch_size]
-                    
-                    inputs = self.llm_tokenizer(
-                        batch_prompts,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=256
-                    ).to(self.llm.device)
-                    
-                    outputs = self.llm.generate(
-                        **inputs,
-                        max_new_tokens=32,
-                        temperature=0.95,
-                        do_sample=True,
-                        top_p=0.92,
-                        top_k=50,
-                        num_return_sequences=1,
-                        repetition_penalty=1.15,
-                        pad_token_id=self.llm_tokenizer.pad_token_id,
-                        eos_token_id=self.llm_tokenizer.eos_token_id,
-                        use_cache=True  # Enable KV cache
-                    )
-                    
-                    texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
-                    cleaned_texts = []
-                    
-                    for text in texts:
-                        if "[/INST]" in text and "</s>" in text:
-                            response = text.split("[/INST]")[1].split("</s>")[0].strip()
-                            response = response.strip().strip('"').strip("'")
-                            
-                            if 3 <= len(response.split()) <= 50:
-                                cleaned_texts.append(response)
-                    
-                    if cleaned_texts:
-                        # Validate in batches
-                        validation_results = self.validator.validate(cleaned_texts)
+                inputs = self.llm_tokenizer(
+                    prompts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=256
+                ).to(self.llm.device)
+                
+                outputs = self.llm.generate(
+                    **inputs,
+                    max_new_tokens=32,
+                    temperature=0.95,
+                    do_sample=True,
+                    top_p=0.92,
+                    top_k=50,
+                    num_return_sequences=1,
+                    repetition_penalty=1.15,
+                    pad_token_id=self.llm_tokenizer.pad_token_id,
+                    eos_token_id=self.llm_tokenizer.eos_token_id,
+                    use_cache=True
+                )
+                
+                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
+                cleaned_texts = []
+                
+                # Process responses
+                for text in texts:
+                    if "[/INST]" in text and "</s>" in text:
+                        response = text.split("[/INST]")[1].split("</s>")[0].strip()
+                        response = response.strip().strip('"').strip("'")
                         
-                        # Process valid samples
-                        for j, text in enumerate(cleaned_texts):
-                            matches_target = all(
-                                bool(validation_results[label][j]) == bool(target_labels[label])
-                                for label in target_labels
-                            )
-                            
-                            if matches_target:
-                                sample = {
-                                    'comment_text': text,
-                                    **target_labels
-                                }
-                                results.append(sample)
-                                
-                                # Log with proper serialization
-                                self.log_generation(
-                                    batch_seeds[j],
-                                    batch_prompts[j],
-                                    text,
-                                    {label: bool(validation_results[label][j]) for label in target_labels}
-                                )
+                        word_count = len(response.split())
+                        if (word_count >= 3 and word_count <= 50 and
+                            not any(x in response.lower() for x in [
+                                "generate", "requirements:", "reference",
+                                "[inst]", "example"
+                            ])):
+                            cleaned_texts.append(response)
                 
-                if results:
-                    return pd.DataFrame(results)
+                if cleaned_texts:
+                    # Validate texts
+                    validation_results = self.validator.validate(cleaned_texts)
+                    
+                    # Create DataFrame with valid samples
+                    valid_samples = []
+                    for i, text in enumerate(cleaned_texts):
+                        matches_target = all(
+                            bool(validation_results[label][i]) == bool(target_labels[label])
+                            for label in target_labels
+                        )
+                        
+                        if matches_target:
+                            sample = {
+                                'comment_text': text,
+                                **target_labels
+                            }
+                            valid_samples.append(sample)
+                            
+                            # Log generation
+                            self.log_generation(
+                                seed_texts[i],
+                                prompts[i],
+                                text,
+                                {label: bool(validation_results[label][i]) for label in target_labels}
+                            )
+                    
+                    if valid_samples:
+                        return pd.DataFrame(valid_samples)
+                
                 return None
                 
         except Exception as e:
@@ -323,31 +328,34 @@ Generate ONLY the comment: [/INST]"""
         logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
         
         generated_samples = []
-        batch_size = 32
+        batch_size = min(32, target_samples)  # Don't use larger batch than target
         start_time = time.time()
         timeout_seconds = timeout_minutes * 60
+        total_generated = 0
         
-        # Create a single progress bar instance
+        # Create progress bar
         pbar = tqdm(
             total=target_samples,
-            desc=f"Generating",
+            desc="Generating",
             unit="samples",
             ncols=100,
-            position=0,  # Force single position
-            leave=True,  # Keep the bar after completion
             bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
         )
         
         try:
-            while len(generated_samples) < target_samples:
+            while total_generated < target_samples:
                 # Check timeout
                 if time.time() - start_time > timeout_seconds:
                     pbar.close()
                     logger.warning(f"Timeout reached after {timeout_minutes} minutes")
-                    raise TimeoutError(f"Generation timed out after {timeout_minutes} minutes")
+                    break
+                
+                # Calculate remaining samples needed
+                remaining = target_samples - total_generated
+                current_batch_size = min(batch_size, remaining)
                 
                 # Select batch of seed texts
-                batch_seeds = np.random.choice(seed_texts, size=min(batch_size, target_samples - len(generated_samples)))
+                batch_seeds = np.random.choice(seed_texts, size=current_batch_size)
                 
                 # Generate prompts
                 prompts = [self.generate_prompt(seed, label_combo) for seed in batch_seeds]
@@ -356,25 +364,27 @@ Generate ONLY the comment: [/INST]"""
                 new_samples = self.generate_samples(prompts, batch_seeds, label_combo)
                 
                 if new_samples is not None and not new_samples.empty:
+                    # Ensure we don't exceed target count
+                    if len(new_samples) > remaining:
+                        new_samples = new_samples.head(remaining)
+                    
                     generated_samples.append(new_samples)
+                    num_new = len(new_samples)
+                    total_generated += num_new
                     
-                    # Update progress bar with actual new samples
-                    new_count = len(new_samples)
-                    pbar.update(new_count)
+                    # Update progress bar
+                    pbar.update(num_new)
                     
-                    # Calculate and update rate
+                    # Calculate and display rate
                     elapsed_minutes = (time.time() - start_time) / 60
-                    total_samples = sum(len(df) for df in generated_samples)
-                    rate = total_samples / elapsed_minutes
-                    
-                    # Update progress bar description with rate
+                    rate = total_generated / elapsed_minutes if elapsed_minutes > 0 else 0
                     pbar.set_postfix({
                         'rate': f'{rate:.1f} samples/min',
-                        'success': f'{(new_count/batch_size)*100:.1f}%'
+                        'total': f'{total_generated}/{target_samples}'
                     }, refresh=True)
                 
                 # Memory management
-                if len(generated_samples) % (batch_size * 5) == 0:
+                if total_generated % (batch_size * 2) == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
             
@@ -383,14 +393,20 @@ Generate ONLY the comment: [/INST]"""
             # Combine all generated samples
             if generated_samples:
                 final_df = pd.concat(generated_samples, ignore_index=True)
-                return final_df[:target_samples]
+                
+                # Double check we don't exceed target
+                if len(final_df) > target_samples:
+                    final_df = final_df.head(target_samples)
+                    
+                logger.info(f"Successfully generated {len(final_df)} samples")
+                return final_df
             
             return None
             
         except Exception as e:
             pbar.close()
             logger.error(f"Generation error: {str(e)}")
-            raise
+            return None
         finally:
             pbar.close()
 
