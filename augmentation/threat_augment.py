@@ -64,16 +64,16 @@ class ThreatAugmenter:
         self.llm_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
         
         # Initialize XLM-RoBERTa for validation
-        toxicity_model = toxicity_model_path or "your/fine-tuned-toxicity-model"
         try:
             self.validator = AutoModelForSequenceClassification.from_pretrained(
-                toxicity_model,
+                "xlm-roberta-large",
                 num_labels=6,
                 device_map="auto",
                 torch_dtype=torch.float16,
                 low_cpu_mem_usage=True
             ).to(self.device)
-            self.validator_tokenizer = AutoTokenizer.from_pretrained(toxicity_model)
+            self.validator_tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-large")
+            logging.info("Loaded XLM-RoBERTa for toxicity validation")
         except Exception as e:
             raise ValueError(f"Failed to load toxicity model: {str(e)}")
         
@@ -315,10 +315,9 @@ if __name__ == "__main__":
         torch.manual_seed(42)
         np.random.seed(42)
         
-        # Initialize augmenter
+        # Initialize augmenter with default model
         augmenter = ThreatAugmenter(
-            seed_samples_path="dataset/split/train.csv",
-            toxicity_model_path=None  # Replace with your model path
+            seed_samples_path="dataset/split/train.csv"  # Removed toxicity_model_path
         )
         
         # Run augmentation
