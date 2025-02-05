@@ -21,21 +21,31 @@ logging.basicConfig(
 
 class ThreatAugmenter:
     def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
+        # GPU setup and optimization
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            # Enable TF32 for better performance on Ampere GPUs (like RTX 6000)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print(f"Using GPU: {torch.cuda.get_device_name()}")
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
         
         print("Loading models...")
-        # Initialize FLAN-T5-base
+        # Initialize FLAN-T5-base with optimizations
         self.llm = AutoModelForSeq2SeqLM.from_pretrained(
             "google/flan-t5-base",
             device_map="auto",
-            torch_dtype=torch.float16
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
         )
         self.llm_tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-base")
         
-        # Initialize XLM-RoBERTa for validation
+        # Initialize XLM-RoBERTa with optimizations
         self.validator = AutoModelForSequenceClassification.from_pretrained(
             "xlm-roberta-large",
-            num_labels=6
+            num_labels=6,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
         ).to(self.device)
         self.validator_tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-large")
         
@@ -46,6 +56,10 @@ class ThreatAugmenter:
             (self.seed_df['threat'] == 1)
         ]
         print(f"Found {len(self.en_threat_samples)} EN threat samples")
+        
+        # Clear GPU cache after initialization
+        torch.cuda.empty_cache()
+        gc.collect()
 
     def generate_prompt(self, seed_text: str) -> str:
         """Generate a prompt for threat content generation"""
@@ -54,6 +68,7 @@ class ThreatAugmenter:
 Make it threatening but avoid explicit profanity. Keep it under 50 words."""
 
     @torch.inference_mode()
+    @torch.cuda.amp.autocast()  # Enable automatic mixed precision
     def generate_samples(self, prompts: List[str]) -> List[str]:
         """Generate samples using FLAN-T5"""
         try:
@@ -72,7 +87,9 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
                 do_sample=True,
                 top_p=0.95,
                 num_return_sequences=1,
-                repetition_penalty=1.2
+                repetition_penalty=1.2,
+                pad_token_id=self.llm_tokenizer.pad_token_id,
+                use_cache=True  # Enable KV-cache for faster generation
             )
             
             return [text.strip() for text in self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)]
@@ -82,6 +99,7 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
             return []
     
     @torch.inference_mode()
+    @torch.cuda.amp.autocast()  # Enable automatic mixed precision
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
         """Validate generated texts using XLM-RoBERTa"""
         if not texts:
@@ -110,7 +128,7 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
-    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 16):
+    def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):  # Increased batch size
         """Main augmentation loop"""
         print(f"Starting augmentation to generate {target_samples} samples")
         
@@ -139,8 +157,13 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
             generated_samples.extend(final_samples)
             pbar.update(len(final_samples))
             
-            # Memory cleanup
-            if len(generated_samples) % 100 == 0:
+            # Print batch stats
+            if final_samples:
+                print(f"\nBatch success rate: {len(final_samples)}/{batch_size} "
+                      f"({len(final_samples)/batch_size*100:.1f}%)")
+            
+            # Memory cleanup every 5 batches
+            if len(generated_samples) % (batch_size * 5) == 0:
                 torch.cuda.empty_cache()
                 gc.collect()
         
@@ -167,5 +190,9 @@ Make it threatening but avoid explicit profanity. Keep it under 50 words."""
         return aug_df
 
 if __name__ == "__main__":
+    # Set memory growth
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     augmenter = ThreatAugmenter()
     augmented_df = augmenter.augment_dataset()
