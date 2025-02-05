@@ -240,16 +240,36 @@ Generate ONLY the comment: [/INST]"""
             self.flush_buffer()
 
     def generate_samples(self, prompts: List[str], seed_texts: List[str], target_labels: Dict[str, int]) -> pd.DataFrame:
-        """Generate samples with optimized batch processing and timeout handling"""
+        """Generate samples with optimized batch processing and dynamic validation"""
         try:
+            # First get toxicity scores for seed texts to use as reference
+            seed_scores = {}
+            for label in target_labels.keys():
+                X = self.validator.vectorizers[label].transform(seed_texts)
+                probs = self.validator.models[label].predict_proba(X)[:, 1]
+                seed_scores[label] = probs
+            
+            # Set dynamic thresholds with tolerance
+            tolerance = 0.15  # Allow 15% deviation from seed scores
+            dynamic_thresholds = {}
+            for label, scores in seed_scores.items():
+                if target_labels[label]:  # For toxic labels
+                    min_threshold = max(0.6, scores.mean() - tolerance)  # Don't go below 0.6
+                    max_threshold = min(0.95, scores.mean() + tolerance)  # Don't go above 0.95
+                    dynamic_thresholds[label] = (min_threshold, max_threshold)
+                else:  # For non-toxic labels
+                    dynamic_thresholds[label] = (0.0, 0.4)  # Keep non-toxic threshold fixed lower
+            
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 # Ensure we have matching lengths
                 if len(prompts) != len(seed_texts):
                     logger.error("Mismatch between prompts and seed texts length")
                     return None
                 
-                # Set generation timeout
+                # Set timeouts
                 gen_timeout = 30  # 30 seconds max per generation
+                total_timeout = 300  # 5 minutes total hard limit
+                start_time = time.time()
                 
                 inputs = self.llm_tokenizer(
                     prompts,
@@ -259,7 +279,11 @@ Generate ONLY the comment: [/INST]"""
                     max_length=256
                 ).to(self.llm.device)
                 
-                # Add stopping criteria for faster generation
+                # Check total time
+                if time.time() - start_time > total_timeout:
+                    logger.warning("Hard time limit reached (5 minutes)")
+                    return None
+                
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=32,
@@ -272,17 +296,21 @@ Generate ONLY the comment: [/INST]"""
                     pad_token_id=self.llm_tokenizer.pad_token_id,
                     eos_token_id=self.llm_tokenizer.eos_token_id,
                     use_cache=True,
-                    max_time=gen_timeout,  # Add timeout
-                    early_stopping=True  # Enable early stopping
+                    max_time=gen_timeout,
+                    early_stopping=True
                 )
                 
                 # Clear CUDA cache after generation
                 torch.cuda.empty_cache()
                 
+                # Check total time again
+                if time.time() - start_time > total_timeout:
+                    logger.warning("Hard time limit reached (5 minutes)")
+                    return None
+                
                 texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
                 cleaned_texts = []
                 
-                # Process responses with timeout check
                 for text in texts:
                     if "[/INST]" in text and "</s>" in text:
                         response = text.split("[/INST]")[1].split("</s>")[0].strip()
@@ -297,8 +325,14 @@ Generate ONLY the comment: [/INST]"""
                             cleaned_texts.append(response)
                 
                 if cleaned_texts:
-                    # Validate texts
-                    validation_results = self.validator.validate(cleaned_texts)
+                    # Get toxicity scores for generated texts
+                    validation_results = {}
+                    for label in target_labels:
+                        X = self.validator.vectorizers[label].transform(cleaned_texts)
+                        probs = self.validator.models[label].predict_proba(X)[:, 1]
+                        # Apply dynamic thresholds
+                        min_thresh, max_thresh = dynamic_thresholds[label]
+                        validation_results[label] = (probs >= min_thresh) & (probs <= max_thresh)
                     
                     # Create DataFrame with valid samples
                     valid_samples = []
@@ -315,7 +349,7 @@ Generate ONLY the comment: [/INST]"""
                             }
                             valid_samples.append(sample)
                             
-                            # Log generation
+                            # Log generation with scores
                             self.log_generation(
                                 seed_texts[i],
                                 prompts[i],
@@ -330,17 +364,17 @@ Generate ONLY the comment: [/INST]"""
                 
         except Exception as e:
             logger.error(f"Generation error: {str(e)}")
-            torch.cuda.empty_cache()  # Ensure CUDA cache is cleared on error
+            torch.cuda.empty_cache()
             return None
 
-    def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 30) -> pd.DataFrame:
+    def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
         logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
         
         generated_samples = []
         batch_size = min(32, target_samples)  # Don't use larger batch than target
         start_time = time.time()
-        timeout_seconds = timeout_minutes * 60
+        timeout_seconds = min(timeout_minutes * 60, 300)  # Hard limit of 5 minutes
         total_generated = 0
         consecutive_failures = 0
         max_consecutive_failures = 3
@@ -359,7 +393,7 @@ Generate ONLY the comment: [/INST]"""
                 # Check timeout
                 elapsed_time = time.time() - start_time
                 if elapsed_time > timeout_seconds:
-                    logger.warning(f"Global timeout reached after {timeout_minutes} minutes")
+                    logger.warning(f"Time limit reached after {elapsed_time/60:.1f} minutes")
                     break
                 
                 # Check consecutive failures
@@ -396,15 +430,17 @@ Generate ONLY the comment: [/INST]"""
                     # Update progress bar
                     pbar.update(num_new)
                     
-                    # Calculate and display rate
+                    # Calculate and display rate and time remaining
                     elapsed_minutes = elapsed_time / 60
                     rate = total_generated / elapsed_minutes if elapsed_minutes > 0 else 0
                     batch_time = time.time() - batch_start
+                    time_remaining = max(0, timeout_seconds - elapsed_time)
                     
                     pbar.set_postfix({
                         'rate': f'{rate:.1f}/min',
-                        'batch_time': f'{batch_time:.1f}s',
-                        'failures': consecutive_failures
+                        'batch': f'{batch_time:.1f}s',
+                        'remain': f'{time_remaining:.0f}s',
+                        'fail': consecutive_failures
                     }, refresh=True)
                 else:
                     consecutive_failures += 1
@@ -425,7 +461,7 @@ Generate ONLY the comment: [/INST]"""
                 if len(final_df) > target_samples:
                     final_df = final_df.head(target_samples)
                     
-                logger.info(f"Successfully generated {len(final_df)} samples")
+                logger.info(f"Successfully generated {len(final_df)} samples in {elapsed_time/60:.1f} minutes")
                 return final_df
             
             return None
@@ -454,10 +490,10 @@ Generate ONLY the comment: [/INST]"""
         results = {}
         for label, threshold in label_thresholds.items():
             # Vectorize texts
-            X = self.vectorizers[label].transform(texts)
+            X = self.validator.vectorizers[label].transform(texts)
             
             # Get probabilities
-            probs = self.models[label].predict_proba(X)[:, 1]
+            probs = self.validator.models[label].predict_proba(X)[:, 1]
             
             # Apply threshold with numpy for better performance
             results[label] = probs >= threshold
