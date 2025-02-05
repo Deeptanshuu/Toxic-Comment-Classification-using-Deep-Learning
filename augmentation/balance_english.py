@@ -1,3 +1,20 @@
+import os
+import torch
+
+# Configure CPU and thread settings FIRST, before any other imports
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'
+os.environ['TF_CPU_ENABLE_AVX2'] = '1'
+os.environ['TF_CPU_ENABLE_AVX512F'] = '1'
+os.environ['TF_CPU_ENABLE_AVX512_VNNI'] = '1'
+os.environ['TF_CPU_ENABLE_FMA'] = '1'
+os.environ['MKL_NUM_THREADS'] = '80'
+os.environ['OMP_NUM_THREADS'] = '80'
+
+# Set PyTorch thread configurations once
+torch.set_num_threads(80)
+torch.set_num_interop_threads(10)
+
+# Now import everything else
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -8,25 +25,8 @@ from toxic_augment import ToxicAugmenter
 import json
 from sklearn.utils import resample
 import time
-import torch
-import os
 import signal
 from contextlib import contextmanager
-
-# Configure CPU optimizations
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'
-os.environ['TF_CPU_ENABLE_AVX2'] = '1'
-os.environ['TF_CPU_ENABLE_AVX512F'] = '1'
-os.environ['TF_CPU_ENABLE_AVX512_VNNI'] = '1'
-os.environ['TF_CPU_ENABLE_FMA'] = '1'
-
-# Set PyTorch thread and CPU configurations
-torch.set_num_threads(80)  # Optimize for Xeon
-torch.set_num_interop_threads(10)
-
-# Enable Intel MKL optimizations if available
-os.environ['MKL_NUM_THREADS'] = '80'
-os.environ['OMP_NUM_THREADS'] = '80'
 
 # Configure logging
 log_dir = Path("logs")

@@ -4,7 +4,6 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig
 )
-from langdetect import detect
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -129,10 +128,6 @@ class ToxicAugmenter:
         # Initialize generation buffer
         self.generation_buffer = []
         self.buffer_size = 100
-        
-        # CPU optimization settings for Intel Xeon Gold
-        torch.set_num_threads(80)  # Xeon Gold typically has many cores
-        torch.set_num_interop_threads(10)  # Optimize parallel operations
         
         # Multi-GPU setup
         self.num_gpus = torch.cuda.device_count()
