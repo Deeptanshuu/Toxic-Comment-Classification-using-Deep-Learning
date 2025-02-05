@@ -256,19 +256,23 @@ Generate ONLY the comment: [/INST]"""
         # Count how many toxic labels we need
         num_toxic_labels = sum(1 for v in label_combo.values() if v == 1)
         
-        # For multi-label cases (3 or more), use very lenient thresholds
-        if num_toxic_labels >= 3:
-            toxic_threshold = 0.25  # Much lower threshold for multi-label
-            non_toxic_threshold = 0.5  # More lenient for non-toxic in multi-label case
+        # Set thresholds based on number of toxic labels
+        if num_toxic_labels >= 6:  # All labels case
+            toxic_threshold = 0.15  # Extremely lenient for 6-label case
+            non_toxic_threshold = 0.9  # Almost never reject for non-toxic
+            logger.debug(f"Using extremely lenient thresholds for 6-label case")
+        elif num_toxic_labels >= 3:
+            toxic_threshold = 0.25  # Lenient for multi-label
+            non_toxic_threshold = 0.6
         else:
-            # For 1-2 labels, use standard thresholds
             toxic_threshold = max(0.3, 0.5 - (num_toxic_labels * 0.05))
             non_toxic_threshold = min(0.4, 0.3 + (num_toxic_labels * 0.02))
         
-        # Log thresholds for debugging
-        if attempts % 10 == 0:
-            logger.debug(f"Using thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
+        # Log validation attempt
+        logger.debug(f"\nValidating text: {text}")
+        logger.debug(f"Thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
         
+        # Get probabilities and validate each label
         for label in label_combo.keys():
             probs[label] = self.validator.get_probabilities([text], label)[0]
             
@@ -277,17 +281,14 @@ Generate ONLY the comment: [/INST]"""
                 validation_results[label] = probs[label] >= toxic_threshold
             else:  # Should be non-toxic
                 validation_results[label] = probs[label] <= non_toxic_threshold
+            
+            # Log each label's result
+            logger.debug(f"{label}: {probs[label]:.3f} (target: {label_combo[label]}, passed: {validation_results[label]})")
         
-        # Log validation results if all failed
-        if not all(validation_results.values()):
-            logger.debug(f"Validation failed:")
-            logger.debug(f"Text: {text}")
-            logger.debug(f"Thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
-            logger.debug("Probabilities:")
-            for label, prob in probs.items():
-                logger.debug(f"{label}: {prob:.3f} (target: {label_combo[label]}, passed: {validation_results[label]})")
+        passed = all(validation_results.values())
+        logger.debug(f"Overall validation {'PASSED' if passed else 'FAILED'}")
         
-        return all(validation_results.values())
+        return passed
 
     def generate_samples(self, target_samples: int, label_combo: Dict[str, int],
                         seed_texts: List[str], total_timeout: int = 300) -> pd.DataFrame:
