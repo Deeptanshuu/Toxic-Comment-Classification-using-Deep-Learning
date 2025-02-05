@@ -173,65 +173,76 @@ class ToxicAugmenter:
         self.validator = FastToxicValidator()
         logger.info("✓ Fast validator initialized")
 
-    def generate_prompt(self, seed_text: str, label_combo: Dict[str, int]) -> str:
-        """Generate a more specific prompt for multi-label toxic content"""
-        # Convert label combination to description
-        toxicity_types = []
-        if label_combo['toxic']:
-            toxicity_types.append('toxic')
-        if label_combo['severe_toxic']:
-            toxicity_types.append('severely toxic')
-        if label_combo['obscene']:
-            toxicity_types.append('obscene')
-        if label_combo['threat']:
-            toxicity_types.append('threatening')
-        if label_combo['insult']:
-            toxicity_types.append('insulting')
-        if label_combo['identity_hate']:
-            toxicity_types.append('identity-based hate')
-        
-        # Special case for all 6 labels
-        if len(toxicity_types) == 6:
-            prompt = f"""<s>[INST] Generate an extremely toxic social media comment that combines ALL of these elements:
-1. Severe toxicity and obscenity
-2. Direct threats of violence
-3. Personal insults
-4. Identity-based hate speech
-
-Requirements:
-- Make it genuinely hostile and aggressive
-- Include clear threats
-- Use obscene language
-- Target specific identities
-- Keep it between 15-25 words
-- Different content than this example: {seed_text}
-
-Generate ONLY the toxic comment: [/INST]"""
-        
-        # Regular multi-label case
-        elif len(toxicity_types) > 2:
-            prompt = f"""<s>[INST] Generate a highly offensive social media comment that combines multiple types of toxicity. The comment should be:
-- Extremely {', '.join(toxicity_types[:-1])} and {toxicity_types[-1]}
-- Written in an aggressive, hostile tone
-- Similar in style to this example (but different content): {seed_text}
-- Between 10-30 words long
-
-Generate ONLY the toxic comment: [/INST]"""
-        else:
-            toxicity_desc = ', '.join(toxicity_types)
-            prompt = f"""<s>[INST] Generate an offensive social media comment that is {toxicity_desc}.
-
+    def generate_prompt(self, seed_text: str, label: str) -> str:
+        """Generate a prompt for a single toxicity type"""
+        prompts = {
+            'toxic': """<s>[INST] Generate a toxic social media comment that is hostile and offensive.
 Example tone (generate different content): {seed_text}
 
-Make it:
-- Genuinely {toxicity_desc}
-- Intense and hostile
+Requirements:
+- Make it genuinely toxic and hostile
+- Between 10-30 words
+- Different from the example
+
+Generate ONLY the comment: [/INST]""",
+
+            'severe_toxic': """<s>[INST] Generate an extremely toxic social media comment.
+Example tone (generate different content): {seed_text}
+
+Requirements:
+- Make it severely toxic and hostile
+- Use strong offensive language
+- Between 10-30 words
+- Different from the example
+
+Generate ONLY the comment: [/INST]""",
+
+            'obscene': """<s>[INST] Generate an obscene social media comment.
+Example tone (generate different content): {seed_text}
+
+Requirements:
+- Use obscene language
+- Make it vulgar and offensive
+- Between 10-30 words
+- Different from the example
+
+Generate ONLY the comment: [/INST]""",
+
+            'threat': """<s>[INST] Generate a threatening social media comment.
+Example tone (generate different content): {seed_text}
+
+Requirements:
+- Include clear threats or intimidation
+- Make it menacing
+- Between 10-30 words
+- Different from the example
+
+Generate ONLY the comment: [/INST]""",
+
+            'insult': """<s>[INST] Generate an insulting social media comment.
+Example tone (generate different content): {seed_text}
+
+Requirements:
+- Include personal insults
+- Make it offensive and demeaning
+- Between 10-30 words
+- Different from the example
+
+Generate ONLY the comment: [/INST]""",
+
+            'identity_hate': """<s>[INST] Generate a hateful social media comment targeting specific identities.
+Example tone (generate different content): {seed_text}
+
+Requirements:
+- Target specific identity groups
+- Make it discriminatory
 - Between 10-30 words
 - Different from the example
 
 Generate ONLY the comment: [/INST]"""
+        }
         
-        return prompt
+        return prompts[label].format(seed_text=seed_text)
 
     def flush_buffer(self):
         """Flush the generation buffer to disk"""
@@ -265,58 +276,32 @@ Generate ONLY the comment: [/INST]"""
         if len(self.generation_buffer) >= self.buffer_size:
             self.flush_buffer()
 
-    def validate_sample(self, text: str, label_combo: Dict[str, int]) -> bool:
-        """Validate a generated sample against the target label combination"""
-        # Get probabilities for each label
-        probs = {}
-        validation_results = {}
+    def validate_sample(self, text: str, label: str) -> bool:
+        """Validate a generated sample for a single label"""
+        # Get probability for the label
+        prob = self.validator.get_probabilities([text], label)[0]
         
-        # Count how many toxic labels we need
-        num_toxic_labels = sum(1 for v in label_combo.values() if v == 1)
+        # Use simpler thresholds for single-label validation
+        threshold = 0.5  # Base threshold
+        if label in ['severe_toxic', 'threat', 'identity_hate']:
+            threshold = 0.4  # Lower threshold for harder categories
         
-        # Set thresholds based on number of toxic labels
-        if num_toxic_labels >= 6:  # All labels case
-            toxic_threshold = 0.15  # Extremely lenient for 6-label case
-            non_toxic_threshold = 0.9  # Almost never reject for non-toxic
-            logger.debug(f"Using extremely lenient thresholds for 6-label case")
-        elif num_toxic_labels >= 3:
-            toxic_threshold = 0.25  # Lenient for multi-label
-            non_toxic_threshold = 0.6
-        else:
-            toxic_threshold = max(0.3, 0.5 - (num_toxic_labels * 0.05))
-            non_toxic_threshold = min(0.4, 0.3 + (num_toxic_labels * 0.02))
-        
-        # Log validation attempt
-        logger.debug(f"\nValidating text: {text}")
-        logger.debug(f"Thresholds - toxic: {toxic_threshold:.2f}, non-toxic: {non_toxic_threshold:.2f}")
-        
-        # Get probabilities and validate each label
-        for label in label_combo.keys():
-            probs[label] = self.validator.get_probabilities([text], label)[0]
-            
-            # Validate each label
-            if label_combo[label] == 1:  # Should be toxic
-                validation_results[label] = probs[label] >= toxic_threshold
-            else:  # Should be non-toxic
-                validation_results[label] = probs[label] <= non_toxic_threshold
-            
-            # Log each label's result
-            logger.debug(f"{label}: {probs[label]:.3f} (target: {label_combo[label]}, passed: {validation_results[label]})")
-        
-        passed = all(validation_results.values())
-        logger.debug(f"Overall validation {'PASSED' if passed else 'FAILED'}")
+        # Log validation result
+        passed = prob >= threshold
+        logger.debug(f"\nValidating text for {label}: {text}")
+        logger.debug(f"Probability: {prob:.3f}, Threshold: {threshold:.2f}, Passed: {passed}")
         
         return passed
 
-    def generate_samples(self, target_samples: int, label_combo: Dict[str, int],
+    def generate_samples(self, target_samples: int, label: str,
                         seed_texts: List[str], total_timeout: int = 300) -> pd.DataFrame:
-        """Generate samples for a specific label combination with timeouts"""
+        """Generate samples for a single label with timeouts"""
         start_time = time.time()
         generated_samples = []
         attempts = 0
         max_attempts = target_samples * 5  # Allow 5 attempts per target sample
         
-        pbar = tqdm(total=target_samples, desc="Generating samples")
+        pbar = tqdm(total=target_samples, desc=f"Generating {label} samples")
         
         try:
             while len(generated_samples) < target_samples and attempts < max_attempts:
@@ -329,7 +314,7 @@ Generate ONLY the comment: [/INST]"""
                 
                 # Select random seed text and generate prompt
                 seed_text = random.choice(seed_texts)
-                prompt = self.generate_prompt(seed_text, label_combo)
+                prompt = self.generate_prompt(seed_text, label)
                 
                 try:
                     # Log generation attempt
@@ -367,8 +352,6 @@ Generate ONLY the comment: [/INST]"""
                         
                         # Basic quality checks
                         if len(output.split()) < 3 or len(output) < 10:
-                            if attempts % 10 == 0:
-                                logger.debug(f"Text too short: {output}")
                             continue
                             
                         # Log generated text periodically
@@ -376,13 +359,13 @@ Generate ONLY the comment: [/INST]"""
                             logger.debug(f"Generated text: {output}")
                             
                         # Validate sample
-                        if self.validate_sample(output, label_combo):
-                            generated_samples.append({
-                                'comment_text': output,
-                                **label_combo
-                            })
+                        if self.validate_sample(output, label):
+                            sample_dict = {'comment_text': output}
+                            for l in ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']:
+                                sample_dict[l] = 1 if l == label else 0
+                            generated_samples.append(sample_dict)
                             pbar.update(1)
-                            logger.info(f"✓ Valid sample generated: {output}")
+                            logger.info(f"✓ Valid {label} sample generated: {output}")
                         
                 except Exception as e:
                     logger.warning(f"Error during generation attempt {attempts}: {str(e)}")
@@ -399,9 +382,9 @@ Generate ONLY the comment: [/INST]"""
             
         return pd.DataFrame(generated_samples) if generated_samples else None
 
-    def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
+    def augment_dataset(self, target_samples: int, label: str, seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
-        logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
+        logger.info(f"\nGenerating {target_samples} samples with label: {label}")
         
         generated_samples = []
         batch_size = min(32, target_samples)
@@ -433,13 +416,13 @@ Generate ONLY the comment: [/INST]"""
                 
                 # Select batch of seed texts
                 batch_seeds = np.random.choice(seed_texts, size=current_batch_size)
-                prompts = [self.generate_prompt(seed, label_combo) for seed in batch_seeds]
+                prompts = [self.generate_prompt(seed, label) for seed in batch_seeds]
                 
                 # Generate and validate samples
                 batch_start = time.time()
                 new_samples = self.generate_samples(
                     target_samples=current_batch_size,
-                    label_combo=label_combo,
+                    label=label,
                     seed_texts=batch_seeds,
                     total_timeout=timeout_seconds - elapsed_time
                 )
