@@ -12,15 +12,25 @@ from pathlib import Path
 import logging
 import gc
 from typing import List
+import json
+from datetime import datetime
 
-# Simple logging setup
+# Enhanced logging setup
 logging.basicConfig(
     level=logging.INFO,
     format='%(message)s'
 )
 
+# Create a log directory
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+
 class ThreatAugmenter:
     def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
+        # Initialize logging
+        self.log_file = log_dir / f"generation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        print(f"Logging details to: {self.log_file}")
+        
         # GPU setup and optimization
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
@@ -163,39 +173,87 @@ Generate a single threatening comment: [/INST]"""
         """Simple language validation"""
         return [detect(text) == 'en' for text in texts]
     
+    def log_generation(self, seed_text: str, prompt: str, generated_text: str, is_valid: bool):
+        """Log the generation details"""
+        log_entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "seed_text": seed_text,
+            "prompt": prompt,
+            "generated_text": generated_text,
+            "is_valid": is_valid
+        }
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+    
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 8):
-        """Main augmentation loop"""
+        """Main augmentation loop with detailed logging"""
         print(f"Starting augmentation to generate {target_samples} samples")
+        print(f"Logging details to: {self.log_file}")
         
         generated_samples = []
         pbar = tqdm(total=target_samples, desc="Generating samples")
+        
+        generation_stats = {
+            "total_attempts": 0,
+            "valid_samples": 0,
+            "invalid_toxicity": 0,
+            "invalid_language": 0
+        }
         
         while len(generated_samples) < target_samples:
             # Sample seed texts
             seed_texts = self.en_threat_samples['comment_text'].sample(batch_size).tolist()
             prompts = [self.generate_prompt(text) for text in seed_texts]
             
+            # Print sample prompt occasionally
+            if generation_stats["total_attempts"] % 50 == 0:
+                print("\nSample prompt:")
+                print("-" * 50)
+                print(prompts[0])
+                print("-" * 50)
+            
             # Generate new samples
             new_samples = self.generate_samples(prompts)
             if not new_samples:
                 continue
-                
+            
+            generation_stats["total_attempts"] += len(new_samples)
+            
             # Validate toxicity
             toxicity_mask = self.validate_toxicity(new_samples)
             valid_samples = [s for i, s in enumerate(new_samples) if toxicity_mask[i]]
+            generation_stats["invalid_toxicity"] += len(new_samples) - len(valid_samples)
             
             # Validate language
             lang_mask = self.validate_language(valid_samples)
             final_samples = [s for i, s in enumerate(valid_samples) if lang_mask[i]]
+            generation_stats["invalid_language"] += len(valid_samples) - len(final_samples)
+            
+            # Log generations
+            for i, (seed, prompt, generated) in enumerate(zip(seed_texts, prompts, new_samples)):
+                is_valid = i < len(final_samples)
+                self.log_generation(seed, prompt, generated, is_valid)
+                
+                if is_valid:
+                    print(f"\nGenerated (Valid):")
+                    print(f"Seed: {seed[:100]}...")
+                    print(f"Generated: {generated}")
             
             # Add to collection
             generated_samples.extend(final_samples)
+            generation_stats["valid_samples"] = len(generated_samples)
             pbar.update(len(final_samples))
             
             # Print batch stats
             if final_samples:
-                print(f"\nBatch success rate: {len(final_samples)}/{batch_size} "
-                      f"({len(final_samples)/batch_size*100:.1f}%)")
+                success_rate = len(final_samples) / batch_size * 100
+                print(f"\nBatch success rate: {len(final_samples)}/{batch_size} ({success_rate:.1f}%)")
+                print(f"Overall stats:")
+                print(f"- Total attempts: {generation_stats['total_attempts']}")
+                print(f"- Valid samples: {generation_stats['valid_samples']}")
+                print(f"- Failed toxicity: {generation_stats['invalid_toxicity']}")
+                print(f"- Failed language: {generation_stats['invalid_language']}")
+                print(f"- Overall success rate: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%")
             
             # Memory cleanup every 5 batches
             if len(generated_samples) % (batch_size * 5) == 0:
@@ -219,9 +277,26 @@ Generate a single threatening comment: [/INST]"""
         # Save augmented samples
         output_path = Path("dataset/augmented")
         output_path.mkdir(exist_ok=True)
-        aug_df.to_csv(output_path / "en_threat_augmented.csv", index=False)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = output_path / f"en_threat_augmented_{timestamp}.csv"
+        aug_df.to_csv(output_file, index=False)
         
-        print(f"Successfully generated {len(aug_df)} samples")
+        # Save final stats
+        stats_file = log_dir / f"generation_stats_{timestamp}.json"
+        with open(stats_file, 'w') as f:
+            json.dump(generation_stats, f, indent=2)
+        
+        print(f"\nFinal Statistics:")
+        print(f"- Total attempts: {generation_stats['total_attempts']}")
+        print(f"- Valid samples: {generation_stats['valid_samples']}")
+        print(f"- Failed toxicity: {generation_stats['invalid_toxicity']}")
+        print(f"- Failed language: {generation_stats['invalid_language']}")
+        print(f"- Overall success rate: {(generation_stats['valid_samples']/generation_stats['total_attempts']*100):.1f}%")
+        print(f"\nOutputs saved to:")
+        print(f"- Dataset: {output_file}")
+        print(f"- Logs: {self.log_file}")
+        print(f"- Stats: {stats_file}")
+        
         return aug_df
 
 if __name__ == "__main__":
