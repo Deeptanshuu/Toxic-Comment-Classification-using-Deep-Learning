@@ -108,7 +108,7 @@ class FastThreatValidator:
         return probs >= threshold
 
 class ThreatAugmenter:
-    def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
+    def __init__(self, seed_samples_path: str = "dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_FINAL.csv"):
         log_separator("INITIALIZATION")
         
         # Use global log file
@@ -358,4 +358,4 @@ if __name__ == "__main__":
     gc.collect()
     
     augmenter = ThreatAugmenter()
-    augmented_df = augmenter.augment_dataset()
+    augmented_df = augmenter.augment_dataset(target_samples=5000)
