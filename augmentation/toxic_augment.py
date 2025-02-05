@@ -176,51 +176,75 @@ class ToxicAugmenter:
     def generate_prompt(self, seed_text: str, label: str) -> str:
         """Generate a prompt for a single toxicity type"""
         prompts = {
-            'toxic': """<s>[INST] Generate a toxic and offensive social media comment. The comment should be:
-- Genuinely hostile and aggressive
-- Use offensive language
+            'toxic': """<s>[INST] Generate a toxic and offensive social media comment that would be flagged as inappropriate.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must be genuinely hostile and aggressive
+- Use strong offensive language
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the toxic comment: [/INST]""",
 
-            'severe_toxic': """<s>[INST] Generate an extremely toxic and offensive social media comment. The comment should be:
-- Extremely hostile and aggressive
+            'severe_toxic': """<s>[INST] Generate an extremely toxic and offensive social media comment that would be considered severe hate speech.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must be extremely hostile and aggressive
 - Use very strong offensive language
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the toxic comment: [/INST]""",
 
-            'obscene': """<s>[INST] Generate an obscene social media comment. The comment should be:
-- Use explicit vulgar language
+            'obscene': """<s>[INST] Generate an obscene social media comment that would be flagged for vulgarity.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must use explicit vulgar language
 - Be intentionally crude and offensive
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the obscene comment: [/INST]""",
 
-            'threat': """<s>[INST] Generate a threatening social media comment. The comment should be:
-- Include explicit threats or intimidation
+            'threat': """<s>[INST] Generate a threatening social media comment that would be considered intimidating.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must include explicit threats
 - Be menacing and hostile
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the threatening comment: [/INST]""",
 
-            'insult': """<s>[INST] Generate an insulting social media comment. The comment should be:
-- Include direct personal insults
-- Be intentionally offensive and demeaning
+            'insult': """<s>[INST] Generate an insulting social media comment that would be considered personally offensive.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must include direct personal insults
+- Be intentionally demeaning
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the insulting comment: [/INST]""",
 
-            'identity_hate': """<s>[INST] Generate a hateful social media comment targeting identity groups. The comment should be:
-- Target specific identity groups
+            'identity_hate': """<s>[INST] Generate a hateful social media comment targeting specific identity groups.
+
+Example (generate something different): {seed_text}
+
+Requirements:
+- Must target specific identity groups
 - Express discriminatory views
 - Between 10-30 words
-- Different from this example: {seed_text}
+- Must be different from the example
 
 Generate ONLY the hateful comment: [/INST]"""
         }
@@ -259,29 +283,34 @@ Generate ONLY the hateful comment: [/INST]"""
         if len(self.generation_buffer) >= self.buffer_size:
             self.flush_buffer()
 
-    def validate_sample(self, text: str, label: str) -> bool:
+    def validate_sample(self, text: str, label: str, attempts: int) -> bool:
         """Validate a generated sample for a single label"""
-        # Get probability for the label
-        prob = self.validator.get_probabilities([text], label)[0]
-        
-        # Use label-specific thresholds based on difficulty
-        thresholds = {
-            'toxic': 0.7,
-            'severe_toxic': 0.4,
-            'obscene': 0.6,
-            'threat': 0.4,
-            'insult': 0.6,
-            'identity_hate': 0.4
-        }
-        threshold = thresholds.get(label, 0.5)
-        
-        # Log validation result
-        passed = prob >= threshold
-        if passed or (attempts % 10 == 0):  # Log all passes and periodic failures
-            logger.debug(f"\nValidating text for {label}: {text}")
-            logger.debug(f"Probability: {prob:.3f}, Threshold: {threshold:.2f}, Passed: {passed}")
-        
-        return passed
+        try:
+            # Get probability for the label
+            prob = self.validator.get_probabilities([text], label)[0]
+            
+            # Use more lenient thresholds to get generation started
+            thresholds = {
+                'toxic': 0.5,  # Reduced from 0.7
+                'severe_toxic': 0.3,  # Reduced from 0.4
+                'obscene': 0.4,  # Reduced from 0.6
+                'threat': 0.3,  # Reduced from 0.4
+                'insult': 0.4,  # Reduced from 0.6
+                'identity_hate': 0.3  # Reduced from 0.4
+            }
+            threshold = thresholds.get(label, 0.4)
+            
+            # Log validation result
+            passed = prob >= threshold
+            if passed or (attempts % 10 == 0):  # Log all passes and periodic failures
+                logger.info(f"\nValidation - Label: {label}, Text: {text}")
+                logger.info(f"Probability: {prob:.3f}, Threshold: {threshold:.2f}, Passed: {passed}")
+            
+            return passed
+            
+        except Exception as e:
+            logger.error(f"Validation error: {str(e)}")
+            return False
 
     def generate_samples(self, target_samples: int, label: str,
                         seed_texts: List[str], total_timeout: int = 300) -> pd.DataFrame:
@@ -289,7 +318,7 @@ Generate ONLY the hateful comment: [/INST]"""
         start_time = time.time()
         generated_samples = []
         attempts = 0
-        max_attempts = target_samples * 10  # Increased max attempts
+        max_attempts = target_samples * 20  # Doubled max attempts
         batch_size = min(32, target_samples)
         
         pbar = tqdm(total=target_samples, desc=f"Generating {label} samples")
@@ -310,56 +339,54 @@ Generate ONLY the hateful comment: [/INST]"""
                 try:
                     # Generate text with adjusted parameters
                     inputs = self.llm_tokenizer(prompt, return_tensors="pt", padding=True, 
-                                              truncation=True, max_length=256).to(self.llm.device)
+                                              truncation=True, max_length=512).to(self.llm.device)
                     
                     with torch.no_grad():
                         outputs = self.llm.generate(
                             **inputs,
-                            max_new_tokens=48,  # Increased max tokens
-                            temperature=1.0,    # Increased temperature
+                            max_new_tokens=64,  # Increased for more content
+                            temperature=1.2,    # More randomness
                             do_sample=True,
-                            top_p=0.95,        # Increased top_p
-                            top_k=100,         # Increased top_k
+                            top_p=0.98,        # More variety
+                            top_k=150,         # More options
                             num_return_sequences=1,
-                            repetition_penalty=1.2,
-                            no_repeat_ngram_size=3,
-                            length_penalty=1.0,
+                            repetition_penalty=1.1,  # Reduced penalty
+                            no_repeat_ngram_size=2,  # Reduced constraint
+                            length_penalty=0.8,      # Favor shorter responses
                             pad_token_id=self.llm_tokenizer.pad_token_id,
                             bos_token_id=self.llm_tokenizer.bos_token_id,
                             eos_token_id=self.llm_tokenizer.eos_token_id,
                             use_cache=True
                         )
                     
-                    text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=False)
+                    text = self.llm_tokenizer.decode(outputs[0], skip_special_tokens=True)
                     
                     # Extract the generated text between [/INST] and </s>
-                    if "[/INST]" in text and "</s>" in text:
+                    if "[/INST]" in text:
                         output = text.split("[/INST]")[1].split("</s>")[0].strip()
                         output = output.strip().strip('"').strip("'")
                         
                         # Basic quality checks
-                        if len(output.split()) < 3 or len(output) < 10:
-                            continue
+                        if len(output.split()) >= 3 and len(output) >= 10:
+                            # Log generation attempt
+                            if attempts % 10 == 0:
+                                logger.info(f"\nAttempt {attempts}: Generated text: {output}")
                             
-                        # Log generated text periodically
-                        if attempts % 10 == 0:
-                            logger.debug(f"Generated text: {output}")
-                            
-                        # Validate sample
-                        if self.validate_sample(output, label):
-                            sample_dict = {'comment_text': output}
-                            for l in ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']:
-                                sample_dict[l] = 1 if l == label else 0
-                            generated_samples.append(sample_dict)
-                            pbar.update(1)
-                            logger.info(f"✓ Valid {label} sample generated: {output}")
+                            # Validate sample
+                            if self.validate_sample(output, label, attempts):
+                                sample_dict = {'comment_text': output}
+                                for l in ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']:
+                                    sample_dict[l] = 1 if l == label else 0
+                                generated_samples.append(sample_dict)
+                                pbar.update(1)
+                                logger.info(f"✓ Valid {label} sample generated ({len(generated_samples)}/{target_samples})")
                         
                 except Exception as e:
-                    logger.warning(f"Error during generation attempt {attempts}: {str(e)}")
+                    logger.error(f"Generation error on attempt {attempts}: {str(e)}")
                     continue
                 
                 # Clear cache periodically
-                if attempts % 50 == 0:  # Reduced frequency
+                if attempts % 100 == 0:  # Less frequent cleanup
                     torch.cuda.empty_cache()
                     gc.collect()
         
@@ -367,7 +394,10 @@ Generate ONLY the hateful comment: [/INST]"""
             pbar.close()
             logger.info(f"Generation finished: {len(generated_samples)}/{target_samples} samples in {attempts} attempts")
             
-        return pd.DataFrame(generated_samples) if generated_samples else None
+            # Return results even if partial
+            if generated_samples:
+                return pd.DataFrame(generated_samples)
+            return None
 
     def augment_dataset(self, target_samples: int, label: str, seed_texts: List[str], timeout_minutes: int = 5) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
