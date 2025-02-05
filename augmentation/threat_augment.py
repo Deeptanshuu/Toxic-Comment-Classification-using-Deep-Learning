@@ -13,7 +13,7 @@ import logging
 import gc
 from typing import List
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import sys
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -285,34 +285,58 @@ Generate ONLY the comment: [/INST]"""
         return [detect(text) == 'en' for text in texts]
     
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
-        """Main augmentation loop with reduced logging"""
+        """Main augmentation loop with ETA calculation"""
         try:
+            start_time = time.time()
             logger.info(f"Starting generation: target={target_samples}, batch_size={batch_size}")
             generated_samples = []
-            stats = {"total_attempts": 0, "valid_samples": 0}
+            stats = {
+                "total_attempts": 0,
+                "valid_samples": 0,
+                "batch_times": []
+            }
             
             # Log progress every N batches
-            log_frequency = 30  # Adjust this number to log less frequently
+            log_frequency = 10
             
             while len(generated_samples) < target_samples:
+                batch_start = time.time()
+                
                 seed_texts = self.en_threat_samples['comment_text'].sample(batch_size).tolist()
                 prompts = [self.generate_prompt(text) for text in seed_texts]
                 new_samples = self.generate_samples(prompts, seed_texts)
                 
                 if not new_samples:
                     continue
-                    
+                
+                # Update statistics
+                batch_time = time.time() - batch_start
+                stats["batch_times"].append(batch_time)
                 stats["total_attempts"] += len(new_samples)
                 generated_samples.extend(new_samples)
                 stats["valid_samples"] = len(generated_samples)
                 
-                # Log progress less frequently
-                if len(generated_samples) % (batch_size * log_frequency) == 0:
-                    progress = len(generated_samples) / target_samples * 100
-                    logger.info(
-                        f"\nProgress: {len(generated_samples)}/{target_samples} "
-                        f"({progress:.1f}%) | Success Rate: {(stats['valid_samples']/stats['total_attempts']*100):.1f}%"
-                    )
+                # Calculate ETA
+                if len(stats["batch_times"]) >= 2:  # Need at least 2 batches for meaningful average
+                    avg_batch_time = sum(stats["batch_times"][-20:]) / min(len(stats["batch_times"]), 20)  # Rolling average of last 20 batches
+                    avg_samples_per_batch = stats["valid_samples"] / len(stats["batch_times"])
+                    remaining_samples = target_samples - len(generated_samples)
+                    estimated_batches_needed = remaining_samples / avg_samples_per_batch
+                    eta_seconds = estimated_batches_needed * avg_batch_time
+                    eta_str = str(timedelta(seconds=int(eta_seconds)))
+                    
+                    # Calculate completion time
+                    completion_time = datetime.now() + timedelta(seconds=int(eta_seconds))
+                    completion_str = completion_time.strftime("%H:%M:%S")
+                    
+                    # Log progress less frequently
+                    if len(generated_samples) % (batch_size * log_frequency) == 0:
+                        progress = len(generated_samples) / target_samples * 100
+                        logger.info(
+                            f"\nProgress: {len(generated_samples)}/{target_samples} ({progress:.1f}%) | "
+                            f"Success Rate: {(stats['valid_samples']/stats['total_attempts']*100):.1f}% | "
+                            f"ETA: {eta_str} (completion at {completion_str})"
+                        )
                 
                 # Cleanup
                 if len(generated_samples) % (batch_size * 5) == 0:
@@ -320,7 +344,8 @@ Generate ONLY the comment: [/INST]"""
                     gc.collect()
             
             # Final stats
-            logger.info(f"\nGeneration complete: {len(generated_samples)} samples generated")
+            total_time = str(timedelta(seconds=int(time.time() - start_time)))
+            logger.info(f"\nGeneration complete: {len(generated_samples)} samples generated in {total_time}")
             return pd.DataFrame({'text': generated_samples[:target_samples]})
             
         except Exception as e:
