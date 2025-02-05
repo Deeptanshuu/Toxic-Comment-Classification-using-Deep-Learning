@@ -24,17 +24,22 @@ import joblib
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
-# Configure logging
+# Get timestamp for log file
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file = log_dir / f"generation_{timestamp}.log"
+
+# Configure logging once at the start
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_dir / f'generation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+        logging.FileHandler(log_file)
     ]
 )
 
 logger = logging.getLogger(__name__)
+logger.info(f"Starting new run. Log file: {log_file}")
 
 def log_separator(message: str = ""):
     """Print a separator line with optional message"""
@@ -106,9 +111,8 @@ class ThreatAugmenter:
     def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
         log_separator("INITIALIZATION")
         
-        # Initialize logging
-        self.log_file = log_dir / f"generation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log"
-        logger.info(f"Sample log file: {self.log_file}")
+        # Use global log file
+        self.log_file = log_file
         
         # GPU setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -198,7 +202,7 @@ Generate ONLY the comment: [/INST]"""
                 outputs = self.llm.generate(
                     **inputs,
                     max_new_tokens=100,
-                    temperature=0.95,  # Slightly increased for more variety
+                    temperature=0.95,
                     do_sample=True,
                     top_p=0.92,
                     top_k=50,
@@ -208,18 +212,14 @@ Generate ONLY the comment: [/INST]"""
                     eos_token_id=self.llm_tokenizer.eos_token_id
                 )
                 
-                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)  # Changed to False to keep special tokens
+                texts = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=False)
                 cleaned_texts = []
                 
+                logger.info("\n=== Generated Responses ===")
                 for idx, text in enumerate(texts):
-                    logger.info(f"\nRaw output {idx+1}:\n{text}\n")
-                    
                     # Extract response between [/INST] and </s>
                     if "[/INST]" in text and "</s>" in text:
                         response = text.split("[/INST]")[1].split("</s>")[0].strip()
-                        logger.info(f"After extraction:\n{response}\n")
-                        
-                        # Basic cleanup
                         response = response.strip().strip('"').strip("'")
                         
                         # Validation criteria
@@ -232,15 +232,15 @@ Generate ONLY the comment: [/INST]"""
                                 "[inst]",
                                 "example"
                             ])):
-                            
                             cleaned_texts.append(response)
-                            logger.info(f"✓ Valid response {idx+1} accepted\n")
+                            logger.info(f"✓ [{idx+1}] {response}")
                         else:
-                            logger.info(f"✗ Response {idx+1} rejected - Length: {word_count} words\n")
+                            logger.info(f"✗ [{idx+1}] Failed validation (words: {word_count})")
                     else:
-                        logger.info(f"✗ Response {idx+1} rejected - Invalid format\n")
+                        logger.info(f"✗ [{idx+1}] Invalid format")
                 
-                logger.info(f"Generated {len(cleaned_texts)} valid responses from {len(texts)} attempts")
+                success_rate = len(cleaned_texts) / len(texts) * 100
+                logger.info(f"\nGeneration Success: {len(cleaned_texts)}/{len(texts)} ({success_rate:.1f}%)")
                 return cleaned_texts
             
         except Exception as e:
@@ -265,11 +265,10 @@ Generate ONLY the comment: [/INST]"""
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 8):
         """Main augmentation loop"""
         log_separator("STARTING GENERATION")
-        logger.info(f"Target samples: {target_samples}")
-        logger.info(f"Batch size: {batch_size}")
+        logger.info(f"Target: {target_samples} samples | Batch size: {batch_size}")
         
         generated_samples = []
-        pbar = tqdm(total=target_samples, desc="Generating")
+        pbar = tqdm(total=target_samples, desc="Progress")
         
         stats = {
             "total_attempts": 0,
@@ -308,16 +307,12 @@ Generate ONLY the comment: [/INST]"""
             stats["valid_samples"] = len(generated_samples)
             pbar.update(len(final_samples))
             
-            # Print batch stats
+            # Print simplified batch stats
             if final_samples:
-                log_separator("BATCH STATS")
-                success_rate = len(final_samples) / batch_size * 100
                 logger.info(
-                    f"Batch Success: {len(final_samples)}/{batch_size} ({success_rate:.1f}%)\n"
-                    f"Total Attempts: {stats['total_attempts']}\n"
-                    f"Valid Samples: {stats['valid_samples']}\n"
-                    f"Failed Toxicity: {stats['invalid_toxicity']}\n"
-                    f"Failed Language: {stats['invalid_language']}\n"
+                    f"\n=== Batch Summary ===\n"
+                    f"Success Rate: {len(final_samples)}/{batch_size} ({len(final_samples)/batch_size*100:.1f}%)\n"
+                    f"Total Progress: {len(generated_samples)}/{target_samples} ({len(generated_samples)/target_samples*100:.1f}%)\n"
                     f"Overall Success: {(stats['valid_samples']/stats['total_attempts']*100):.1f}%"
                 )
             
