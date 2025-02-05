@@ -285,7 +285,7 @@ Generate ONLY the comment: [/INST]"""
         return [detect(text) == 'en' for text in texts]
     
     def augment_dataset(self, target_samples: int = 3000, batch_size: int = 32):
-        """Main augmentation loop with progress bar and ETA calculation"""
+        """Main augmentation loop with progress bar and CSV saving"""
         try:
             start_time = time.time()
             logger.info(f"Starting generation: target={target_samples}, batch_size={batch_size}")
@@ -296,14 +296,19 @@ Generate ONLY the comment: [/INST]"""
                 "batch_times": []
             }
             
-            # Calculate expected number of batches
-            expected_batches = int(target_samples * 1.1 / (batch_size * 0.9))  # Add 10% buffer for failed generations
+            # Create output directory if it doesn't exist
+            output_dir = Path("dataset/augmented")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate timestamp for the filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = output_dir / f"threat_augmented_{timestamp}.csv"
             
             # Initialize progress bar
             pbar = tqdm(total=target_samples, 
                        desc="Generating samples", 
                        unit="samples",
-                       ncols=100,  # Width of the progress bar
+                       ncols=100,
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
             
             while len(generated_samples) < target_samples:
@@ -344,10 +349,23 @@ Generate ONLY the comment: [/INST]"""
             # Close progress bar
             pbar.close()
             
+            # Create DataFrame and save to CSV
+            df = pd.DataFrame({
+                'text': generated_samples[:target_samples],
+                'label': 1,  # These are all threat samples
+                'source': 'augmented',
+                'timestamp': timestamp
+            })
+            
+            # Save to CSV
+            df.to_csv(output_file, index=False)
+            logger.info(f"\nSaved {len(df)} samples to {output_file}")
+            
             # Final stats
             total_time = str(timedelta(seconds=int(time.time() - start_time)))
-            logger.info(f"\nGeneration complete: {len(generated_samples)} samples generated in {total_time}")
-            return pd.DataFrame({'text': generated_samples[:target_samples]})
+            logger.info(f"Generation complete: {len(generated_samples)} samples generated in {total_time}")
+            
+            return df
             
         except Exception as e:
             logger.error(f"Generation failed: {str(e)}")
