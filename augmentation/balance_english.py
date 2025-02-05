@@ -132,6 +132,7 @@ def generate_balanced_samples(df, required_samples):
     
     augmented_samples = []
     augmenter = ToxicAugmenter()
+    total_generated = 0
     
     # Generate samples for each label combination in priority order
     for combo_labels, target_count in sorted_combinations:
@@ -154,7 +155,7 @@ def generate_balanced_samples(df, required_samples):
             logger.warning("No seed texts found for this combination, skipping...")
             continue
         
-        # Generate samples with timeout
+        # Generate samples with timeout and strict count enforcement
         try:
             new_samples = augmenter.augment_dataset(
                 target_samples=target_count,
@@ -164,12 +165,21 @@ def generate_balanced_samples(df, required_samples):
             )
             
             if new_samples is not None and not new_samples.empty:
+                # Ensure we don't exceed target count
+                if len(new_samples) > target_count:
+                    new_samples = new_samples.head(target_count)
+                    
                 augmented_samples.append(new_samples)
+                total_generated += len(new_samples)
                 logger.info(f"✓ Generated {len(new_samples):,} samples")
                 
                 # Log current progress
-                total_generated = sum(len(df) for df in augmented_samples)
                 logger.info(f"Progress: {total_generated:,}/{total_weighted:,} samples ({total_generated/total_weighted*100:.1f}%)")
+                
+                # Early stopping if we've generated enough samples
+                if total_generated >= required_samples:
+                    logger.info("Reached required sample count, stopping generation")
+                    break
             else:
                 logger.warning("Failed to generate samples for this combination")
                 
@@ -181,6 +191,11 @@ def generate_balanced_samples(df, required_samples):
     if augmented_samples:
         augmented_df = pd.concat(augmented_samples, ignore_index=True)
         augmented_df['lang'] = 'en'
+        
+        # Ensure we don't exceed the required sample count
+        if len(augmented_df) > required_samples:
+            logger.info(f"Trimming excess samples from {len(augmented_df):,} to {required_samples:,}")
+            augmented_df = augmented_df.head(required_samples)
         
         # Log final class distribution
         logger.info("\nFinal class distribution in generated samples:")
