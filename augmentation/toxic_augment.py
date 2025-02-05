@@ -328,14 +328,26 @@ Generate ONLY the comment: [/INST]"""
         logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
         
         generated_samples = []
-        batch_size = 32  # Increased batch size for better throughput
+        batch_size = 32
         start_time = time.time()
         timeout_seconds = timeout_minutes * 60
         
-        with tqdm(total=target_samples, desc="Generating", unit="samples") as pbar:
+        # Create a single progress bar instance
+        pbar = tqdm(
+            total=target_samples,
+            desc=f"Generating",
+            unit="samples",
+            ncols=100,
+            position=0,  # Force single position
+            leave=True,  # Keep the bar after completion
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+        )
+        
+        try:
             while len(generated_samples) < target_samples:
                 # Check timeout
                 if time.time() - start_time > timeout_seconds:
+                    pbar.close()
                     logger.warning(f"Timeout reached after {timeout_minutes} minutes")
                     raise TimeoutError(f"Generation timed out after {timeout_minutes} minutes")
                 
@@ -350,32 +362,42 @@ Generate ONLY the comment: [/INST]"""
                 
                 if new_samples is not None and not new_samples.empty:
                     generated_samples.append(new_samples)
-                    pbar.update(len(new_samples))
                     
-                    # Early success check - if we're generating well, increase batch size
-                    if len(generated_samples) >= 100 and len(generated_samples[-1]) / batch_size > 0.5:
-                        batch_size = min(64, batch_size + 8)
+                    # Update progress bar with actual new samples
+                    new_count = len(new_samples)
+                    pbar.update(new_count)
                     
-                    # Log generation rate
+                    # Calculate and update rate
                     elapsed_minutes = (time.time() - start_time) / 60
-                    rate = sum(len(df) for df in generated_samples) / elapsed_minutes
-                    pbar.set_postfix({'rate': f'{rate:.1f} samples/min'})
+                    total_samples = sum(len(df) for df in generated_samples)
+                    rate = total_samples / elapsed_minutes
+                    
+                    # Update progress bar description with rate
+                    pbar.set_postfix({
+                        'rate': f'{rate:.1f} samples/min',
+                        'success': f'{(new_count/batch_size)*100:.1f}%'
+                    }, refresh=True)
                 
-                # Cleanup and adjust batch size if needed
+                # Memory management
                 if len(generated_samples) % (batch_size * 5) == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
-                    
-                    # If generation is slow, reduce batch size
-                    if len(generated_samples) > 0 and len(generated_samples[-1]) / batch_size < 0.2:
-                        batch_size = max(16, batch_size - 8)
-        
-        # Combine all generated samples
-        if generated_samples:
-            final_df = pd.concat(generated_samples, ignore_index=True)
-            return final_df[:target_samples]  # Ensure we don't exceed target count
-        
-        return None
+            
+            pbar.close()
+            
+            # Combine all generated samples
+            if generated_samples:
+                final_df = pd.concat(generated_samples, ignore_index=True)
+                return final_df[:target_samples]
+            
+            return None
+            
+        except Exception as e:
+            pbar.close()
+            logger.error(f"Generation error: {str(e)}")
+            raise
+        finally:
+            pbar.close()
 
     def validate(self, texts: List[str], label_thresholds: Dict[str, float] = None) -> Dict[str, List[bool]]:
         """Validate texts with adjusted thresholds based on label type"""
