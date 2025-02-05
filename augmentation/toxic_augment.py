@@ -323,15 +323,22 @@ Generate ONLY the comment: [/INST]"""
             logger.error(f"Generation error: {str(e)}")
             return None
 
-    def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str]) -> pd.DataFrame:
+    def augment_dataset(self, target_samples: int, label_combo: Dict[str, int], seed_texts: List[str], timeout_minutes: int = 30) -> pd.DataFrame:
         """Generate a specific number of samples with given label combination"""
         logger.info(f"\nGenerating {target_samples} samples with labels: {label_combo}")
         
         generated_samples = []
-        batch_size = 16
+        batch_size = 32  # Increased batch size for better throughput
+        start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
         
         with tqdm(total=target_samples, desc="Generating", unit="samples") as pbar:
             while len(generated_samples) < target_samples:
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    logger.warning(f"Timeout reached after {timeout_minutes} minutes")
+                    raise TimeoutError(f"Generation timed out after {timeout_minutes} minutes")
+                
                 # Select batch of seed texts
                 batch_seeds = np.random.choice(seed_texts, size=min(batch_size, target_samples - len(generated_samples)))
                 
@@ -344,15 +351,53 @@ Generate ONLY the comment: [/INST]"""
                 if new_samples is not None and not new_samples.empty:
                     generated_samples.append(new_samples)
                     pbar.update(len(new_samples))
+                    
+                    # Early success check - if we're generating well, increase batch size
+                    if len(generated_samples) >= 100 and len(generated_samples[-1]) / batch_size > 0.5:
+                        batch_size = min(64, batch_size + 8)
+                    
+                    # Log generation rate
+                    elapsed_minutes = (time.time() - start_time) / 60
+                    rate = sum(len(df) for df in generated_samples) / elapsed_minutes
+                    pbar.set_postfix({'rate': f'{rate:.1f} samples/min'})
                 
-                # Cleanup
+                # Cleanup and adjust batch size if needed
                 if len(generated_samples) % (batch_size * 5) == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
+                    
+                    # If generation is slow, reduce batch size
+                    if len(generated_samples) > 0 and len(generated_samples[-1]) / batch_size < 0.2:
+                        batch_size = max(16, batch_size - 8)
         
         # Combine all generated samples
         if generated_samples:
             final_df = pd.concat(generated_samples, ignore_index=True)
             return final_df[:target_samples]  # Ensure we don't exceed target count
         
-        return None 
+        return None
+
+    def validate(self, texts: List[str], label_thresholds: Dict[str, float] = None) -> Dict[str, List[bool]]:
+        """Validate texts with adjusted thresholds based on label type"""
+        if label_thresholds is None:
+            label_thresholds = {
+                'toxic': 0.7,  # Increased threshold for general toxicity
+                'severe_toxic': 0.8,  # Higher threshold for severe toxicity
+                'obscene': 0.75,  # Increased for obscene content
+                'threat': 0.65,  # Slightly lower for threats due to subtlety
+                'insult': 0.7,  # Moderate threshold for insults
+                'identity_hate': 0.7  # Moderate threshold for identity hate
+            }
+        
+        results = {}
+        for label, threshold in label_thresholds.items():
+            # Vectorize texts
+            X = self.vectorizers[label].transform(texts)
+            
+            # Get probabilities
+            probs = self.models[label].predict_proba(X)[:, 1]
+            
+            # Apply threshold with numpy for better performance
+            results[label] = probs >= threshold
+        
+        return results 
