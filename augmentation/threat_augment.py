@@ -16,6 +16,9 @@ import json
 from datetime import datetime
 import time
 import sys
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import joblib
 
 # Create log directories
 log_dir = Path("logs")
@@ -39,6 +42,65 @@ def log_separator(message: str = ""):
         logger.info("\n" + "="*40 + f" {message} " + "="*40)
     else:
         logger.info("\n" + "="*100)
+
+class FastThreatValidator:
+    """Fast threat validation using logistic regression"""
+    def __init__(self, model_path: str = "weights/threat_validator.joblib"):
+        self.model_path = model_path
+        if Path(model_path).exists():
+            logger.info("Loading fast threat validator...")
+            model_data = joblib.load(model_path)
+            self.vectorizer = model_data['vectorizer']
+            self.model = model_data['model']
+            logger.info("✓ Fast validator loaded")
+        else:
+            logger.info("Training fast threat validator...")
+            self._train_validator()
+            logger.info("✓ Fast validator trained and saved")
+    
+    def _train_validator(self):
+        """Train a simple logistic regression model for threat detection"""
+        # Load training data
+        train_df = pd.read_csv("dataset/split/train.csv")
+        
+        # Prepare data
+        X = train_df['comment_text'].fillna('')
+        y = train_df['threat']
+        
+        # Create and fit vectorizer
+        self.vectorizer = TfidfVectorizer(
+            max_features=10000,
+            ngram_range=(1, 2),
+            strip_accents='unicode',
+            min_df=2
+        )
+        X_vec = self.vectorizer.fit_transform(X)
+        
+        # Train model
+        self.model = LogisticRegression(
+            C=1.0,
+            class_weight='balanced',
+            max_iter=200,
+            n_jobs=-1
+        )
+        self.model.fit(X_vec, y)
+        
+        # Save model
+        joblib.dump({
+            'vectorizer': self.vectorizer,
+            'model': self.model
+        }, self.model_path)
+    
+    def validate(self, texts: List[str], threshold: float = 0.6) -> List[bool]:
+        """Validate texts using the fast model"""
+        # Vectorize texts
+        X = self.vectorizer.transform(texts)
+        
+        # Get probabilities
+        probs = self.model.predict_proba(X)[:, 1]
+        
+        # Return boolean mask
+        return probs >= threshold
 
 class ThreatAugmenter:
     def __init__(self, seed_samples_path: str = "dataset/split/train.csv"):
@@ -72,6 +134,9 @@ class ThreatAugmenter:
         )
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
         logger.info("✓ Mistral-7B loaded")
+        
+        # Initialize both validators
+        self.fast_validator = FastThreatValidator()
         
         logger.info("Loading XLM-RoBERTa...")
         self.validator = AutoModelForSequenceClassification.from_pretrained(
@@ -198,13 +263,21 @@ Generate only the threatening comment, nothing else: [/INST]"""
             return []
 
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
-        """Validate generated texts using XLM-RoBERTa with adjusted thresholds"""
+        """Two-stage validation: fast first, then thorough"""
         if not texts:
             return torch.zeros(0, dtype=torch.bool)
         
+        # First stage: Fast validation
+        fast_mask = self.fast_validator.validate(texts)
+        passed_fast = [text for i, text in enumerate(texts) if fast_mask[i]]
+        
+        if not passed_fast:
+            return torch.zeros(len(texts), dtype=torch.bool).to(self.device)
+        
+        # Second stage: Thorough validation for those that passed
         with torch.amp.autocast('cuda', dtype=torch.float16):
             inputs = self.validator_tokenizer(
-                texts,
+                passed_fast,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
@@ -214,13 +287,18 @@ Generate only the threatening comment, nothing else: [/INST]"""
             outputs = self.validator(**inputs)
             predictions = torch.sigmoid(outputs.logits)
             
-            # Adjusted thresholds for more realistic content
-            threat_scores = predictions[:, 3]  # Threat is index 3
+            threat_scores = predictions[:, 3]
             other_toxicity = predictions[:, [0,1,2,4,5]].mean(dim=1)
+            thorough_mask = (threat_scores > 0.6) & (other_toxicity < 0.9)
             
-            # More permissive validation criteria
-            valid_mask = (threat_scores > 0.6) & (other_toxicity < 0.9)
-            return valid_mask
+            # Create final mask matching original size
+            final_mask = torch.zeros(len(texts), dtype=torch.bool).to(self.device)
+            passed_indices = [i for i, passed in enumerate(fast_mask) if passed]
+            for i, passed_idx in enumerate(passed_indices):
+                if thorough_mask[i]:
+                    final_mask[passed_idx] = True
+            
+            return final_mask
     
     def validate_language(self, texts: List[str]) -> List[bool]:
         """Simple language validation"""
