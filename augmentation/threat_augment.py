@@ -135,19 +135,9 @@ class ThreatAugmenter:
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
         logger.info("✓ Mistral-7B loaded")
         
-        # Initialize both validators
-        self.fast_validator = FastThreatValidator()
-        
-        logger.info("Loading XLM-RoBERTa...")
-        self.validator = AutoModelForSequenceClassification.from_pretrained(
-            "xlm-roberta-large",
-            num_labels=6,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-            device_map=self.device
-        )
-        self.validator_tokenizer = AutoTokenizer.from_pretrained("xlm-roberta-large")
-        logger.info("✓ XLM-RoBERTa loaded")
+        # Initialize fast validator
+        self.validator = FastThreatValidator()
+        logger.info("✓ Fast validator initialized")
         
         # Load data
         log_separator("LOADING DATA")
@@ -263,42 +253,15 @@ Generate only the threatening comment, nothing else: [/INST]"""
             return []
 
     def validate_toxicity(self, texts: List[str]) -> torch.Tensor:
-        """Two-stage validation: fast first, then thorough"""
+        """Validate texts using fast logistic regression"""
         if not texts:
             return torch.zeros(0, dtype=torch.bool)
         
-        # First stage: Fast validation
-        fast_mask = self.fast_validator.validate(texts)
-        passed_fast = [text for i, text in enumerate(texts) if fast_mask[i]]
+        # Get validation mask from fast validator
+        validation_mask = self.validator.validate(texts)
         
-        if not passed_fast:
-            return torch.zeros(len(texts), dtype=torch.bool).to(self.device)
-        
-        # Second stage: Thorough validation for those that passed
-        with torch.amp.autocast('cuda', dtype=torch.float16):
-            inputs = self.validator_tokenizer(
-                passed_fast,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=128
-            ).to(self.device)
-            
-            outputs = self.validator(**inputs)
-            predictions = torch.sigmoid(outputs.logits)
-            
-            threat_scores = predictions[:, 3]
-            other_toxicity = predictions[:, [0,1,2,4,5]].mean(dim=1)
-            thorough_mask = (threat_scores > 0.6) & (other_toxicity < 0.9)
-            
-            # Create final mask matching original size
-            final_mask = torch.zeros(len(texts), dtype=torch.bool).to(self.device)
-            passed_indices = [i for i, passed in enumerate(fast_mask) if passed]
-            for i, passed_idx in enumerate(passed_indices):
-                if thorough_mask[i]:
-                    final_mask[passed_idx] = True
-            
-            return final_mask
+        # Convert to torch tensor
+        return torch.tensor(validation_mask, dtype=torch.bool, device=self.device)
     
     def validate_language(self, texts: List[str]) -> List[bool]:
         """Simple language validation"""
