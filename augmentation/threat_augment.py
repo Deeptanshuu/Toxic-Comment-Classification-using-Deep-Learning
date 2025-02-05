@@ -45,9 +45,7 @@ class ThreatAugmenter:
             "mistralai/Mistral-7B-Instruct-v0.3",
             device_map="auto",
             torch_dtype=torch.float16,
-            load_in_4bit=True,  # Using 4-bit quantization for better quality
-            use_flash_attention_2=True,  # Enable flash attention for better performance
-            attn_implementation="flash_attention_2"
+            load_in_4bit=True
         )
         self.llm_tokenizer = AutoTokenizer.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
@@ -55,7 +53,7 @@ class ThreatAugmenter:
             use_fast=True
         )
         self.llm_tokenizer.pad_token = self.llm_tokenizer.eos_token
-        print("Loaded Mistral-7B with 4-bit quantization and flash attention")
+        print("Loaded Mistral-7B with 4-bit quantization")
         
         # Initialize XLM-RoBERTa with optimizations
         self.validator = AutoModelForSequenceClassification.from_pretrained(
