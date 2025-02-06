@@ -347,12 +347,18 @@ def train(model, train_loader, val_loader, config):
         print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
         print("="*80 + "\n")
         
+        # Track global step for logging
+        global_step = 0
+        
         for epoch in range(config.epochs):
             model.train()
             running_loss = 0.0
             total_loss = 0.0
             num_batches = 0
             epoch_start = time.time()
+            
+            # Initialize step metrics
+            step_losses = []
             
             for batch_idx, batch in enumerate(train_loader):
                 try:
@@ -366,26 +372,52 @@ def train(model, train_loader, val_loader, config):
                                          if k in ['input_ids', 'attention_mask', 'labels']})
                         loss = outputs.loss
                     
+                    # Scale loss by gradient accumulation steps
+                    scaled_loss = loss / config.grad_accum_steps
+                    
                     # Backward pass
-                    scaler.scale(loss).backward()
+                    scaler.scale(scaled_loss).backward()
                     
-                    # Simple gradient clipping
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    # Update step metrics
+                    step_losses.append(loss.item())
                     
-                    # Optimizer step
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                    # Step if we've accumulated enough gradients
+                    if (batch_idx + 1) % config.grad_accum_steps == 0:
+                        # Clip gradients
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        
+                        # Optimizer step
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        
+                        # Calculate average loss over accumulation steps
+                        avg_step_loss = sum(step_losses) / len(step_losses)
+                        
+                        # Log step metrics to wandb
+                        if wandb.run is not None:
+                            wandb.log({
+                                'train/step_loss': avg_step_loss,
+                                'train/learning_rate': scheduler.get_last_lr()[0],
+                                'train/global_step': global_step,
+                                'train/epoch': epoch,
+                                'train/batch': batch_idx,
+                                'train/progress': global_step / num_training_steps
+                            })
+                        
+                        # Reset step metrics
+                        step_losses = []
+                        global_step += 1
                     
-                    # Logging
+                    # Update running metrics
                     running_loss += loss.item()
                     total_loss += loss.item()
                     num_batches += 1
                     
-                    # Log to wandb every 50 batches
-                    if batch_idx % 50 == 0:
+                    # Log batch metrics every 50 batches
+                    if batch_idx % 10 == 0:
                         avg_loss = running_loss / (batch_idx + 1)
                         lr = scheduler.get_last_lr()[0]
                         
@@ -393,18 +425,10 @@ def train(model, train_loader, val_loader, config):
                         print(
                             f"\r[{batch_idx:>5}/{len(train_loader)}] "
                             f"Loss: {avg_loss:.4f} | "
-                            f"LR: {lr:.2e}",
+                            f"LR: {lr:.2e} | "
+                            f"Step: {global_step}",
                             end="", flush=True
                         )
-                        
-                        # Log to wandb
-                        if wandb.run is not None:
-                            wandb.log({
-                                'train/batch_loss': avg_loss,
-                                'train/learning_rate': lr,
-                                'train/batch': batch_idx + epoch * len(train_loader),
-                                'train/epoch': epoch
-                            })
                         
                     # Garbage collection if needed
                     if batch_idx % config.gc_frequency == 0:
