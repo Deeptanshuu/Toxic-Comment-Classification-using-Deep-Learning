@@ -312,6 +312,53 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
         print(f"Error loading checkpoint: {str(e)}")
         return 0, 0
 
+def calculate_lang_specific_loss(batch, weighted_loss, device):
+    """Helper function to calculate language-specific losses with proper error handling"""
+    lang_losses = {}
+    try:
+        # Get batch size and number of classes
+        batch_size = weighted_loss.size(0)
+        num_classes = weighted_loss.size(1) if weighted_loss.dim() > 1 else 1
+        
+        # Convert batch['lang'] to list if it's a tensor
+        langs = batch['lang']
+        if isinstance(langs, torch.Tensor):
+            langs = langs.tolist()
+        
+        for lang in set(langs):  # Use set for unique languages
+            if lang not in lang_losses:
+                lang_losses[lang] = []
+            
+            try:
+                # Create mask with correct shape
+                lang_mask = torch.tensor([l == lang for l in langs], 
+                                       device=device, dtype=torch.bool)
+                
+                # Skip if no samples for this language
+                if not lang_mask.any():
+                    continue
+                
+                # Ensure mask has correct shape for broadcasting
+                if weighted_loss.dim() > 1:
+                    # For 2D tensor [batch_size, num_classes]
+                    lang_mask = lang_mask.view(-1, 1).expand(-1, num_classes)
+                
+                # Apply mask and calculate mean loss
+                masked_loss = weighted_loss[lang_mask].view(-1, num_classes)
+                if len(masked_loss) > 0:
+                    lang_loss = masked_loss.mean().item()
+                    lang_losses[lang].append(lang_loss)
+            
+            except Exception as e:
+                print(f"Warning: Error processing language {lang}: {str(e)}")
+                continue
+    
+    except Exception as e:
+        print(f"Warning: Error in language-specific loss calculation: {str(e)}")
+        return {}
+    
+    return lang_losses
+
 def train(model, train_loader, val_loader, config):
     """Training loop with simplified configuration"""
     
@@ -1348,50 +1395,3 @@ if __name__ == "__main__":
         print(f"Fatal error: {str(e)}")
         cleanup()
         sys.exit(1)
-
-def calculate_lang_specific_loss(batch, weighted_loss, device):
-    """Helper function to calculate language-specific losses with proper error handling"""
-    lang_losses = {}
-    try:
-        # Get batch size and number of classes
-        batch_size = weighted_loss.size(0)
-        num_classes = weighted_loss.size(1) if weighted_loss.dim() > 1 else 1
-        
-        # Convert batch['lang'] to list if it's a tensor
-        langs = batch['lang']
-        if isinstance(langs, torch.Tensor):
-            langs = langs.tolist()
-        
-        for lang in set(langs):  # Use set for unique languages
-            if lang not in lang_losses:
-                lang_losses[lang] = []
-            
-            try:
-                # Create mask with correct shape
-                lang_mask = torch.tensor([l == lang for l in langs], 
-                                       device=device, dtype=torch.bool)
-                
-                # Skip if no samples for this language
-                if not lang_mask.any():
-                    continue
-                
-                # Ensure mask has correct shape for broadcasting
-                if weighted_loss.dim() > 1:
-                    # For 2D tensor [batch_size, num_classes]
-                    lang_mask = lang_mask.view(-1, 1).expand(-1, num_classes)
-                
-                # Apply mask and calculate mean loss
-                masked_loss = weighted_loss[lang_mask].view(-1, num_classes)
-                if len(masked_loss) > 0:
-                    lang_loss = masked_loss.mean().item()
-                    lang_losses[lang].append(lang_loss)
-            
-            except Exception as e:
-                print(f"Warning: Error processing language {lang}: {str(e)}")
-                continue
-    
-    except Exception as e:
-        print(f"Warning: Error in language-specific loss calculation: {str(e)}")
-        return {}
-    
-    return lang_losses
