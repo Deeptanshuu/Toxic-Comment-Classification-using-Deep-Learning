@@ -1,7 +1,11 @@
 #!/bin/bash
 
-# Strict mode
-set -euo pipefail  # Exit on error, undefined vars, and pipe failures
+# Initialize variables for trap
+current_command=""
+last_command=""
+
+# Strict mode with allowance for unbound variables in traps
+set -eo pipefail  # Removed 'u' flag to allow unbound vars in traps
 IFS=$'\n\t'      # Stricter word splitting
 
 # Setup error handling
