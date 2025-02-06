@@ -623,36 +623,6 @@ def log_epoch_metrics(epoch, metrics, epoch_time, eta):
             f'val/{lang}/f1': lang_metrics['f1']
         })
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Train toxic comment classifier')
-    parser.add_argument('--batch_size', type=int, default=32,
-                      help='Batch size')
-    parser.add_argument('--grad_accum_steps', type=int, default=2,
-                      help='Gradient accumulation steps')
-    parser.add_argument('--epochs', type=int, default=5,
-                      help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=2e-5,
-                      help='Learning rate')
-    parser.add_argument('--model_name', type=str, default='xlm-roberta-large',
-                      help='Model name')
-    parser.add_argument('--mixed_precision', type=str, choices=['no', 'fp16', 'bf16'], default='bf16',
-                      help='Mixed precision mode')
-    parser.add_argument('--num_workers', type=int, default=12,
-                      help='Number of dataloader workers')
-    parser.add_argument('--activation_checkpointing', type=lambda x: x.lower() == 'true',
-                      default=True, help='Enable activation checkpointing')
-    parser.add_argument('--tensor_float_32', type=lambda x: x.lower() == 'true',
-                      default=True, help='Enable TF32 on Ampere GPUs')
-    parser.add_argument('--gc_frequency', type=int, default=500,
-                      help='Garbage collection frequency (in batches)')
-    
-    args = parser.parse_args()
-    
-    # Set fp16 based on mixed_precision argument
-    args.fp16 = args.mixed_precision in ['fp16', 'bf16']
-    
-    return args
-
 # Custom Dataset
 class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, config):
