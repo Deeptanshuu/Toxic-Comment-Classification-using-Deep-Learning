@@ -393,7 +393,8 @@ def train(model, train_loader, val_loader, config):
                 }
                 
                 # Forward pass with automatic mixed precision
-                with autocast(enabled=config.fp16):
+                device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+                with autocast(device_type=device_type, enabled=config.fp16):
                     outputs = model(
                         input_ids=inputs['input_ids'],
                         attention_mask=inputs['attention_mask'],
