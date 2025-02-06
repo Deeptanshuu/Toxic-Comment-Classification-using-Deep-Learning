@@ -19,7 +19,6 @@ from dataclasses import dataclass, asdict
 import os
 import warnings
 from torch.amp import autocast, GradScaler
-from torch.cuda.amp import GradScaler
 import time
 from datetime import datetime, timedelta
 import psutil
@@ -312,33 +311,36 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
 def train(model, train_loader, val_loader, config):
     """Training loop with simplified configuration"""
     
-    # Simple Adam optimizer with basic parameters
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=2e-5,  # Standard learning rate for transformers
-        betas=(0.9, 0.999),
-        eps=1e-8,
-        weight_decay=0.01
-    )
-    
-    # Simple linear warmup scheduler
-    num_training_steps = len(train_loader) * config.epochs
-    num_warmup_steps = len(train_loader)  # 1 epoch warmup
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps
-    )
-    
-    # Initialize scaler for mixed precision
-    scaler = GradScaler(enabled=config.fp16)
-    
-    print("\n" + "="*80)
-    print(f"Starting training for {config.epochs} epochs...")
-    print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
-    print("="*80 + "\n")
-    
     try:
+        # Simple Adam optimizer with basic parameters
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config.lr,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=config.weight_decay
+        )
+        
+        # Simple linear warmup scheduler
+        num_training_steps = len(train_loader) * config.epochs
+        num_warmup_steps = len(train_loader)  # 1 epoch warmup
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps
+        )
+        
+        # Initialize scaler for mixed precision
+        scaler = GradScaler('cuda', enabled=config.fp16)
+        
+        # Initialize metrics tracker
+        metrics_tracker = MetricsTracker()
+        
+        print("\n" + "="*80)
+        print(f"Starting training for {config.epochs} epochs...")
+        print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
+        print("="*80 + "\n")
+        
         for epoch in range(config.epochs):
             model.train()
             running_loss = 0.0
@@ -347,60 +349,85 @@ def train(model, train_loader, val_loader, config):
             epoch_start = time.time()
             
             for batch_idx, batch in enumerate(train_loader):
-                # Move batch to device
-                inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                         for k, v in batch.items()}
-                
-                # Forward pass
-                with autocast(enabled=config.fp16):
-                    outputs = model(**{k: v for k, v in inputs.items() 
-                                     if k in ['input_ids', 'attention_mask', 'labels']})
-                    loss = outputs.loss
-                
-                # Backward pass
-                scaler.scale(loss).backward()
-                
-                # Simple gradient clipping
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                
-                # Optimizer step
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
-                optimizer.zero_grad()
-                
-                # Logging
-                running_loss += loss.item()
-                total_loss += loss.item()
-                num_batches += 1
-                
-                if batch_idx % 50 == 0:
-                    avg_loss = running_loss / (batch_idx + 1)
-                    print(
-                        f"\r[{batch_idx:>5}/{len(train_loader)}] "
-                        f"Loss: {avg_loss:.4f} | "
-                        f"LR: {scheduler.get_last_lr()[0]:.2e}",
-                        end="", flush=True
-                    )
+                try:
+                    # Move batch to device
+                    inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                             for k, v in batch.items()}
+                    
+                    # Forward pass
+                    with autocast('cuda', enabled=config.fp16):
+                        outputs = model(**{k: v for k, v in inputs.items() 
+                                         if k in ['input_ids', 'attention_mask', 'labels']})
+                        loss = outputs.loss
+                    
+                    # Backward pass
+                    scaler.scale(loss).backward()
+                    
+                    # Simple gradient clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    
+                    # Optimizer step
+                    scaler.step(optimizer)
+                    scaler.update()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    
+                    # Logging
+                    running_loss += loss.item()
+                    total_loss += loss.item()
+                    num_batches += 1
+                    
+                    if batch_idx % 50 == 0:
+                        avg_loss = running_loss / (batch_idx + 1)
+                        print(
+                            f"\r[{batch_idx:>5}/{len(train_loader)}] "
+                            f"Loss: {avg_loss:.4f} | "
+                            f"LR: {scheduler.get_last_lr()[0]:.2e}",
+                            end="", flush=True
+                        )
+                        
+                    # Garbage collection if needed
+                    if batch_idx % config.gc_frequency == 0:
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            
+                except Exception as e:
+                    print(f"\nError in training batch {batch_idx}: {str(e)}")
+                    continue
+            
+            # Update training metrics
+            epoch_avg_loss = total_loss / num_batches
+            metrics_tracker.update_train(epoch_avg_loss)
             
             # Validation
             print(f"\n\n{'='*40} Validation {'='*40}")
             val_metrics = evaluate(model, val_loader, config)
             
+            # Update validation metrics and check if best model
+            is_best = metrics_tracker.update_validation(val_metrics)
+            
             # Print epoch summary
-            epoch_avg_loss = total_loss / num_batches
             print(f"\nEpoch {epoch+1} Summary:")
             print(f"{'='*80}")
             print(f"Training Loss: {epoch_avg_loss:.4f}")
             print(f"Validation - Loss: {val_metrics['loss']:.4f}, AUC: {val_metrics['auc']:.4f}")
+            print(f"Best AUC: {metrics_tracker.best_auc:.4f}")
             print(f"{'='*80}\n")
             
             # Save best model
-            if val_metrics['auc'] > best_auc:
-                best_auc = val_metrics['auc']
-                save_model(model, config, epoch, best_auc)
-                print(f"🏆 New best model! AUC: {best_auc:.4f}")
+            if is_best:
+                save_model(model, config, epoch, metrics_tracker.best_auc)
+                print(f"🏆 New best model! AUC: {metrics_tracker.best_auc:.4f}")
+            
+            # Update timing metrics
+            epoch_time = time.time() - epoch_start
+            metrics_tracker.update_time(epoch_time)
+            
+            # Log metrics to wandb if available
+            if wandb.run is not None:
+                log_epoch_metrics(epoch, val_metrics, epoch_time, metrics_tracker.get_eta(epoch, config.epochs))
             
     except Exception as e:
         print(f"\nTraining failed: {str(e)}")
@@ -671,6 +698,9 @@ def evaluate(model, loader, config):
     all_targets = []
     
     # Track per-class predictions and targets
+    if not hasattr(config, 'toxicity_labels'):
+        config.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    
     class_preds = {label: [] for label in config.toxicity_labels}
     class_targets = {label: [] for label in config.toxicity_labels}
     
@@ -1121,7 +1151,12 @@ def train_worker(rank, config, train_dataset, val_dataset):
         print(f"Error in worker {rank}: {str(e)}")
         raise
     finally:
+        # Cleanup
         cleanup_distributed()
+        if model is not None:
+            del model
+        torch.cuda.empty_cache()
+        gc.collect()
 
 def main():
     """Main training function with enhanced error handling"""

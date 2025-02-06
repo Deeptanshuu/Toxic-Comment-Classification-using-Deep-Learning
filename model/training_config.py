@@ -23,18 +23,18 @@ class DynamicClassWeights:
     
     def _initialize_default_weights(self):
         """Initialize default weights if loading fails"""
-        self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
         
         # Create default weights
         self.weights = {}
         for lang in self.language_columns:
             self.weights[lang] = {}
-            for col in self.toxicity_columns:
-                self.weights[lang][col] = {'0': 0.5, '1': 1.0}
+            for label in self.toxicity_labels:
+                self.weights[lang][label] = {'0': 0.5, '1': 1.0}
         
         # Set default weights (English)
-        self.default_weights = torch.tensor([1.0] * len(self.toxicity_columns))
+        self.default_weights = torch.tensor([1.0] * len(self.toxicity_labels))
     
     def load_weights(self):
         """Load and adjust language-specific weights with error handling"""
@@ -46,8 +46,8 @@ class DynamicClassWeights:
             self.weights_data = json.load(f)
             self.weights = self.weights_data['weights']
         
-        # Get list of toxicity columns in order
-        self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        # Get list of toxicity labels in order
+        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
         
         # Apply EN weight boosts for critical classes with validation
@@ -61,12 +61,12 @@ class DynamicClassWeights:
         # Default weights (English) with validation
         try:
             self.default_weights = torch.tensor([
-                float(self.weights['en'][col]['1']) 
-                for col in self.toxicity_columns
+                float(self.weights['en'][label]['1']) 
+                for label in self.toxicity_labels
             ]).clamp(0.1, 15.0)  # Ensure weights are in reasonable range
         except Exception as e:
             print(f"Warning: Could not set default weights: {str(e)}")
-            self.default_weights = torch.tensor([1.0] * len(self.toxicity_columns))
+            self.default_weights = torch.tensor([1.0] * len(self.toxicity_labels))
     
     def enforce_language_priority(self):
         """Ensure EN weights >= other languages for critical classes with strict ratios"""
@@ -157,16 +157,16 @@ class DynamicClassWeights:
             for lang in self.language_columns:
                 if lang in val_metrics.get('per_language', {}):
                     lang_metrics = val_metrics['per_language'][lang]
-                    for cls in self.toxicity_columns:
+                    for label in self.toxicity_labels:
                         try:
-                            if cls in lang_metrics.get('class_metrics', {}):
-                                cls_metrics = lang_metrics['class_metrics'][cls]
+                            if label in lang_metrics.get('class_metrics', {}):
+                                cls_metrics = lang_metrics['class_metrics'][label]
                                 # Adjust weight if F1 score is too low
                                 if cls_metrics.get('f1', 1.0) < 0.3:
-                                    current_weight = float(self.weights[lang][cls]['1'])
-                                    self.weights[lang][cls]['1'] = str(min(current_weight * 1.2, 15.0))
+                                    current_weight = float(self.weights[lang][label]['1'])
+                                    self.weights[lang][label]['1'] = str(min(current_weight * 1.2, 15.0))
                         except Exception as e:
-                            print(f"Warning: Could not update weights for {lang}/{cls}: {str(e)}")
+                            print(f"Warning: Could not update weights for {lang}/{label}: {str(e)}")
                             continue
         except Exception as e:
             print(f"Warning: Weight update based on performance failed: {str(e)}")
@@ -180,12 +180,12 @@ class DynamicClassWeights:
                 try:
                     # Get weights for this language, fallback to English if language not found
                     lang_weights = []
-                    for col in self.toxicity_columns:
+                    for label in self.toxicity_labels:
                         try:
-                            weight = float(self.weights[lang][col]['1'])
+                            weight = float(self.weights[lang][label]['1'])
                         except (KeyError, ValueError):
                             # Fallback to English weights
-                            weight = float(self.weights['en'][col]['1'])
+                            weight = float(self.weights['en'][label]['1'])
                         lang_weights.append(weight)
                     
                     batch_weights.append(lang_weights)
@@ -207,7 +207,7 @@ class DynamicClassWeights:
         except Exception as e:
             print(f"Warning: Could not get batch weights: {str(e)}")
             # Return safe default weights
-            return torch.ones((len(langs), len(self.toxicity_columns)), 
+            return torch.ones((len(langs), len(self.toxicity_labels)), 
                             dtype=torch.float32, device=device)
 
 @dataclass
@@ -366,7 +366,6 @@ class TrainingConfig:
     # Model parameters
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    num_labels: int = 6
     
     # Training parameters
     batch_size: int = 32
@@ -387,7 +386,97 @@ class TrainingConfig:
     world_size: int = 1
     
     def __post_init__(self):
-        """Initialize device and create directories"""
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        os.makedirs("weights", exist_ok=True)
-        os.makedirs("logs", exist_ok=True) 
+        """Initialize device, directories, and labels with validation"""
+        # Validate parameters
+        if self.batch_size <= 0:
+            raise ValueError(f"Invalid batch_size: {self.batch_size}")
+        if self.grad_accum_steps <= 0:
+            raise ValueError(f"Invalid grad_accum_steps: {self.grad_accum_steps}")
+        if self.epochs <= 0:
+            raise ValueError(f"Invalid epochs: {self.epochs}")
+        if self.lr <= 0:
+            raise ValueError(f"Invalid learning rate: {self.lr}")
+        if self.weight_decay < 0:
+            raise ValueError(f"Invalid weight_decay: {self.weight_decay}")
+        if self.num_workers < 0:
+            raise ValueError(f"Invalid num_workers: {self.num_workers}")
+        if self.gc_frequency <= 0:
+            raise ValueError(f"Invalid gc_frequency: {self.gc_frequency}")
+        
+        # Set device with error handling
+        try:
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+                # Enable TF32 if requested and available
+                if self.tensor_float_32 and torch.cuda.get_device_capability()[0] >= 8:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+            else:
+                self.device = torch.device('cpu')
+                if self.fp16:
+                    print("Warning: FP16 not supported on CPU, disabling")
+                    self.fp16 = False
+                    self.mixed_precision = "no"
+        except Exception as e:
+            print(f"Warning: Error setting up device: {str(e)}")
+            self.device = torch.device('cpu')
+            self.fp16 = False
+            self.mixed_precision = "no"
+        
+        # Create directories with error handling
+        try:
+            for directory in ["weights", "logs"]:
+                dir_path = Path(directory)
+                if not dir_path.exists():
+                    dir_path.mkdir(parents=True)
+                elif not dir_path.is_dir():
+                    raise NotADirectoryError(f"{directory} exists but is not a directory")
+        except Exception as e:
+            print(f"Error creating directories: {str(e)}")
+            raise
+        
+        # Initialize toxicity labels
+        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        self.num_labels = len(self.toxicity_labels)
+        
+        # Validate distributed settings
+        if self.distributed and self.world_size <= 0:
+            raise ValueError(f"Invalid world_size for distributed training: {self.world_size}")
+    
+    def to_serializable_dict(self) -> dict:
+        """Convert config to a JSON-serializable dictionary with validation"""
+        try:
+            config_dict = {
+                'model_name': self.model_name,
+                'max_length': self.max_length,
+                'batch_size': self.batch_size,
+                'grad_accum_steps': self.grad_accum_steps,
+                'epochs': self.epochs,
+                'lr': self.lr,
+                'weight_decay': self.weight_decay,
+                'num_workers': self.num_workers,
+                'fp16': self.fp16,
+                'mixed_precision': self.mixed_precision,
+                'device': str(self.device),
+                'activation_checkpointing': self.activation_checkpointing,
+                'tensor_float_32': self.tensor_float_32,
+                'gc_frequency': self.gc_frequency,
+                'distributed': self.distributed,
+                'world_size': self.world_size,
+                'num_labels': self.num_labels,
+                'toxicity_labels': self.toxicity_labels
+            }
+            
+            # Validate all values are JSON serializable
+            json.dumps(config_dict)
+            return config_dict
+            
+        except Exception as e:
+            print(f"Error serializing config: {str(e)}")
+            # Return minimal valid config
+            return {
+                'model_name': self.model_name,
+                'batch_size': self.batch_size,
+                'epochs': self.epochs,
+                'lr': self.lr
+            } 
