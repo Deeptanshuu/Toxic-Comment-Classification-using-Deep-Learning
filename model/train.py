@@ -1257,11 +1257,9 @@ TRAINING_CONFIG = {
     "gc_frequency": 500,
     "weight_decay": 0.01,
     "max_length": 128,
-    "warmup_ratio": 0.1,
-    "label_smoothing": 0.01,
     "fp16": True,
-    "pin_memory": True,
-    "prefetch_factor": 2
+    "distributed": False,
+    "world_size": 1
 }
 
 def main():
