@@ -385,4 +385,71 @@ class TrainingConfig:
         # Apply safety bounds
         max_norm = max(self.min_max_norm, min(self.final_max_norm, max_norm))
         
-        return max_norm 
+        return max_norm
+
+    def _validate_config(self):
+        """Validate configuration parameters"""
+        # Validate batch size
+        if self.batch_size < 1:
+            raise ValueError(f"Batch size must be positive, got {self.batch_size}")
+        if self.batch_size % 8 != 0:
+            print(f"Warning: Batch size {self.batch_size} is not a multiple of 8")
+            
+        # Validate gradient accumulation steps
+        if self.grad_accum_steps < 1:
+            raise ValueError(f"Gradient accumulation steps must be positive, got {self.grad_accum_steps}")
+            
+        # Validate learning rate
+        if self.lr <= 0:
+            raise ValueError(f"Learning rate must be positive, got {self.lr}")
+        if self.lr > 1e-3:
+            print(f"Warning: Learning rate {self.lr} might be too high")
+            
+        # Validate warmup ratio
+        if not 0 <= self.warmup_ratio <= 1:
+            raise ValueError(f"Warmup ratio must be between 0 and 1, got {self.warmup_ratio}")
+            
+        # Validate weight decay
+        if self.weight_decay < 0:
+            raise ValueError(f"Weight decay must be non-negative, got {self.weight_decay}")
+            
+        # Validate gradient norm parameters
+        if self.initial_max_norm <= 0:
+            raise ValueError(f"Initial max norm must be positive, got {self.initial_max_norm}")
+        if self.final_max_norm < self.initial_max_norm:
+            raise ValueError(f"Final max norm {self.final_max_norm} cannot be less than initial max norm {self.initial_max_norm}")
+        if self.min_max_norm <= 0:
+            raise ValueError(f"Minimum max norm must be positive, got {self.min_max_norm}")
+        if self.min_max_norm > self.initial_max_norm:
+            raise ValueError(f"Minimum max norm {self.min_max_norm} cannot be greater than initial max norm {self.initial_max_norm}")
+            
+        # Validate system parameters
+        if self.num_workers < 0:
+            raise ValueError(f"Number of workers must be non-negative, got {self.num_workers}")
+        if self.gc_frequency < 1:
+            raise ValueError(f"GC frequency must be positive, got {self.gc_frequency}")
+            
+        # Validate mixed precision settings
+        if self.mixed_precision not in ['no', 'fp16', 'bf16']:
+            raise ValueError(f"Mixed precision must be one of ['no', 'fp16', 'bf16'], got {self.mixed_precision}")
+            
+        # Set language columns
+        self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
+        
+        # Print configuration summary
+        print("\nTraining Configuration:")
+        print(f"{'='*80}")
+        print(f"Model: {self.model_name}")
+        print(f"Batch size: {self.batch_size}")
+        print(f"Gradient accumulation steps: {self.grad_accum_steps}")
+        print(f"Effective batch size: {self.batch_size * self.grad_accum_steps}")
+        print(f"Learning rate: {self.lr}")
+        print(f"Warmup ratio: {self.warmup_ratio}")
+        print(f"Weight decay: {self.weight_decay}")
+        print(f"Gradient clipping: {self.initial_max_norm} → {self.final_max_norm}")
+        print(f"Mixed precision: {self.mixed_precision}")
+        print(f"Number of workers: {self.num_workers}")
+        print(f"Device: {self.device}")
+        print(f"{'='*80}\n")
+        
+        return True 
