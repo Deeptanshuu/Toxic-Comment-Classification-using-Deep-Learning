@@ -5,7 +5,6 @@ import os
 import gc
 import time
 import wandb
-import argparse
 from datetime import datetime
 from torch.cuda.amp import autocast, GradScaler
 from transformers import get_linear_schedule_with_warmup
@@ -21,7 +20,6 @@ from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, roc_
 import numpy as np
 import pandas as pd
 import wandb
-import argparse
 from dataclasses import dataclass, asdict
 import os
 import warnings
@@ -318,7 +316,7 @@ def train(model, train_loader, val_loader, config):
     """Training loop with simplified configuration"""
     
     try:
-        # Simple Adam optimizer with basic parameters
+        # Initialize optimizer, scheduler, scaler
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=config.lr,
@@ -327,7 +325,6 @@ def train(model, train_loader, val_loader, config):
             weight_decay=config.weight_decay
         )
         
-        # Simple linear warmup scheduler
         num_training_steps = len(train_loader) * config.epochs
         num_warmup_steps = len(train_loader)  # 1 epoch warmup
         scheduler = get_linear_schedule_with_warmup(
@@ -336,12 +333,11 @@ def train(model, train_loader, val_loader, config):
             num_training_steps=num_training_steps
         )
         
-        # Initialize scaler for mixed precision
         scaler = GradScaler('cuda', enabled=config.fp16)
         
         # Initialize metrics tracker and dynamic weights
         metrics_tracker = MetricsTracker()
-        dynamic_weights = DynamicClassWeights()
+        dynamic_weights = DynamicClassWeights(weights_file='weights/language_class_weights.json')
         
         print("\n" + "="*80)
         print(f"Starting training for {config.epochs} epochs...")
@@ -367,21 +363,21 @@ def train(model, train_loader, val_loader, config):
                     inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
                              for k, v in batch.items()}
                     
-                    # Get dynamic weights for this batch
+                    # Get dynamic weights for this batch based on languages
                     batch_weights = dynamic_weights.get_weights_for_batch(
                         langs=batch['lang'],
                         device=config.device
-                    )
+                    )  # Shape: [batch_size, num_classes]
                     
                     # Forward pass
                     with autocast('cuda', enabled=config.fp16):
                         outputs = model(**{k: v for k, v in inputs.items() 
-                                         if k in ['input_ids', 'attention_mask', 'labels']})
+                                         if k in ['input_ids', 'attention_mask']})
                         logits = outputs.logits
                         
-                        # Calculate weighted BCE loss
-                        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(logits, inputs['labels'])
-                        weighted_loss = (bce_loss * batch_weights).mean()
+                        # Calculate weighted BCE loss for each class
+                        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(logits, inputs['labels'])  # [batch_size, num_classes]
+                        weighted_loss = (bce_loss * batch_weights).mean()  # Apply weights and average
                         loss = weighted_loss
                     
                     # Scale loss by gradient accumulation steps
@@ -408,9 +404,12 @@ def train(model, train_loader, val_loader, config):
                         # Calculate average loss over accumulation steps
                         avg_step_loss = sum(step_losses) / len(step_losses)
                         
+                        # Calculate per-language losses for monitoring
+                        lang_losses = calculate_lang_specific_loss(batch, bce_loss, config.device)
+                        
                         # Log step metrics to wandb
                         if wandb.run is not None:
-                            wandb.log({
+                            metrics_dict = {
                                 'train/step_loss': avg_step_loss,
                                 'train/learning_rate': scheduler.get_last_lr()[0],
                                 'train/global_step': global_step,
@@ -419,7 +418,14 @@ def train(model, train_loader, val_loader, config):
                                 'train/progress': global_step / num_training_steps,
                                 'train/weighted_loss': weighted_loss.item(),
                                 'train/unweighted_loss': bce_loss.mean().item()
-                            })
+                            }
+                            
+                            # Add language-specific losses
+                            for lang, losses in lang_losses.items():
+                                if losses:  # Only log if we have losses for this language
+                                    metrics_dict[f'train/loss_{lang}'] = np.mean(losses)
+                            
+                            wandb.log(metrics_dict)
                         
                         # Reset step metrics
                         step_losses = []
@@ -1128,7 +1134,7 @@ def create_dataloaders(train_dataset, val_dataset, config, rank=None):
         val_dataset,
         batch_size=config.batch_size * 2,
         sampler=val_sampler,
-        shuffle=False if config.distributed else False,
+        shuffle=False,
         num_workers=config.num_workers,
         pin_memory=True,
         prefetch_factor=2,
@@ -1237,47 +1243,43 @@ def train_worker(rank, config, train_dataset, val_dataset):
         torch.cuda.empty_cache()
         gc.collect()
 
+# Training Configuration
+TRAINING_CONFIG = {
+    "model_name": "xlm-roberta-large",
+    "batch_size": 32,
+    "grad_accum_steps": 2,
+    "epochs": 5,
+    "lr": 2e-5,
+    "mixed_precision": "bf16",
+    "num_workers": 12,
+    "activation_checkpointing": True,
+    "tensor_float_32": True,
+    "gc_frequency": 500,
+    "weight_decay": 0.01,
+    "max_length": 128,
+    "warmup_ratio": 0.1,
+    "label_smoothing": 0.01,
+    "fp16": True,
+    "pin_memory": True,
+    "prefetch_factor": 2
+}
+
 def main():
     """Main training function with enhanced error handling"""
     try:
-        # Parse arguments
-        args = parse_args()
-        
         # Initialize wandb
         try:
             wandb.init(
                 project="toxic-comment-classification",
                 name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-                config={
-                    "model_name": args.model_name,
-                    "batch_size": args.batch_size,
-                    "grad_accum_steps": args.grad_accum_steps,
-                    "epochs": args.epochs,
-                    "lr": args.lr,
-                    "mixed_precision": args.mixed_precision,
-                    "num_workers": args.num_workers,
-                    "activation_checkpointing": args.activation_checkpointing,
-                    "tensor_float_32": args.tensor_float_32,
-                    "gc_frequency": args.gc_frequency
-                }
+                config=TRAINING_CONFIG
             )
             print("Initialized wandb logging")
         except Exception as e:
             print(f"Warning: Could not initialize wandb: {str(e)}")
         
-        # Initialize config with simplified parameters
-        config = TrainingConfig(
-            model_name=args.model_name,
-            batch_size=args.batch_size,
-            grad_accum_steps=args.grad_accum_steps,
-            epochs=args.epochs,
-            lr=args.lr,
-            mixed_precision=args.mixed_precision,
-            num_workers=args.num_workers,
-            activation_checkpointing=args.activation_checkpointing,
-            tensor_float_32=args.tensor_float_32,
-            gc_frequency=args.gc_frequency
-        )
+        # Initialize config with parameters from TRAINING_CONFIG
+        config = TrainingConfig(**TRAINING_CONFIG)
         
         # Load datasets with error handling
         print("Loading datasets...")

@@ -4,8 +4,6 @@ import json
 import torch
 import numpy as np
 from pathlib import Path
-import os
-import warnings
 
 @dataclass
 class DynamicClassWeights:
@@ -370,12 +368,12 @@ class TrainingConfig:
     # Training parameters
     batch_size: int = 32
     grad_accum_steps: int = 1
-    epochs: int = 10
+    epochs: int = 4
     lr: float = 2e-5
     weight_decay: float = 0.01
     
     # System parameters
-    num_workers: int = 2
+    num_workers: int = 12
     fp16: bool = False
     mixed_precision: str = "no"
     device: str = None
