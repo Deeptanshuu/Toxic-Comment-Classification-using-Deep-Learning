@@ -41,6 +41,7 @@ from pathlib import Path
 from model.training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
 from model.data.sampler import MultilabelStratifiedSampler
 from model.evaluation.threshold_optimizer import ThresholdOptimizer
+from model.language_aware_transformer import LanguageAwareTransformer
 
 # Set environment variables if not already set
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.environ.get('TF_CPP_MIN_LOG_LEVEL', '2')
@@ -175,44 +176,21 @@ def init_model(config):
     global _model
     
     try:
-        # Check if CUDA is available and working
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.init()
-            except Exception as e:
-                print(f"Warning: CUDA initialization failed: {str(e)}")
-                config.device = torch.device('cpu')
-        
-        # Initialize model with error handling
-        try:
-            _model = XLMRobertaForSequenceClassification.from_pretrained(
-                config.model_name,
-                num_labels=config.num_labels,
-                problem_type="multi_label_classification"
-            )
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            print("Attempting to download model...")
-            _model = XLMRobertaForSequenceClassification.from_pretrained(
-                config.model_name,
-                num_labels=config.num_labels,
-                problem_type="multi_label_classification",
-                force_download=True
-            )
-        
-        # Move model to device with error handling
-        try:
-            _model = _model.to(config.device)
-        except Exception as e:
-            print(f"Error moving model to device: {str(e)}")
-            if config.device.type == 'cuda':
-                print("Falling back to CPU")
-                config.device = torch.device('cpu')
-                _model = _model.to(config.device)
+        # Initialize custom model
+        _model = LanguageAwareTransformer(
+            num_labels=config.num_labels,
+            hidden_size=config.hidden_size,
+            num_attention_heads=config.num_attention_heads,
+            model_name=config.model_name,
+            dropout=config.model_dropout
+        )
         
         # Enable gradient checkpointing if requested
         if config.activation_checkpointing:
             _model.gradient_checkpointing_enable()
+        
+        # Move model to device
+        _model = _model.to(config.device)
         
         return _model
         
@@ -360,214 +338,105 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
     return lang_losses
 
 def train(model, train_loader, val_loader, config):
-    """Training loop with simplified configuration"""
+    """Training loop with language-aware model"""
+    model.train()
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay
+    )
     
-    try:
-        # Initialize optimizer, scheduler, scaler
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=config.lr,
-            betas=(0.9, 0.999),
-            eps=1e-8,
-            weight_decay=config.weight_decay
-        )
+    num_training_steps = len(train_loader) * config.epochs
+    num_warmup_steps = len(train_loader)  # 1 epoch warmup
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
+    )
+    
+    scaler = GradScaler(enabled=config.fp16)
+    
+    for epoch in range(config.epochs):
+        model.train()
+        total_loss = 0
         
-        num_training_steps = len(train_loader) * config.epochs
-        num_warmup_steps = len(train_loader)  # 1 epoch warmup
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
-        )
-        
-        scaler = GradScaler('cuda', enabled=config.fp16)
-        
-        # Initialize metrics tracker and dynamic weights
-        metrics_tracker = MetricsTracker()
-        dynamic_weights = DynamicClassWeights(weights_file='weights/language_class_weights.json')
-        
-        print("\n" + "="*80)
-        print(f"Starting training for {config.epochs} epochs...")
-        print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
-        print("="*80 + "\n")
-        
-        # Track global step for logging
-        global_step = 0
-        
-        for epoch in range(config.epochs):
-            model.train()
-            running_loss = 0.0
-            total_loss = 0.0
-            num_batches = 0
-            epoch_start = time.time()
-            
-            # Initialize step metrics
-            step_losses = []
-            
-            for batch_idx, batch in enumerate(train_loader):
-                try:
-                    # Move batch to device
-                    inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                             for k, v in batch.items()}
-                    
-                    # Get dynamic weights for this batch based on languages
-                    batch_weights = dynamic_weights.get_weights_for_batch(
-                        langs=batch['lang'],
-                        device=config.device
-                    )  # Shape: [batch_size, num_classes]
-                    
-                    # Forward pass
-                    with autocast('cuda', enabled=config.fp16):
-                        outputs = model(**{k: v for k, v in inputs.items() 
-                                         if k in ['input_ids', 'attention_mask']})
-                        logits = outputs.logits
-                        
-                        # Calculate weighted BCE loss for each class
-                        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(logits, inputs['labels'])  # [batch_size, num_classes]
-                        weighted_loss = (bce_loss * batch_weights).mean()  # Apply weights and average
-                        loss = weighted_loss
-                    
-                    # Scale loss by gradient accumulation steps
-                    scaled_loss = loss / config.grad_accum_steps
-                    
-                    # Backward pass
-                    scaler.scale(scaled_loss).backward()
-                    
-                    # Update step metrics
-                    step_losses.append(loss.item())
-                    
-                    # Step if we've accumulated enough gradients
-                    if (batch_idx + 1) % config.grad_accum_steps == 0:
-                        # Clip gradients
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        
-                        # Optimizer step
-                        scaler.step(optimizer)
-                        scaler.update()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                        
-                        # Calculate average loss over accumulation steps
-                        avg_step_loss = sum(step_losses) / len(step_losses)
-                        
-                        # Calculate per-language losses for monitoring
-                        lang_losses = calculate_lang_specific_loss(batch, bce_loss, config.device)
-                        
-                        # Log step metrics to wandb
-                        if wandb.run is not None:
-                            metrics_dict = {
-                                'train/step_loss': avg_step_loss,
-                                'train/learning_rate': scheduler.get_last_lr()[0],
-                                'train/global_step': global_step,
-                                'train/epoch': epoch,
-                                'train/batch': batch_idx,
-                                'train/progress': global_step / num_training_steps,
-                                'train/weighted_loss': weighted_loss.item(),
-                                'train/unweighted_loss': bce_loss.mean().item()
-                            }
-                            
-                            # Add language-specific losses
-                            for lang, losses in lang_losses.items():
-                                if losses:  # Only log if we have losses for this language
-                                    metrics_dict[f'train/loss_{lang}'] = np.mean(losses)
-                            
-                            wandb.log(metrics_dict)
-                        
-                        # Reset step metrics
-                        step_losses = []
-                        global_step += 1
-                    
-                    # Update running metrics
-                    running_loss += loss.item()
-                    total_loss += loss.item()
-                    num_batches += 1
-                    
-                    # Log batch metrics every 50 batches
-                    if batch_idx % 10 == 0:
-                        avg_loss = running_loss / (batch_idx + 1)
-                        lr = scheduler.get_last_lr()[0]
-                        
-                        # Log to console
-                        print(
-                            f"\r[{batch_idx:>5}/{len(train_loader)}] "
-                            f"Loss: {avg_loss:.4f} | "
-                            f"LR: {lr:.2e} | "
-                            f"Step: {global_step}",
-                            end="", flush=True
-                        )
-                        
-                    # Garbage collection if needed
-                    if batch_idx % config.gc_frequency == 0:
-                        gc.collect()
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                            
-                except Exception as e:
-                    print(f"\nError in training batch {batch_idx}: {str(e)}")
-                    continue
-            
-            # Update training metrics
-            epoch_avg_loss = total_loss / num_batches
-            metrics_tracker.update_train(epoch_avg_loss)
-            
-            # Validation
-            print(f"\n\n{'='*40} Validation {'='*40}")
-            val_metrics = evaluate(model, val_loader, config)
-            
-            # Update validation metrics and check if best model
-            is_best = metrics_tracker.update_validation(val_metrics)
-            
-            # Print epoch summary
-            print(f"\nEpoch {epoch+1} Summary:")
-            print(f"{'='*80}")
-            print(f"Training Loss: {epoch_avg_loss:.4f}")
-            print(f"Validation - Loss: {val_metrics['loss']:.4f}, AUC: {val_metrics['auc']:.4f}")
-            print(f"Best AUC: {metrics_tracker.best_auc:.4f}")
-            print(f"{'='*80}\n")
-            
-            # Save best model
-            if is_best:
-                save_model(model, config, epoch, metrics_tracker.best_auc)
-                print(f"🏆 New best model! AUC: {metrics_tracker.best_auc:.4f}")
-            
-            # Update timing metrics
-            epoch_time = time.time() - epoch_start
-            metrics_tracker.update_time(epoch_time)
-            
-            # Log metrics to wandb
-            if wandb.run is not None:
-                wandb.log({
-                    'train/epoch_loss': epoch_avg_loss,
-                    'val/loss': val_metrics['loss'],
-                    'val/auc': val_metrics['auc'],
-                    'val/precision': val_metrics['precision'],
-                    'val/recall': val_metrics['recall'],
-                    'val/f1': val_metrics['f1'],
-                    'train/epoch_time': epoch_time,
-                    'train/epoch': epoch,
-                    'train/best_auc': metrics_tracker.best_auc
-                })
+        for batch_idx, batch in enumerate(train_loader):
+            try:
+                # Move batch to device
+                inputs = {
+                    k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
                 
-                # Log per-class metrics
-                for class_name, metrics in val_metrics.get('class_metrics', {}).items():
-                    wandb.log({
-                        f'val/class/{class_name}/auc': metrics['auc'],
-                        f'val/class/{class_name}/f1': metrics['f1'],
-                        f'val/class/{class_name}/precision': metrics['precision'],
-                        f'val/class/{class_name}/recall': metrics['recall'],
-                        f'val/class/{class_name}/threshold': metrics['threshold']
-                    })
-            
-    except Exception as e:
-        print(f"\nTraining failed: {str(e)}")
-        raise
-    finally:
-        # Cleanup
+                # Forward pass with language-aware model
+                with autocast(enabled=config.fp16):
+                    outputs = model(
+                        input_ids=inputs['input_ids'],
+                        attention_mask=inputs['attention_mask'],
+                        labels=inputs['labels']
+                    )
+                    loss = outputs['loss']
+                    
+                # Scale loss and backward pass
+                scaled_loss = loss / config.grad_accum_steps
+                scaler.scale(scaled_loss).backward()
+                
+                # Step if we've accumulated enough gradients
+                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    
+                    scaler.step(optimizer)
+                    scaler.update()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                
+                # Update metrics
+                total_loss += loss.item()
+                
+                # Log progress
+                if batch_idx % 10 == 0:
+                    lr = scheduler.get_last_lr()[0]
+                    avg_loss = total_loss / (batch_idx + 1)
+                    print(
+                        f"\rEpoch {epoch+1}/{config.epochs} "
+                        f"[{batch_idx}/{len(train_loader)}] "
+                        f"Loss: {avg_loss:.4f} LR: {lr:.2e}",
+                        end=""
+                    )
+                    
+                    # Log to wandb
+                    if wandb.run is not None:
+                        wandb.log({
+                            'train/loss': avg_loss,
+                            'train/learning_rate': lr,
+                            'train/epoch': epoch,
+                            'train/thresholds': outputs['thresholds'].detach().cpu().numpy()
+                        })
+                
+            except Exception as e:
+                print(f"\nError in training batch: {str(e)}")
+                continue
+        
+        # Validation
+        val_metrics = evaluate(model, val_loader, config)
+        print(f"\nValidation - Loss: {val_metrics['loss']:.4f} AUC: {val_metrics['auc']:.4f}")
+        
+        # Log validation metrics
         if wandb.run is not None:
-            wandb.finish()
-        torch.cuda.empty_cache()
-        gc.collect()
+            wandb.log({
+                'val/loss': val_metrics['loss'],
+                'val/auc': val_metrics['auc'],
+                'val/epoch': epoch
+            })
+            
+            # Log per-class metrics
+            for label, metrics in val_metrics['class_metrics'].items():
+                wandb.log({
+                    f'val/class/{label}/auc': metrics['auc'],
+                    f'val/class/{label}/f1': metrics['f1'],
+                    f'val/class/{label}/threshold': metrics['threshold']
+                })
 
 def get_grad_norm(model):
     """Calculate gradient norm for monitoring"""
@@ -793,102 +662,41 @@ class WeightedFocalLoss(nn.Module):
 
 # Evaluation
 def evaluate(model, loader, config):
-    """Evaluation function with per-class metrics"""
+    """Evaluation function for language-aware model"""
     model.eval()
     total_loss = 0
-    all_preds = []
-    all_targets = []
-    
-    # Track per-class predictions and targets
-    if not hasattr(config, 'toxicity_labels'):
-        config.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    
-    class_preds = {label: [] for label in config.toxicity_labels}
-    class_targets = {label: [] for label in config.toxicity_labels}
+    all_labels = []
+    all_probs = []
+    all_thresholds = []
     
     with torch.no_grad():
         for batch in loader:
             inputs = {
-                'input_ids': batch['input_ids'].to(config.device),
-                'attention_mask': batch['attention_mask'].to(config.device),
-                'labels': batch['labels'].to(config.device)
+                k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                for k, v in batch.items()
             }
             
-            outputs = model(**inputs)
-            loss = outputs.loss
-            total_loss += loss.item()
+            outputs = model(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'],
+                labels=inputs['labels']
+            )
             
-            preds = torch.sigmoid(outputs.logits).cpu().numpy()
-            targets = batch['labels'].cpu().numpy()
-            
-            all_preds.append(preds)
-            all_targets.append(targets)
-            
-            # Track per-class predictions
-            for i, label in enumerate(config.toxicity_labels):
-                class_preds[label].append(preds[:, i])
-                class_targets[label].append(targets[:, i])
+            total_loss += outputs['loss'].item()
+            all_labels.append(inputs['labels'].cpu().numpy())
+            all_probs.append(outputs['probabilities'].cpu().numpy())
+            all_thresholds.append(outputs['thresholds'].cpu().numpy())
     
-    all_preds = np.concatenate(all_preds)
-    all_targets = np.concatenate(all_targets)
+    # Calculate metrics
+    labels = np.concatenate(all_labels)
+    probs = np.concatenate(all_probs)
+    thresholds = np.mean(all_thresholds, axis=0)
     
-    # Calculate dynamic thresholds
-    thresholds = {}
-    for i, label in enumerate(config.toxicity_labels):
-        fpr, tpr, thresh = roc_curve(all_targets[:, i], all_preds[:, i])
-        optimal_idx = np.argmax(tpr - fpr)
-        thresholds[label] = thresh[optimal_idx]
+    # Calculate AUC and other metrics
+    metrics = calculate_metrics(labels, probs, thresholds, config.toxicity_labels)
+    metrics['loss'] = total_loss / len(loader)
     
-    # Calculate overall metrics using dynamic thresholds
-    threshold_array = np.array([thresholds[label] for label in config.toxicity_labels])
-    binary_preds = (all_preds > threshold_array).astype(int)
-    
-    auc = roc_auc_score(all_targets, all_preds, average='macro')
-    auc_weighted = roc_auc_score(all_targets, all_preds, average='weighted')
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        all_targets, binary_preds, average='macro'
-    )
-    
-    # Calculate per-class metrics
-    class_metrics = {}
-    for i, label in enumerate(config.toxicity_labels):
-        label_preds = np.concatenate(class_preds[label])
-        label_targets = np.concatenate(class_targets[label])
-        label_binary_preds = (label_preds > thresholds[label]).astype(int)
-        
-        label_auc = roc_auc_score(label_targets, label_preds)
-        p, r, f, _ = precision_recall_fscore_support(
-            label_targets, label_binary_preds, average='binary'
-        )
-        
-        tn, fp, fn, tp = confusion_matrix(label_targets, label_binary_preds).ravel()
-        specificity = tn / (tn + fp)
-        npv = tn / (tn + fn)
-        
-        class_metrics[label] = {
-            'auc': label_auc,
-            'precision': p,
-            'recall': r,
-            'f1': f,
-            'specificity': specificity,
-            'npv': npv,
-            'threshold': thresholds[label],
-            'true_positives': int(tp),
-            'false_positives': int(fp),
-            'true_negatives': int(tn),
-            'false_negatives': int(fn)
-        }
-    
-    return {
-        'auc': auc,
-        'auc_weighted': auc_weighted,
-        'loss': total_loss / len(loader),
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'class_metrics': class_metrics,
-        'thresholds': thresholds
-    }
+    return metrics
 
 def predict_toxicity(text, model, tokenizer, config):
     """
@@ -1274,9 +1082,13 @@ TRAINING_CONFIG = {
     "gc_frequency": 500,
     "weight_decay": 0.01,
     "max_length": 128,
-    "fp16": True,
+    "fp16": False,
     "distributed": False,
-    "world_size": 1
+    "world_size": 1,
+    # New architecture parameters
+    "hidden_size": 1024,
+    "num_attention_heads": 16,
+    "model_dropout": 0.1
 }
 
 def main():

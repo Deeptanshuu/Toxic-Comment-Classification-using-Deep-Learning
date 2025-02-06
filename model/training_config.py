@@ -375,7 +375,7 @@ class TrainingConfig:
     # System parameters
     num_workers: int = 12
     fp16: bool = False
-    mixed_precision: str = "no"
+    mixed_precision: str = "bf16"
     device: str = None
     activation_checkpointing: bool = False
     tensor_float_32: bool = True
