@@ -339,8 +339,9 @@ def train(model, train_loader, val_loader, config):
         # Initialize scaler for mixed precision
         scaler = GradScaler('cuda', enabled=config.fp16)
         
-        # Initialize metrics tracker
+        # Initialize metrics tracker and dynamic weights
         metrics_tracker = MetricsTracker()
+        dynamic_weights = DynamicClassWeights()
         
         print("\n" + "="*80)
         print(f"Starting training for {config.epochs} epochs...")
@@ -366,11 +367,22 @@ def train(model, train_loader, val_loader, config):
                     inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
                              for k, v in batch.items()}
                     
+                    # Get dynamic weights for this batch
+                    batch_weights = dynamic_weights.get_weights_for_batch(
+                        langs=batch['lang'],
+                        device=config.device
+                    )
+                    
                     # Forward pass
                     with autocast('cuda', enabled=config.fp16):
                         outputs = model(**{k: v for k, v in inputs.items() 
                                          if k in ['input_ids', 'attention_mask', 'labels']})
-                        loss = outputs.loss
+                        logits = outputs.logits
+                        
+                        # Calculate weighted BCE loss
+                        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(logits, inputs['labels'])
+                        weighted_loss = (bce_loss * batch_weights).mean()
+                        loss = weighted_loss
                     
                     # Scale loss by gradient accumulation steps
                     scaled_loss = loss / config.grad_accum_steps
@@ -404,7 +416,9 @@ def train(model, train_loader, val_loader, config):
                                 'train/global_step': global_step,
                                 'train/epoch': epoch,
                                 'train/batch': batch_idx,
-                                'train/progress': global_step / num_training_steps
+                                'train/progress': global_step / num_training_steps,
+                                'train/weighted_loss': weighted_loss.item(),
+                                'train/unweighted_loss': bce_loss.mean().item()
                             })
                         
                         # Reset step metrics
