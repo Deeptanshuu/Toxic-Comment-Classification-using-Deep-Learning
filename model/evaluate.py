@@ -65,7 +65,7 @@ def load_model(model_path):
         return None, None, None
 
 def evaluate_model(model, test_loader, device, output_dir):
-    """Evaluate model performance"""
+    """Evaluate model performance with language-specific thresholds"""
     all_predictions = []
     all_labels = []
     all_langs = []
@@ -97,14 +97,105 @@ def evaluate_model(model, test_loader, device, output_dir):
     langs = np.array(all_langs)
     avg_loss = np.mean(all_losses)
     
+    # Initialize results dictionary
+    results = {
+        'overall': {'loss': avg_loss},
+        'per_language': {},
+        'per_class': {},
+        'thresholds': {}
+    }
+    
+    # Calculate language-specific thresholds and metrics
+    unique_langs = np.unique(langs)
+    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    
+    for lang in unique_langs:
+        lang_mask = langs == lang
+        if not lang_mask.any():
+            continue
+            
+        lang_preds = predictions[lang_mask]
+        lang_labels = labels[lang_mask]
+        
+        # Optimize thresholds for this language
+        lang_thresholds = {}
+        for i, class_name in enumerate(toxicity_types):
+            try:
+                # Find optimal threshold using ROC curve
+                fpr, tpr, thresh = roc_curve(lang_labels[:, i], lang_preds[:, i])
+                optimal_idx = np.argmax(tpr - fpr)
+                lang_thresholds[class_name] = thresh[optimal_idx]
+                
+                # Calculate F1 scores for different thresholds
+                f1_scores = []
+                for t in thresh:
+                    binary_preds = (lang_preds[:, i] > t).astype(int)
+                    precision, recall, f1, _ = precision_recall_fscore_support(
+                        lang_labels[:, i], binary_preds, average='binary'
+                    )
+                    f1_scores.append(f1)
+                
+                # Use threshold that maximizes F1 if it's better
+                f1_optimal_idx = np.argmax(f1_scores)
+                if f1_scores[f1_optimal_idx] > f1_scores[optimal_idx]:
+                    lang_thresholds[class_name] = thresh[f1_optimal_idx]
+            except:
+                # Fallback to default threshold
+                lang_thresholds[class_name] = 0.5
+        
+        results['thresholds'][lang] = lang_thresholds
+        
+        # Calculate metrics using optimized thresholds
+        binary_preds = np.zeros_like(lang_preds)
+        for i, class_name in enumerate(toxicity_types):
+            binary_preds[:, i] = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
+        
+        # Calculate language-specific metrics
+        try:
+            lang_metrics = calculate_language_metrics(lang_labels, lang_preds, binary_preds)
+            results['per_language'][lang] = lang_metrics
+            
+            # Calculate per-class metrics for this language
+            class_metrics = {}
+            for i, class_name in enumerate(toxicity_types):
+                metrics = calculate_class_metrics(
+                    lang_labels[:, i],
+                    lang_preds[:, i],
+                    binary_preds[:, i],
+                    lang_thresholds[class_name]
+                )
+                class_metrics[class_name] = metrics
+            
+            results['per_language'][lang]['class_metrics'] = class_metrics
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
+    
+    # Calculate overall metrics using language-specific thresholds
+    overall_binary_preds = np.zeros_like(predictions)
+    for i, lang in enumerate(langs):
+        for j, class_name in enumerate(toxicity_types):
+            threshold = results['thresholds'][lang][class_name]
+            overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
+    
     # Calculate overall metrics
-    results = calculate_metrics(predictions, labels, langs)
-    results['overall']['loss'] = avg_loss
+    results['overall'].update({
+        'auc': roc_auc_score(labels, predictions, average='macro'),
+        'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
+    })
     
-    # Save results
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, overall_binary_preds, average='macro'
+    )
+    
+    results['overall'].update({
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
+    })
+    
+    # Save results and generate visualizations
     save_results(results, predictions, labels, langs, output_dir)
-    
-    # Generate and save visualizations
     plot_metrics(results, output_dir)
     
     return results

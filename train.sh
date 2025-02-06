@@ -55,17 +55,7 @@ fi
 # Run training in background with nohup
 echo "Starting training..."
 cd "${PROJECT_DIR}"
-nohup python -u model/train.py \
-    --batch_size 32 \
-    --grad_accum_steps 2 \
-    --epochs 10 \
-    --lr 2e-5 \
-    --model_name xlm-roberta-large \
-    --mixed_precision bf16 \
-    --num_workers 12 \
-    --activation_checkpointing true \
-    --tensor_float_32 true \
-    --gc_frequency 500 > "${LOG_FILE}" 2> "${ERROR_LOG}" &
+nohup python -u model/train.py > "${LOG_FILE}" 2> "${ERROR_LOG}" &
 
 # Save the process ID
 echo $! > logs/train.pid

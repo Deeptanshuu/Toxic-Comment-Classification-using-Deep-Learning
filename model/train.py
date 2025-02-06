@@ -39,20 +39,23 @@ warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0
 class Config:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
-    batch_size: int = 32  # Reduced batch size for stability
-    grad_accum_steps: int = 4  # Increased grad accumulation
-    epochs: int = 10  # Increased epochs
-    lr: float = 1e-5  # Slightly lower learning rate for stability
-    warmup_ratio: float = 0.1  # Use ratio instead of steps
+    batch_size: int = 32
+    grad_accum_steps: int = 4
+    epochs: int = 10
+    lr: float = 1e-5  # Lower learning rate for stability
+    warmup_ratio: float = 0.1
+    weight_decay: float = 0.01  # Added weight decay
+    max_grad_norm: float = 1.0  # Added gradient clipping
+    label_smoothing: float = 0.01  # Added label smoothing
     device: str = None
     fp16: bool = True
     mixed_precision: str = 'bf16'
-    num_workers: int = 4  # Reduced workers
+    num_workers: int = 4
     pin_memory: bool = True
     prefetch_factor: int = 2
-    activation_checkpointing: bool = False  # Disabled for simplicity
+    activation_checkpointing: bool = False
     tensor_float_32: bool = True
-    gc_frequency: int = 100  # More frequent GC
+    gc_frequency: int = 100
     
     def __post_init__(self):
         # Load language-specific weights
@@ -143,11 +146,35 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
 def train(model, train_loader, val_loader, config):
     """Training loop with optimized configuration"""
     
+    # Initialize threshold optimizer
+    threshold_optimizer = ThresholdOptimizer(
+        num_classes=len(config.toxicity_labels),
+        languages=config.language_columns
+    )
+    
+    # Create parameter groups with different learning rates
+    no_decay = ['bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {
+            'params': [p for n, p in model.named_parameters() 
+                      if not any(nd in n for nd in no_decay)],
+            'weight_decay': config.weight_decay,
+            'lr': config.lr
+        },
+        {
+            'params': [p for n, p in model.named_parameters() 
+                      if any(nd in n for nd in no_decay)],
+            'weight_decay': 0.0,
+            'lr': config.lr
+        }
+    ]
+    
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        optimizer_grouped_parameters,
         lr=config.lr,
-        weight_decay=config.weight_decay,
-        eps=1e-8
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=config.weight_decay
     )
     
     # Use warmup ratio instead of fixed steps
@@ -163,7 +190,7 @@ def train(model, train_loader, val_loader, config):
     scaler = GradScaler(enabled=config.fp16)
     metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
-    early_stopping = EarlyStopping(patience=3, min_delta=1e-3)  # Increased min_delta for more stable stopping
+    early_stopping = EarlyStopping(patience=3, min_delta=1e-3)
     
     # Initialize progress tracking
     best_auc = 0.0
@@ -178,10 +205,22 @@ def train(model, train_loader, val_loader, config):
     try:
         for epoch in range(config.epochs):
             model.train()
+            
+            # Validate distribution shift at the start of each epoch
+            if epoch > 0:
+                shifts = validate_distribution_shift(train_loader.dataset, val_loader.dataset)
+                print("\nDistribution Shift Analysis:")
+                for metric, value in shifts['token_usage'].items():
+                    print(f"Token usage {metric}: {value:.4f}")
+            
             running_loss = 0.0
             total_loss = 0.0
             num_batches = 0
             epoch_start = time.time()
+            
+            # Update weights based on validation performance every 2 epochs
+            if epoch > 0 and epoch % 2 == 0:
+                class_weights.update_weights_based_on_performance(val_metrics)
             
             # Initialize per-class metrics
             class_losses = {label: 0.0 for label in config.toxicity_labels}
@@ -213,123 +252,131 @@ def train(model, train_loader, val_loader, config):
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         
                         if outputs.loss.dim() == 2:
-                            weighted_loss = outputs.loss * batch_weights.unsqueeze(0)
-                        else:
                             weighted_loss = outputs.loss * batch_weights
+                        else:
+                            weighted_loss = outputs.loss * batch_weights.mean(dim=0)
                             
                         loss = weighted_loss.mean() / config.grad_accum_steps
                     
-                    # Track per-class losses
-                    with torch.no_grad():
-                        if weighted_loss.dim() == 2:
-                            class_wise_loss = weighted_loss.mean(dim=0)
-                        else:
-                            class_wise_loss = weighted_loss
-                            
-                        for i, label in enumerate(config.toxicity_labels):
-                            if i < class_wise_loss.size(0):
-                                class_losses[label] += class_wise_loss[i].item()
-                                class_counts[label] += 1
-                    
                     # Backward pass
                     scaler.scale(loss).backward()
+                    
+                    # Track gradients with improved adaptive clipping
+                    if (batch_idx + 1) % config.grad_accum_steps == 0:
+                        scaler.unscale_(optimizer)
+                        
+                        # Get adaptive max norm based on training progress
+                        adaptive_max_norm = config.get_adaptive_max_norm(epoch, global_step)
+                        
+                        # Apply gradient clipping
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), 
+                            max_norm=adaptive_max_norm
+                        )
+                        param_norm = torch.norm(torch.stack([p.norm() for p in model.parameters()]))
+                        
+                        # Log gradient metrics with improved tracking
+                        wandb.log({
+                            'grad/norm': grad_norm.item(),
+                            'grad/param_norm': param_norm.item(),
+                            'grad/ratio': grad_norm.item() / (param_norm.item() + 1e-6),
+                            'grad/adaptive_max_norm': adaptive_max_norm,
+                            'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm
+                        }, step=global_step)
+                        
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
                     
                     running_loss += loss.item() * config.grad_accum_steps
                     total_loss += loss.item() * config.grad_accum_steps
                     num_batches += 1
                     global_step += 1
                     
-                    if (batch_idx + 1) % config.grad_accum_steps == 0:
-                        scaler.unscale_(optimizer)
-                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
-                        scaler.step(optimizer)
-                        scaler.update()
-                        scheduler.step()
-                        optimizer.zero_grad()
+                    avg_loss = running_loss / config.grad_accum_steps
+                    running_loss = 0.0
+                    
+                    # Update metrics tracker
+                    metrics_tracker.update_train(avg_loss)
+                    
+                    # Log step-level metrics
+                    step_metrics = {
+                        'train/step_loss': avg_loss,
+                        'train/learning_rate': scheduler.get_last_lr()[0],
+                        'train/grad_norm': grad_norm.item(),
+                        'train/step': global_step,
+                    }
+                    
+                    try:
+                        wandb.log(step_metrics, step=global_step)
+                    except Exception as e:
+                        print(f"Warning: Failed to log step metrics to wandb: {str(e)}")
+                    
+                    if batch_idx % 50 == 0:
+                        progress = batch_idx / len(train_loader)
+                        batch_time = time.time() - epoch_start
+                        batch_eta = str(timedelta(seconds=int(
+                            (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
+                        )))
                         
-                        avg_loss = running_loss / config.grad_accum_steps
-                        running_loss = 0.0
+                        # Get GPU stats
+                        try:
+                            gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
+                        except Exception as e:
+                            print(f"Warning: Could not get GPU stats: {str(e)}")
+                            gpu_stats = None
                         
-                        # Update metrics tracker
-                        metrics_tracker.update_train(avg_loss)
-                        
-                        # Log step-level metrics
-                        step_metrics = {
-                            'train/step_loss': avg_loss,
-                            'train/learning_rate': scheduler.get_last_lr()[0],
-                            'train/grad_norm': grad_norm.item(),
-                            'train/step': global_step,
+                        # Prepare detailed metrics dict for less frequent logging
+                        log_dict = {
+                            'train/progress': progress * 100,
+                            'train/epoch': epoch + progress,
+                            'train/batch_size': config.batch_size,
+                            'train/global_step': global_step,
+                            'time/batch_eta': batch_eta,
+                            'time/training_eta': eta,
+                            'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
+                            'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
                         }
                         
-                        try:
-                            wandb.log(step_metrics, step=global_step)
-                        except Exception as e:
-                            print(f"Warning: Failed to log step metrics to wandb: {str(e)}")
+                        # Add GPU metrics if available
+                        if gpu_stats:
+                            log_dict.update({
+                                'system/gpu_util': gpu_stats['utilization'],
+                                'system/gpu_mem': gpu_stats['memory'],
+                                'system/gpu_temp': gpu_stats['temperature']
+                            })
                         
-                        if batch_idx % 50 == 0:
-                            progress = batch_idx / len(train_loader)
-                            batch_time = time.time() - epoch_start
-                            batch_eta = str(timedelta(seconds=int(
-                                (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
-                            )))
-                            
-                            # Get GPU stats
-                            try:
-                                gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
-                            except Exception as e:
-                                print(f"Warning: Could not get GPU stats: {str(e)}")
-                                gpu_stats = None
-                            
-                            # Prepare detailed metrics dict for less frequent logging
-                            log_dict = {
-                                'train/progress': progress * 100,
-                                'train/epoch': epoch + progress,
-                                'train/batch_size': config.batch_size,
-                                'train/global_step': global_step,
-                                'time/batch_eta': batch_eta,
-                                'time/training_eta': eta,
-                                'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
-                                'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
-                            }
-                            
-                            # Add GPU metrics if available
-                            if gpu_stats:
-                                log_dict.update({
-                                    'system/gpu_util': gpu_stats['utilization'],
-                                    'system/gpu_mem': gpu_stats['memory'],
-                                    'system/gpu_temp': gpu_stats['temperature']
-                                })
-                            
-                            # Add per-class losses
-                            for label in config.toxicity_labels:
-                                if class_counts[label] > 0:
-                                    class_loss = class_losses[label] / class_counts[label]
-                                    log_dict[f'train/loss_{label}'] = class_loss
-                            
-                            # Add validation metrics if available
-                            if metrics_tracker.val_losses:
-                                log_dict.update({
-                                    'val/loss': metrics_tracker.val_losses[-1],
-                                    'val/auc': metrics_tracker.val_aucs[-1],
-                                    'val/best_auc': metrics_tracker.best_auc
-                                })
-                            
-                            # Log all metrics together
-                            try:
-                                wandb.log(log_dict, step=global_step)
-                            except Exception as e:
-                                print(f"Warning: Failed to log to wandb: {str(e)}")
-                            
-                            # Print progress
-                            print(
-                                f"\r[{batch_idx:>5}/{len(train_loader)}] "
-                                f"Loss: {avg_loss:.4f} | "
-                                f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-                                f"GN: {grad_norm.item():.2f} | "
-                                f"BT: {batch_eta} | "
-                                f"ETA: {eta}",
-                                end="", flush=True
-                            )
+                        # Add per-class losses
+                        for label in config.toxicity_labels:
+                            if class_counts[label] > 0:
+                                class_loss = class_losses[label] / class_counts[label]
+                                log_dict[f'train/loss_{label}'] = class_loss
+                        
+                        # Add validation metrics if available
+                        if metrics_tracker.val_losses:
+                            log_dict.update({
+                                'val/loss': metrics_tracker.val_losses[-1],
+                                'val/auc': metrics_tracker.val_aucs[-1],
+                                'val/best_auc': metrics_tracker.best_auc
+                            })
+                        
+                        # Log all metrics together
+                        try:
+                            wandb.log(log_dict, step=global_step)
+                        except Exception as e:
+                            print(f"Warning: Failed to log to wandb: {str(e)}")
+                        
+                        # Print progress
+                        print(
+                            f"\r[{batch_idx:>5}/{len(train_loader)}] "
+                            f"Loss: {avg_loss:.4f} | "
+                            f"LR: {scheduler.get_last_lr()[0]:.2e} | "
+                            f"GN: {grad_norm.item():.2f} | "
+                            f"BT: {batch_eta} | "
+                            f"ETA: {eta}",
+                            end="", flush=True
+                        )
                 
                 except Exception as e:
                     print(f"\nError processing batch {batch_idx}: {str(e)}")
@@ -355,7 +402,31 @@ def train(model, train_loader, val_loader, config):
             # Validation
             print(f"\n\n{'='*40} Validation {'='*40}")
             model.eval()
+            
+            # Check gradient flow before validation
+            grad_stats = check_class_wise_gradient_flow(model)
+            if grad_stats:
+                wandb.log({
+                    'grad_flow/mean': grad_stats['mean'].tolist(),
+                    'grad_flow/std': grad_stats['std'].tolist(),
+                    'grad_flow/norm': grad_stats['norm'].tolist(),
+                }, step=global_step)
+            
+            # Run validation with threshold optimization
             val_metrics = evaluate(model, val_loader, config)
+            threshold_optimizer.optimize(
+                val_preds=val_metrics['predictions'],
+                val_labels=val_metrics['labels'],
+                langs=val_metrics['langs']
+            )
+            
+            # Log threshold values
+            for lang in config.language_columns:
+                if lang in threshold_optimizer.thresholds:
+                    for i, label in enumerate(config.toxicity_labels):
+                        wandb.log({
+                            f'thresholds/{lang}/{label}': threshold_optimizer.thresholds[lang][i]
+                        }, step=global_step)
             
             # Update metrics and save if best
             is_best = metrics_tracker.update_validation(val_metrics)
@@ -525,40 +596,101 @@ class ToxicDataset(Dataset):
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
         
-        # Pre-tokenize all texts for faster training
-        print("Pre-tokenizing texts...")
-        # Process in batches to manage memory
-        batch_size = 1000
-        self.encodings = {'input_ids': [], 'attention_mask': []}
+        # Create cache directory
+        Path('cache').mkdir(exist_ok=True)
         
-        for i in range(0, len(df), batch_size):
-            batch_texts = df['comment_text'].fillna('').iloc[i:i+batch_size].tolist()
-            batch_encodings = self.tokenizer(
-                batch_texts,
-                max_length=config.max_length,
-                padding='max_length',
-                truncation=True,
-                return_tensors='pt'
-            )
-            self.encodings['input_ids'].append(batch_encodings['input_ids'])
-            self.encodings['attention_mask'].append(batch_encodings['attention_mask'])
+        # Generate cache key based on data and config
+        cache_key = f"tokenized_{len(df)}_{config.max_length}_{tokenizer.name_or_path.replace('/', '_')}"
+        self.cache_file = Path('cache') / f"{cache_key}.pt"
+        
+        if self.cache_file.exists():
+            print(f"Loading cached tokenized data from {self.cache_file}")
+            cached_data = torch.load(self.cache_file, map_location='cpu')
+            self.encodings = {
+                k: cached_data[k].pin_memory() if torch.cuda.is_available() else cached_data[k]
+                for k in ['input_ids', 'attention_mask']
+            }
+        else:
+            print("Pre-tokenizing texts...")
+            # Process in batches to manage memory
+            batch_size = 1000
+            self.encodings = {'input_ids': [], 'attention_mask': []}
             
-            if i % 10000 == 0:
-                print(f"Processed {i}/{len(df)} texts")
-        
-        # Concatenate all batches
-        self.encodings['input_ids'] = torch.cat(self.encodings['input_ids'])
-        self.encodings['attention_mask'] = torch.cat(self.encodings['attention_mask'])
+            for i in range(0, len(df), batch_size):
+                batch_texts = df['comment_text'].fillna('').iloc[i:i+batch_size].tolist()
+                batch_encodings = self.tokenizer(
+                    batch_texts,
+                    max_length=config.max_length,
+                    padding='max_length',
+                    truncation=True,
+                    return_tensors='pt'
+                )
+                self.encodings['input_ids'].append(batch_encodings['input_ids'])
+                self.encodings['attention_mask'].append(batch_encodings['attention_mask'])
+                
+                if i % 10000 == 0:
+                    print(f"Processed {i}/{len(df)} texts")
+            
+            # Concatenate all batches
+            self.encodings = {
+                k: torch.cat(v).pin_memory() if torch.cuda.is_available() else torch.cat(v)
+                for k, v in self.encodings.items()
+            }
+            
+            # Save to cache
+            torch.save(self.encodings, self.cache_file)
         
         # Convert labels to tensor
         self.labels = torch.FloatTensor(df[config.toxicity_labels].fillna(0).values)
+        if torch.cuda.is_available():
+            self.labels = self.labels.pin_memory()
+        
         self.langs = df['lang'].fillna('en').values
         
-        # Pin memory for faster transfer to GPU
-        if torch.cuda.is_available():
-            self.encodings['input_ids'] = self.encodings['input_ids'].pin_memory()
-            self.encodings['attention_mask'] = self.encodings['attention_mask'].pin_memory()
-            self.labels = self.labels.pin_memory()
+        # Calculate and store feature statistics for distribution shift monitoring
+        self._calculate_feature_stats()
+    
+    def _calculate_feature_stats(self):
+        """Calculate feature statistics for monitoring distribution shift"""
+        # Calculate mean token usage
+        self.token_usage = (self.encodings['attention_mask'] == 1).float().mean(dim=1)
+        
+        # Calculate class distribution per language
+        self.lang_class_dist = {}
+        for lang in np.unique(self.langs):
+            lang_mask = self.langs == lang
+            self.lang_class_dist[lang] = {
+                'mean': self.labels[lang_mask].mean(dim=0).numpy(),
+                'std': self.labels[lang_mask].std(dim=0).numpy()
+            }
+    
+    def check_distribution_shift(self, other_dataset):
+        """Check for distribution shift between this dataset and another"""
+        shifts = {}
+        
+        # Check token usage distribution
+        shifts['token_usage'] = {
+            'mean_diff': (self.token_usage.mean() - other_dataset.token_usage.mean()).item(),
+            'std_diff': (self.token_usage.std() - other_dataset.token_usage.std()).item()
+        }
+        
+        # Check class distribution shifts per language
+        for lang in self.lang_class_dist:
+            if lang in other_dataset.lang_class_dist:
+                mean_diff = np.abs(
+                    self.lang_class_dist[lang]['mean'] - 
+                    other_dataset.lang_class_dist[lang]['mean']
+                )
+                std_diff = np.abs(
+                    self.lang_class_dist[lang]['std'] - 
+                    other_dataset.lang_class_dist[lang]['std']
+                )
+                shifts[f'lang_{lang}'] = {
+                    'mean_diff': mean_diff.tolist(),
+                    'std_diff': std_diff.tolist()
+                }
+        
+        return shifts
 
     def __len__(self):
         return len(self.df)
@@ -574,26 +706,51 @@ class ToxicDataset(Dataset):
 
 # Weighted Focal Loss
 class WeightedFocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2):
+    def __init__(self, alpha=0.25, gamma=2, label_smoothing=0.01):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
+        self.label_smoothing = label_smoothing
         self.class_weights = DynamicClassWeights()
     
     def forward(self, preds, targets, langs=None):
+        # Apply label smoothing
+        targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+        
+        # Ensure all inputs have correct dimensions [B, C]
+        if preds.dim() == 1:
+            preds = preds.unsqueeze(-1)
+        if targets.dim() == 1:
+            targets = targets.unsqueeze(-1)
+        
+        # Get weights with proper dimensions
         if langs is None:
             # Use default weights if no language information
             weights = self.class_weights.default_weights.to(preds.device)
+            if weights.dim() == 1:
+                weights = weights.unsqueeze(0)  # [C] → [1, C]
         else:
-            # Get language-specific weights using DynamicClassWeights
-            weights = self.class_weights.get_weights_for_batch(langs, preds.device)
+            # Get language-specific weights
+            weights = self.class_weights.get_weights_for_batch(langs, preds.device)  # [B, C]
         
-        # Calculate focal loss with dynamic weights
-        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)
+        # Ensure weights have correct shape through proper broadcasting
+        if weights.shape != preds.shape:
+            weights = weights.expand_as(preds)  # Match dimensions exactly [B, C]
+        
+        # Calculate BCE loss with proper reduction
+        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)  # [B, C]
+        
+        # Calculate focal weights
         pt = torch.exp(-bce_loss)
-        focal_loss = (self.alpha * (1-pt)**self.gamma * bce_loss) * weights
+        pt = torch.clamp(pt, min=1e-7, max=1.0)  # Numerical stability
+        focal_weights = (1 - pt) ** self.gamma
         
-        return focal_loss.mean()
+        # Apply focal weighting and class weights
+        loss = self.alpha * focal_weights * bce_loss  # [B, C]
+        weighted_loss = loss * weights  # [B, C]
+        
+        # Reduce mean over both batch and class dimensions
+        return weighted_loss.mean()
 
 # Evaluation
 def evaluate(model, loader, config):
@@ -726,12 +883,158 @@ def predict_toxicity(text, model, tokenizer, config):
         results[label] = float(prob)
     return results
 
+class MultilabelStratifiedSampler(torch.utils.data.Sampler):
+    """Samples elements maintaining balanced representation of classes per language"""
+    def __init__(self, labels, groups, batch_size):
+        self.labels = torch.tensor(labels)
+        self.groups = np.array(groups)
+        self.batch_size = batch_size
+        self.unique_groups = np.unique(groups)
+        self.num_classes = labels.shape[1]
+        
+        # Calculate weights for balanced sampling
+        self.weights = self._calculate_weights()
+        
+        # Calculate samples per group ensuring minimum representation
+        self.samples_per_group = max(1, self.batch_size // len(self.unique_groups))
+        self.remainder = self.batch_size - (self.samples_per_group * len(self.unique_groups))
+        
+    def _calculate_weights(self):
+        weights = torch.ones(len(self.labels))
+        for group in self.unique_groups:
+            group_mask = self.groups == group
+            group_labels = self.labels[group_mask]
+            
+            if len(group_labels) == 0:
+                continue
+            
+            # Calculate inverse frequency for each class in this group
+            class_weights = []
+            for c in range(self.num_classes):
+                pos_count = group_labels[:, c].sum()
+                if pos_count > 0:
+                    w = len(group_labels) / (2 * pos_count)
+                    class_weights.append(w)
+                else:
+                    class_weights.append(1.0)
+            
+            # Apply weights to samples in this group
+            group_weights = torch.tensor(class_weights).mean(dim=0)
+            weights[group_mask] = group_weights
+        
+        return weights
+    
+    def __iter__(self):
+        # Convert weights to probabilities
+        probs = self.weights / self.weights.sum()
+        
+        # Generate indices ensuring each batch has samples from each group
+        indices = []
+        while len(indices) < len(self.labels):
+            batch_indices = []
+            
+            # First, ensure minimum samples from each group
+            for group in self.unique_groups:
+                group_mask = self.groups == group
+                group_probs = probs[group_mask].clone()
+                
+                if group_probs.sum() > 0:  # Only sample if group has samples
+                    group_probs /= group_probs.sum()
+                    
+                    # Sample indices for this group
+                    try:
+                        group_indices = np.random.choice(
+                            np.where(group_mask)[0],
+                            size=self.samples_per_group,
+                            p=group_probs.numpy(),
+                            replace=False
+                        )
+                        batch_indices.extend(group_indices)
+                    except ValueError as e:
+                        print(f"Warning: Could not sample {self.samples_per_group} samples from group {group}")
+                        # Fall back to sampling with replacement if necessary
+                        group_indices = np.random.choice(
+                            np.where(group_mask)[0],
+                            size=self.samples_per_group,
+                            p=group_probs.numpy(),
+                            replace=True
+                        )
+                        batch_indices.extend(group_indices)
+            
+            # Add remaining samples randomly but weighted by class distribution
+            if self.remainder > 0:
+                remaining_probs = probs.clone()
+                remaining_probs /= remaining_probs.sum()
+                
+                remaining_indices = np.random.choice(
+                    len(self.labels),
+                    size=self.remainder,
+                    p=remaining_probs.numpy(),
+                    replace=False
+                )
+                batch_indices.extend(remaining_indices)
+            
+            indices.extend(batch_indices)
+        
+        return iter(indices[:len(self.labels)])
+    
+    def __len__(self):
+        return len(self.labels)
+
+class ThresholdOptimizer:
+    """Optimizes classification thresholds per language"""
+    def __init__(self, num_classes, languages):
+        self.num_classes = num_classes
+        self.languages = languages
+        self.thresholds = {lang: np.array([0.5] * num_classes) for lang in languages}
+        
+    def optimize(self, val_preds, val_labels, langs):
+        """Optimize thresholds using validation data"""
+        for lang in self.languages:
+            lang_mask = langs == lang
+            if not lang_mask.any():
+                continue
+                
+            lang_preds = val_preds[lang_mask]
+            lang_labels = val_labels[lang_mask]
+            
+            # Optimize threshold for each class
+            for i in range(self.num_classes):
+                try:
+                    fpr, tpr, thresholds = roc_curve(lang_labels[:, i], lang_preds[:, i])
+                    # Find threshold that maximizes f1 score
+                    f1_scores = []
+                    for t in thresholds:
+                        binary_preds = (lang_preds[:, i] > t).astype(int)
+                        precision, recall, f1, _ = precision_recall_fscore_support(
+                            lang_labels[:, i], binary_preds, average='binary'
+                        )
+                        f1_scores.append(f1)
+                    
+                    optimal_idx = np.argmax(f1_scores)
+                    self.thresholds[lang][i] = thresholds[optimal_idx]
+                except:
+                    continue
+    
+    def get_thresholds(self, langs):
+        """Get thresholds for a batch of languages"""
+        batch_thresholds = []
+        for lang in langs:
+            batch_thresholds.append(self.thresholds.get(lang, self.thresholds['en']))
+        return np.array(batch_thresholds)
+
 def create_dataloaders(train_dataset, val_dataset, config):
-    """Create optimized DataLoaders"""
+    """Create optimized DataLoaders with stratified sampling"""
+    train_sampler = MultilabelStratifiedSampler(
+        labels=train_dataset.labels,
+        groups=train_dataset.langs,
+        batch_size=config.batch_size
+    )
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        sampler=train_sampler,
         num_workers=config.num_workers,
         pin_memory=True,
         prefetch_factor=2,
@@ -740,7 +1043,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config.batch_size * 2,  # Larger batch size for validation
+        batch_size=config.batch_size * 2,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=True,
@@ -749,6 +1052,49 @@ def create_dataloaders(train_dataset, val_dataset, config):
     )
     
     return train_loader, val_loader
+
+def check_class_wise_gradient_flow(model):
+    """Monitor gradient flow for each class head"""
+    grad_stats = {}
+    
+    # Get gradients for class-specific parameters
+    classifier_params = list(model.classifier.parameters())
+    if not classifier_params[-1].grad is None:  # Check if gradients exist
+        class_grads = classifier_params[-1].grad  # Shape: [num_classes, hidden_dim]
+        
+        # Calculate statistics
+        grad_stats['mean'] = class_grads.mean(dim=1).cpu().numpy()
+        grad_stats['std'] = class_grads.std(dim=1).cpu().numpy()
+        grad_stats['norm'] = torch.norm(class_grads, dim=1).cpu().numpy()
+        
+        # Calculate gradient diversity (correlation between class gradients)
+        grad_corr = torch.corrcoef(class_grads)
+        grad_stats['correlation'] = grad_corr.cpu().numpy()
+    
+    return grad_stats
+
+def validate_distribution_shift(train_dataset, val_dataset):
+    """Check for distribution shift between train and validation sets"""
+    shifts = train_dataset.check_distribution_shift(val_dataset)
+    
+    # Log shifts to wandb
+    wandb.log({
+        'distribution_shift/token_usage_mean': shifts['token_usage']['mean_diff'],
+        'distribution_shift/token_usage_std': shifts['token_usage']['std_diff']
+    })
+    
+    # Log language-specific shifts
+    for lang, lang_shifts in shifts.items():
+        if lang.startswith('lang_'):
+            for cls_idx, (mean_diff, std_diff) in enumerate(zip(
+                lang_shifts['mean_diff'], lang_shifts['std_diff']
+            )):
+                wandb.log({
+                    f'distribution_shift/{lang}_class{cls_idx}_mean': mean_diff,
+                    f'distribution_shift/{lang}_class{cls_idx}_std': std_diff
+                })
+    
+    return shifts
 
 def main():
     """Main training function"""

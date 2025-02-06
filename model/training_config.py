@@ -7,26 +7,109 @@ from pathlib import Path
 
 @dataclass
 class DynamicClassWeights:
-    """Handles dynamic class weights per language"""
+    """Handles dynamic class weights per language with improved calculation"""
     weights_file: str = 'weights/language_class_weights.json'
     
     def __post_init__(self):
         self.load_weights()
-        
+        self.enforce_language_priority()
+    
     def load_weights(self):
-        """Load language-specific weights from JSON file"""
+        """Load and adjust language-specific weights"""
         with open(self.weights_file, 'r') as f:
             self.weights_data = json.load(f)
             self.weights = self.weights_data['weights']
-            
+        
         # Get list of toxicity columns in order
         self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
+        
+        # Apply EN weight boosts for critical classes
+        self.weights['en']['toxic']['1'] = 3.5       # Increased from 0.59
+        self.weights['en']['threat']['1'] = 15.0     # Increased from 10.88
+        self.weights['en']['identity_hate']['1'] = 5.0  # Increased from 3.58
         
         # Default weights (English)
         self.default_weights = torch.tensor([
             self.weights['en'][col]['1'] for col in self.toxicity_columns
         ])
+    
+    def enforce_language_priority(self):
+        """Ensure EN weights >= other languages for critical classes with strict ratios"""
+        critical_classes = {
+            'toxic': {
+                'ratio': 0.5,  # EN toxic must be 2x others
+                'min_weight': 3.5,
+                'max_other_weight': 1.75  # Half of EN weight
+            },
+            'threat': {
+                'ratio': 0.6,  # EN threat must be 1.66x others
+                'min_weight': 15.0,
+                'max_other_weight': 9.0  # 60% of EN weight
+            },
+            'identity_hate': {
+                'ratio': 0.7,
+                'min_weight': 5.0,
+                'max_other_weight': 3.5  # 70% of EN weight
+            }
+        }
+        
+        for cls, params in critical_classes.items():
+            en_weight = self.weights['en'][cls]['1']
+            max_other_weight = min(params['max_other_weight'], en_weight * params['ratio'])
+            
+            for lang in self.language_columns:
+                if lang != 'en':
+                    current_weight = self.weights[lang][cls]['1']
+                    # Ensure weight is both below EN ratio and above minimum
+                    if current_weight > max_other_weight or current_weight < params['min_weight']:
+                        new_weight = max(
+                            params['min_weight'],
+                            min(max_other_weight, current_weight)
+                        )
+                        self.weights[lang][cls]['1'] = new_weight
+                        
+                        # Update calculation metadata
+                        if 'calculation_metadata' not in self.weights[lang][cls]:
+                            self.weights[lang][cls]['calculation_metadata'] = {
+                                'constraints_applied': []
+                            }
+                        
+                        self.weights[lang][cls]['calculation_metadata']['constraints_applied'].extend([
+                            f"language_priority_ratio={params['ratio']}",
+                            f"max_other_weight={max_other_weight}",
+                            f"adjusted_from={current_weight}_to={new_weight}"
+                        ])
+    
+    def calculate_safe_weights(self, total_samples: int, support_1: int, toxicity_type: str) -> float:
+        """Calculate weights with safety constraints"""
+        if toxicity_type == 'toxic':
+            num_classes = 2  # Treat as primary binary classification task
+            boost_factor = 1.67  # Extra boost for main toxic class
+        else:
+            num_classes = 5  # Remaining secondary toxicity types
+            boost_factor = 1.0
+        
+        raw_weight = (total_samples / (num_classes * support_1)) * boost_factor
+        
+        # Apply constraints
+        max_weight = 15.0 if toxicity_type == 'threat' else 10.0
+        min_weight = 0.5
+        
+        return max(min_weight, min(max_weight, raw_weight))
+    
+    def update_weights_based_on_performance(self, val_metrics: dict):
+        """Adjust weights based on validation performance"""
+        for lang in self.language_columns:
+            if lang in val_metrics['per_language']:
+                lang_metrics = val_metrics['per_language'][lang]
+                for cls in self.toxicity_columns:
+                    if cls in lang_metrics['class_metrics']:
+                        cls_metrics = lang_metrics['class_metrics'][cls]
+                        # Adjust weight if F1 score is too low
+                        if cls_metrics['f1'] < 0.3:
+                            current_weight = self.weights[lang][cls]['1']
+                            self.weights[lang][cls]['1'] = min(current_weight * 1.2, 15.0)
     
     def get_weights_for_batch(self, langs: List[str], device: torch.device) -> torch.Tensor:
         """Get language-specific weights for each sample in the batch"""
@@ -48,12 +131,7 @@ class DynamicClassWeights:
         
         # Convert to tensor and move to device
         weights = torch.tensor(batch_weights, dtype=torch.float32).to(device)
-        
-        # Take mean across batch if shape mismatch
-        if len(weights.shape) > 1:
-            weights = weights.mean(dim=0)
-            
-        return weights
+        return weights  # Return per-sample weights [B, C]
 
 @dataclass
 class MetricsTracker:
@@ -151,17 +229,22 @@ class TrainingConfig:
     num_labels: int = 6
     
     # Training parameters
-    batch_size: int = 32
-    grad_accum_steps: int = 4
+    batch_size: int = 64  # Increased from 48 for better XLM-R utilization
+    grad_accum_steps: int = 1  # Removed accumulation for stability
     epochs: int = 10
-    lr: float = 1e-5
-    warmup_ratio: float = 0.1
+    lr: float = 2e-5  # Standard XLM-R fine-tuning rate
+    warmup_ratio: float = 0.15
     weight_decay: float = 0.01
-    max_grad_norm: float = 1.0
+    
+    # Gradient control parameters
+    initial_max_norm: float = 0.1  # Start with strict clipping
+    final_max_norm: float = 1.0  # Gradually relax to this value
+    min_max_norm: float = 0.1  # Never go below this value
+    grad_norm_adjustment_steps: int = 100  # Steps to adjust norm
     
     # Mixed precision parameters
     fp16: bool = True
-    mixed_precision: str = 'bf16'
+    mixed_precision: str = 'bf16'  # Better numerical stability than fp16
     
     # System parameters
     num_workers: int = 16
@@ -170,7 +253,7 @@ class TrainingConfig:
     gc_frequency: int = 100
     
     # Optimization flags
-    activation_checkpointing: bool = False
+    activation_checkpointing: bool = True  # Enable for large batch size
     tensor_float_32: bool = True
     
     def __post_init__(self):
@@ -195,6 +278,10 @@ class TrainingConfig:
         # Create output directories
         Path('weights').mkdir(exist_ok=True)
         Path('logs').mkdir(exist_ok=True)
+        Path('tokenized').mkdir(exist_ok=True)  # For memory-mapped tokenization cache
+        
+        # Validate configuration
+        self._validate_config()
 
     @property
     def device(self) -> torch.device:
@@ -202,22 +289,64 @@ class TrainingConfig:
         return self._device
     
     def get_optimizer_groups(self, model: torch.nn.Module) -> list:
-        """Create parameter groups for optimizer"""
-        return [
-            {'params': model.roberta.parameters(), 'lr': self.lr},
-            {'params': model.classifier.parameters(), 'lr': self.lr}
-        ]
+        """Create parameter groups for optimizer with layer-wise decay"""
+        # Group parameters by layer depth for transformer
+        layer_groups = []
+        no_decay = ['bias', 'LayerNorm.weight']
+        
+        # Add embeddings
+        layer_groups.append({
+            'params': [p for n, p in model.roberta.embeddings.named_parameters()
+                      if not any(nd in n for nd in no_decay)],
+            'weight_decay': self.weight_decay,
+            'lr': self.lr
+        })
+        
+        # Add encoder layers with increasing learning rate
+        num_layers = len(model.roberta.encoder.layer)
+        for i, layer in enumerate(model.roberta.encoder.layer):
+            lr_scale = 1.0 + (i / num_layers) * 0.1  # Gradually increase LR for higher layers
+            layer_groups.append({
+                'params': [p for n, p in layer.named_parameters()
+                          if not any(nd in n for nd in no_decay)],
+                'weight_decay': self.weight_decay,
+                'lr': self.lr * lr_scale
+            })
+        
+        # Add classifier with higher learning rate
+        layer_groups.append({
+            'params': [p for n, p in model.classifier.named_parameters()
+                      if not any(nd in n for nd in no_decay)],
+            'weight_decay': self.weight_decay,
+            'lr': self.lr * 1.5  # Higher LR for classifier
+        })
+        
+        # Add all biases and LayerNorm parameters with no weight decay
+        layer_groups.append({
+            'params': [p for n, p in model.named_parameters()
+                      if any(nd in n for nd in no_decay)],
+            'weight_decay': 0.0,
+            'lr': self.lr
+        })
+        
+        return layer_groups
 
     def get_summary(self) -> Dict:
         """Get training configuration summary"""
         return {
-            'grad_norm_max': self.max_grad_norm,
+            'grad_norm_max': self.final_max_norm,
             'throughput_avg': self.batch_size / self.metrics.epoch_times[-1] if self.metrics.epoch_times else "Calculating...",
-            'peak_memory_gb': self.batch_size * self.num_workers * 4 / 1024**3 if torch.cuda.is_available() else 0
+            'peak_memory_gb': self.batch_size * self.num_workers * 4 / 1024**3 if torch.cuda.is_available() else 0,
+            'hyperparameters': {
+                'batch_size': self.batch_size,
+                'grad_accum_steps': self.grad_accum_steps,
+                'learning_rate': self.lr,
+                'warmup_ratio': self.warmup_ratio
+            }
         }
 
     def to_serializable_dict(self) -> dict:
-        """Return a serializable dictionary of configuration parameters, excluding non-serializable objects."""
+        """Return a serializable dictionary of configuration parameters"""
         return {
             "model_name": self.model_name,
             "max_length": self.max_length,
@@ -228,7 +357,10 @@ class TrainingConfig:
             "lr": self.lr,
             "warmup_ratio": self.warmup_ratio,
             "weight_decay": self.weight_decay,
-            "max_grad_norm": self.max_grad_norm,
+            "initial_max_norm": self.initial_max_norm,
+            "final_max_norm": self.final_max_norm,
+            "min_max_norm": self.min_max_norm,
+            "grad_norm_adjustment_steps": self.grad_norm_adjustment_steps,
             "fp16": self.fp16,
             "mixed_precision": self.mixed_precision,
             "num_workers": self.num_workers,
@@ -238,4 +370,19 @@ class TrainingConfig:
             "activation_checkpointing": self.activation_checkpointing,
             "tensor_float_32": self.tensor_float_32,
             "toxicity_labels": self.toxicity_labels
-        } 
+        }
+
+    def get_adaptive_max_norm(self, epoch: int, step: int) -> float:
+        """Calculate adaptive gradient norm based on training progress"""
+        # Calculate progress as combination of epochs and steps
+        total_steps = self.grad_norm_adjustment_steps
+        current_step = (epoch * total_steps / self.epochs) + (step / total_steps)
+        progress = min(1.0, current_step / total_steps)
+        
+        # Start strict and gradually relax
+        max_norm = self.initial_max_norm + (self.final_max_norm - self.initial_max_norm) * progress
+        
+        # Apply safety bounds
+        max_norm = max(self.min_max_norm, min(self.final_max_norm, max_norm))
+        
+        return max_norm 
