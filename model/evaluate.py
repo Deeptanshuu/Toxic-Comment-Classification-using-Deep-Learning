@@ -408,7 +408,7 @@ def main():
     
     try:
         # Load model
-        print("Loading model...")
+        print("Loading multi-language toxic comment classifier model...")
         model, tokenizer, device = load_model(args.model_path)
         
         if model is None:
