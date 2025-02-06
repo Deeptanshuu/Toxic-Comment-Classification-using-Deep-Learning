@@ -268,15 +268,8 @@ def train(model, train_loader, val_loader, config):
                             
                         loss = weighted_loss.mean() / config.grad_accum_steps
                     
-                    # Track per-language metrics
-                    lang_losses = {}
-                    for lang in batch['lang']:
-                        if lang not in lang_losses:
-                            lang_losses[lang] = []
-                        lang_mask = batch['lang'] == lang
-                        if lang_mask.any():
-                            lang_loss = weighted_loss[lang_mask].mean().item()
-                            lang_losses[lang].append(lang_loss)
+                    # Calculate language-specific losses
+                    lang_losses = calculate_lang_specific_loss(batch, weighted_loss, config.device)
                     
                     # Track gradients with improved adaptive clipping
                     if (batch_idx + 1) % config.grad_accum_steps == 0:
@@ -323,13 +316,14 @@ def train(model, train_loader, val_loader, config):
                                 param_group['lr'] *= 0.7  # Reduced from 0.5 for smoother adjustment
                             continue
                         
-                        # Log per-language metrics
-                        for lang, losses in lang_losses.items():
-                            if losses:
-                                wandb.log({
-                                    f'train/loss_{lang}': np.mean(losses),
-                                    f'train/samples_{lang}': len(losses)
-                                }, step=global_step)
+                        # Log language-specific metrics if available
+                        if lang_losses:
+                            for lang, losses in lang_losses.items():
+                                if losses:
+                                    wandb.log({
+                                        f'train/loss_{lang}': np.mean(losses),
+                                        f'train/samples_{lang}': len(losses)
+                                    }, step=global_step)
                         
                         scaler.step(optimizer)
                         scaler.update()
@@ -1300,3 +1294,31 @@ if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
     torch.set_printoptions(precision=4, sci_mode=False)
     main()
+
+def calculate_lang_specific_loss(batch, weighted_loss, device):
+    """Helper function to calculate language-specific losses with proper error handling"""
+    lang_losses = {}
+    try:
+        for lang in set(batch['lang']):  # Use set for unique languages
+            if lang not in lang_losses:
+                lang_losses[lang] = []
+            
+            # Ensure proper array/tensor operations
+            lang_mask = np.array(batch['lang']) == lang
+            if not isinstance(lang_mask, np.ndarray):
+                lang_mask = np.array(lang_mask)
+            
+            if np.any(lang_mask):
+                # Convert mask to tensor and move to correct device
+                tensor_mask = torch.tensor(lang_mask, device=device, dtype=torch.bool)
+                if tensor_mask.any():
+                    masked_loss = weighted_loss[tensor_mask]
+                    if len(masked_loss) > 0:
+                        lang_loss = masked_loss.mean().item()
+                        lang_losses[lang].append(lang_loss)
+    except Exception as e:
+        print(f"Warning: Error in language-specific loss calculation: {str(e)}")
+        # Return empty dict on error to allow training to continue
+        return {}
+    
+    return lang_losses
