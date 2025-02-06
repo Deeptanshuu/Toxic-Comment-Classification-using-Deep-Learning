@@ -16,7 +16,7 @@ export OMP_NUM_THREADS=1  # Prevent numpy/OpenMP thread contention
 
 # Suppress CUDA registration warnings
 export XLA_FLAGS="--xla_gpu_cuda_data_dir=/usr/local/cuda"
-export TF_CPP_MIN_LOG_LEVEL=2
+export TF_CPP_MIN_LOG_LEVEL=2 # To suppress tensorflow warnings
 export PYTHONWARNINGS="ignore::FutureWarning"
 export CUDA_MODULE_LOADING="LAZY"
 
