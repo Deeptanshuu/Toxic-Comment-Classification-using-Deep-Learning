@@ -1,0 +1,40 @@
+{
+  "os": "Windows-11-10.0.26100-SP0",
+  "python": "CPython 3.12.8",
+  "startedAt": "2025-02-06T21:38:24.280945Z",
+  "program": "-m model.hyperparameter_tuning",
+  "git": {
+    "remote": "https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning.git",
+    "commit": "f735b23b1872bbdbd4da77aa7886826b6b92ac49"
+  },
+  "email": "laldeeptanshu96@gmail.com",
+  "root": "V:\\Deeptanshu Lal\\PROJECTS\\Toxic Comment Classification",
+  "host": "MSI",
+  "executable": "V:\\Deeptanshu Lal\\PROJECTS\\Toxic Comment Classification\\venv\\Scripts\\python.exe",
+  "cpu_count": 8,
+  "cpu_count_logical": 16,
+  "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "1000186310656",
+      "used": "734699089920"
+    }
+  },
+  "memory": {
+    "total": "16866762752"
+  },
+  "cpu": {
+    "count": 8,
+    "countLogical": 16
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 3060 Laptop GPU",
+      "memoryTotal": "6442450944",
+      "cudaCores": 3840,
+      "architecture": "Ampere"
+    }
+  ],
+  "cudaVersion": "12.7"
+}

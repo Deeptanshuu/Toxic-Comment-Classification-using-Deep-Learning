@@ -12,6 +12,7 @@ venv.bak/
 # Weights and Biases
 weights/*
 dataset/*
+cache/*
 
 # IDE and editor files
 .idea/

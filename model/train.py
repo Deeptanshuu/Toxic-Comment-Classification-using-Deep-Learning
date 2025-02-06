@@ -585,8 +585,9 @@ class ToxicDataset(Dataset):
             # Save to cache
             torch.save(self.encodings, self.cache_file)
         
-        # Convert labels to tensor
-        self.labels = torch.FloatTensor(df[config.toxicity_labels].fillna(0).values)
+        # Convert labels to tensor using recommended method
+        labels_tensor = torch.tensor(df[config.toxicity_labels].fillna(0).values, dtype=torch.float32)
+        self.labels = labels_tensor.clone().detach()
         if torch.cuda.is_available():
             self.labels = self.labels.pin_memory()
         
