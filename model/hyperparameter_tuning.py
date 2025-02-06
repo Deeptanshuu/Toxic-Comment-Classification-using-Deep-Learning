@@ -16,19 +16,19 @@ def load_dataset(file_path: str):
     return ToxicDataset(df, tokenizer, config)
 
 class HyperparameterTuner:
-    def __init__(self, train_dataset, val_dataset, n_trials=50):
+    def __init__(self, train_dataset, val_dataset, n_trials=10):
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.n_trials = n_trials
         
-        # Initialize study with TPE sampler and median pruner
+        # Make pruning more aggressive
         self.study = optuna.create_study(
-            direction="maximize",  # Maximize validation AUC
+            direction="maximize",
             sampler=TPESampler(seed=42),
             pruner=MedianPruner(
-                n_startup_trials=5,
-                n_warmup_steps=5,
-                interval_steps=3
+                n_startup_trials=2,
+                n_warmup_steps=2,
+                interval_steps=1
             )
         )
 
@@ -37,7 +37,7 @@ class HyperparameterTuner:
         # Define hyperparameter search space
         config_params = {
             "model_name": "xlm-roberta-large",  # Fixed architecture
-            "batch_size": trial.suggest_int("batch_size", 16, 64, step=8),
+            "batch_size": trial.suggest_int("batch_size", 32, 64, step=16),
             "grad_accum_steps": trial.suggest_int("grad_accum_steps", 1, 4),
             "lr": trial.suggest_float("lr", 1e-6, 5e-5, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True),
@@ -46,7 +46,7 @@ class HyperparameterTuner:
             "model_dropout": trial.suggest_float("model_dropout", 0.1, 0.5),
             
             # Fixed parameters
-            "epochs": 4,
+            "epochs": 2,
             "mixed_precision": "bf16",
             "max_length": 128,
             "fp16": False,
@@ -164,7 +164,7 @@ def main():
     tuner = HyperparameterTuner(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
-        n_trials=50
+        n_trials=10
     )
 
     # Run optimization
