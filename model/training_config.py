@@ -21,6 +21,7 @@ class DynamicClassWeights:
             
         # Get list of toxicity columns in order
         self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+        self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
         
         # Default weights (English)
         self.default_weights = torch.tensor([
@@ -32,11 +33,17 @@ class DynamicClassWeights:
         batch_weights = []
         
         for lang in langs:
-            # Get weights for this language
-            lang_weights = [
-                self.weights[lang][col]['1'] 
-                for col in self.toxicity_columns
-            ]
+            # Get weights for this language, fallback to English if language not found
+            try:
+                lang_weights = [
+                    self.weights[lang][col]['1'] 
+                    for col in self.toxicity_columns
+                ]
+            except KeyError:
+                lang_weights = [
+                    self.weights['en'][col]['1']  # Fallback to English weights
+                    for col in self.toxicity_columns
+                ]
             batch_weights.append(lang_weights)
         
         # Convert to tensor and move to device
@@ -95,6 +102,45 @@ class MetricsTracker:
         minutes = int((eta_seconds % 3600) // 60)
         
         return f"{hours:02d}:{minutes:02d}:00"
+
+@dataclass
+class EarlyStopping:
+    """Early stopping to prevent overfitting"""
+    patience: int = 2  # Number of epochs to wait for improvement
+    min_delta: float = 1e-4  # Minimum change to qualify as an improvement
+    
+    def __post_init__(self):
+        self.best_value = None
+        self.best_epoch = 0
+        self.counter = 0
+        self.stopped_epoch = 0
+    
+    def __call__(self, value: float, epoch: int) -> bool:
+        if self.best_value is None:
+            self.best_value = value
+            self.best_epoch = epoch
+            return False
+            
+        if value > self.best_value + self.min_delta:
+            self.best_value = value
+            self.best_epoch = epoch
+            self.counter = 0
+            return False
+        
+        self.counter += 1
+        if self.counter >= self.patience:
+            self.stopped_epoch = epoch
+            return True
+            
+        return False
+    
+    def get_best_epoch(self) -> int:
+        return self.best_epoch
+        
+    def get_stop_reason(self) -> str:
+        if self.stopped_epoch > 0:
+            return f"No improvement after {self.patience} epochs. Best value: {self.best_value:.4f} at epoch {self.best_epoch}"
+        return "Training completed normally"
 
 @dataclass
 class TrainingConfig:

@@ -23,7 +23,7 @@
     "en": {
       "toxic": {
         "0": 0.5,
-        "1": 3.5,
+        "1": 0.59,
         "support_0": 24135,
         "support_1": 21843,
         "raw_weight_1": 0.59,
@@ -37,14 +37,14 @@
       },
       "severe_toxic": {
         "0": 0.5,
-        "1": 8.0,
+        "1": 3.86,
         "support_0": 43992,
         "support_1": 1986,
         "raw_weight_1": 3.86,
         "calculation_metadata": {
           "formula": "(45978/(6*1986))*1.0",
           "constraints_applied": [
-            "max_weight=8.0",
+            "max_weight=3.9",
             "boost=1.0"
           ]
         }
@@ -65,7 +65,7 @@
       },
       "threat": {
         "0": 0.5,
-        "1": 15.0,
+        "1": 10.88,
         "support_0": 45274,
         "support_1": 704,
         "raw_weight_1": 10.88,
@@ -195,7 +195,7 @@
     "fr": {
       "toxic": {
         "0": 0.5,
-        "1": 2.2,
+        "1": 0.5,
         "support_0": 26491,
         "support_1": 25877,
         "raw_weight_1": 0.4,

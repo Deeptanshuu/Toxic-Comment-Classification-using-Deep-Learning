@@ -2,7 +2,7 @@ import torch
 from transformers import XLMRobertaForSequenceClassification, XLMRobertaTokenizer
 import pandas as pd
 import numpy as np
-from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, confusion_matrix
+from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
 import seaborn as sns
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -69,35 +69,43 @@ def evaluate_model(model, test_loader, device, output_dir):
     all_predictions = []
     all_labels = []
     all_langs = []
+    all_losses = []
     
     print("\nRunning predictions on test set...")
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating"):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].numpy()
+            labels = batch['labels'].to(device)
             langs = batch['lang']
             
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss.item()
             predictions = torch.sigmoid(outputs.logits).cpu().numpy()
             
             all_predictions.extend(predictions)
-            all_labels.extend(labels)
+            all_labels.extend(labels.cpu().numpy())
             all_langs.extend(langs)
+            all_losses.append(loss)
             
             # Clear GPU memory
-            del input_ids, attention_mask, outputs
+            del input_ids, attention_mask, outputs, labels
             torch.cuda.empty_cache()
     
     predictions = np.array(all_predictions)
     labels = np.array(all_labels)
     langs = np.array(all_langs)
+    avg_loss = np.mean(all_losses)
     
     # Calculate overall metrics
     results = calculate_metrics(predictions, labels, langs)
+    results['overall']['loss'] = avg_loss
     
     # Save results
     save_results(results, predictions, labels, langs, output_dir)
+    
+    # Generate and save visualizations
+    plot_metrics(results, output_dir)
     
     return results
 
@@ -105,15 +113,13 @@ def calculate_metrics(predictions, labels, langs):
     """Calculate detailed metrics using class-specific thresholds"""
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Per-class optimal thresholds (estimated)
-    thresholds = {
-        'toxic': 0.42,
-        'severe_toxic': 0.38,
-        'obscene': 0.47,
-        'threat': 0.32,
-        'insult': 0.45,
-        'identity_hate': 0.35
-    }
+    # Dynamic threshold calculation based on validation set statistics
+    thresholds = {}
+    for i, class_name in enumerate(toxicity_types):
+        # Find optimal threshold using ROC curve
+        fpr, tpr, thresh = roc_curve(labels[:, i], predictions[:, i])
+        optimal_idx = np.argmax(tpr - fpr)
+        thresholds[class_name] = thresh[optimal_idx]
     
     unique_langs = np.unique(langs)
     
@@ -121,7 +127,7 @@ def calculate_metrics(predictions, labels, langs):
         'overall': {},
         'per_language': {},
         'per_class': {},
-        'thresholds': thresholds,  # Include thresholds in results
+        'thresholds': thresholds,
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
@@ -131,7 +137,7 @@ def calculate_metrics(predictions, labels, langs):
         'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
     }
     
-    # Binary predictions using class-specific thresholds
+    # Binary predictions using dynamic thresholds
     threshold_array = np.array([thresholds[ct] for ct in toxicity_types])
     binary_predictions = (predictions > threshold_array).astype(int)
     
@@ -145,52 +151,95 @@ def calculate_metrics(predictions, labels, langs):
         'f1': f1
     })
     
-    # Per-language metrics
+    # Per-language metrics with confidence intervals
     for lang in unique_langs:
         lang_mask = langs == lang
         if lang_mask.sum() > 0:
             try:
-                lang_auc = roc_auc_score(
-                    labels[lang_mask], 
-                    predictions[lang_mask], 
-                    average='macro'
-                )
-                precision, recall, f1, _ = precision_recall_fscore_support(
+                # Calculate metrics
+                metrics = calculate_language_metrics(
                     labels[lang_mask],
-                    binary_predictions[lang_mask],
-                    average='macro'
+                    predictions[lang_mask],
+                    binary_predictions[lang_mask]
                 )
-                results['per_language'][lang] = {
-                    'auc': lang_auc,
-                    'precision': precision,
-                    'recall': recall,
-                    'f1': f1,
-                    'sample_count': int(lang_mask.sum())
-                }
-            except:
-                print(f"Warning: Could not calculate metrics for language {lang}")
+                results['per_language'][lang] = metrics
+            except Exception as e:
+                print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
     
-    # Per-class metrics
+    # Per-class metrics with detailed statistics
     for i, class_name in enumerate(toxicity_types):
         try:
-            class_auc = roc_auc_score(labels[:, i], predictions[:, i])
-            precision, recall, f1, _ = precision_recall_fscore_support(
+            metrics = calculate_class_metrics(
                 labels[:, i],
+                predictions[:, i],
                 binary_predictions[:, i],
-                average='binary'
+                thresholds[class_name]
             )
-            results['per_class'][class_name] = {
-                'auc': class_auc,
-                'precision': precision,
-                'recall': recall,
-                'f1': f1,
-                'threshold': thresholds[class_name],  # Include threshold in per-class metrics
-                'positive_samples': int(labels[:, i].sum())
-            }
-        except:
-            print(f"Warning: Could not calculate metrics for class {class_name}")
+            results['per_class'][class_name] = metrics
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
     
     return results
+
+def calculate_language_metrics(labels, predictions, binary_predictions):
+    """Calculate detailed metrics for a specific language"""
+    auc = roc_auc_score(labels, predictions, average='macro')
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, binary_predictions, average='macro'
+    )
+    
+    # Calculate confidence intervals using bootstrap
+    n_bootstrap = 1000
+    auc_scores = []
+    f1_scores = []
+    
+    for _ in range(n_bootstrap):
+        indices = np.random.randint(0, len(labels), len(labels))
+        try:
+            auc_scores.append(roc_auc_score(labels[indices], predictions[indices], average='macro'))
+            _, _, f1, _ = precision_recall_fscore_support(
+                labels[indices], binary_predictions[indices], average='macro'
+            )
+            f1_scores.append(f1)
+        except:
+            continue
+    
+    return {
+        'auc': auc,
+        'auc_ci': [np.percentile(auc_scores, 2.5), np.percentile(auc_scores, 97.5)],
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'f1_ci': [np.percentile(f1_scores, 2.5), np.percentile(f1_scores, 97.5)],
+        'sample_count': len(labels)
+    }
+
+def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
+    """Calculate detailed metrics for a specific class"""
+    auc = roc_auc_score(labels, predictions)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, binary_predictions, average='binary'
+    )
+    
+    # Calculate additional metrics
+    tn, fp, fn, tp = confusion_matrix(labels, binary_predictions).ravel()
+    specificity = tn / (tn + fp)
+    npv = tn / (tn + fn)
+    
+    return {
+        'auc': auc,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'specificity': specificity,
+        'npv': npv,
+        'threshold': threshold,
+        'positive_samples': int(labels.sum()),
+        'true_positives': int(tp),
+        'false_positives': int(fp),
+        'true_negatives': int(tn),
+        'false_negatives': int(fn)
+    }
 
 def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=10):
     """Plot confusion matrices in batches using class-specific thresholds"""
@@ -254,34 +303,89 @@ def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=1
         plot_batch(batch, 'language')
         gc.collect()
 
+def plot_metrics(results, output_dir):
+    """Generate detailed visualization plots"""
+    plots_dir = os.path.join(output_dir, 'plots')
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    # Plot per-class performance
+    plt.figure(figsize=(12, 6))
+    classes = list(results['per_class'].keys())
+    metrics = ['auc', 'precision', 'recall', 'f1']
+    
+    for metric in metrics:
+        values = [results['per_class'][c][metric] for c in classes]
+        plt.plot(classes, values, marker='o', label=metric.upper())
+    
+    plt.title('Per-Class Performance Metrics')
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
+    plt.close()
+    
+    # Plot per-language performance
+    plt.figure(figsize=(10, 6))
+    languages = list(results['per_language'].keys())
+    auc_scores = [results['per_language'][lang]['auc'] for lang in languages]
+    sample_counts = [results['per_language'][lang]['sample_count'] for lang in languages]
+    
+    # Create bubble plot
+    plt.scatter(languages, auc_scores, s=[count/50 for count in sample_counts], alpha=0.6)
+    plt.title('AUC Scores by Language (bubble size = sample count)')
+    plt.xticks(rotation=45)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
+    plt.close()
+
 def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
     
-    # Save metrics
+    # Save detailed metrics
     with open(os.path.join(output_dir, 'evaluation_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
+    
+    # Save raw predictions for further analysis
+    np.savez_compressed(
+        os.path.join(output_dir, 'predictions.npz'),
+        predictions=predictions,
+        labels=labels,
+        langs=langs
+    )
     
     # Plot confusion matrices
     plot_confusion_matrices(predictions, labels, langs, output_dir)
     
-    # Print summary
+    # Print detailed summary
     print("\nEvaluation Results:")
-    print("-" * 50)
-    print(f"Overall AUC (macro): {results['overall']['auc']:.4f}")
-    print(f"Overall F1 (macro): {results['overall']['f1']:.4f}")
+    print("-" * 80)
+    print(f"Overall Metrics:")
+    print(f"  AUC (macro): {results['overall']['auc']:.4f}")
+    print(f"  F1 (macro): {results['overall']['f1']:.4f}")
+    print(f"  Loss: {results['overall'].get('loss', 'N/A')}")
     
-    print("\nPer-Language Performance (AUC):")
+    print("\nPer-Language Performance:")
     for lang, metrics in results['per_language'].items():
-        print(f"{lang}: {metrics['auc']:.4f} (n={metrics['sample_count']})")
+        print(f"\n{lang} (n={metrics['sample_count']}):")
+        print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
+        print(f"  F1: {metrics['f1']:.4f} (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])")
     
     print("\nPer-Class Performance:")
     for class_name, metrics in results['per_class'].items():
         print(f"\n{class_name}:")
         print(f"  AUC: {metrics['auc']:.4f}")
         print(f"  F1: {metrics['f1']:.4f}")
-        print(f"  Threshold: {metrics['threshold']:.2f}")
-        print(f"  Positive samples: {metrics['positive_samples']}")
+        print(f"  Precision: {metrics['precision']:.4f}")
+        print(f"  Recall: {metrics['recall']:.4f}")
+        print(f"  Specificity: {metrics['specificity']:.4f}")
+        print(f"  NPV: {metrics['npv']:.4f}")
+        print(f"  Threshold: {metrics['threshold']:.4f}")
+        print(f"  Confusion Matrix:")
+        print(f"    TP: {metrics['true_positives']}, FP: {metrics['false_positives']}")
+        print(f"    FN: {metrics['false_negatives']}, TN: {metrics['true_negatives']}")
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')

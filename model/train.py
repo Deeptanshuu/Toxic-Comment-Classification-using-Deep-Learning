@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 import sys
 
-from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker
+from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
@@ -163,6 +163,7 @@ def train(model, train_loader, val_loader, config):
     scaler = GradScaler(enabled=config.fp16)
     metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
+    early_stopping = EarlyStopping(patience=3, min_delta=1e-4)
     
     # Initialize progress tracking
     best_auc = 0.0
@@ -252,7 +253,7 @@ def train(model, train_loader, val_loader, config):
                         # Update metrics tracker
                         metrics_tracker.update_train(avg_loss)
                         
-                        # Log step-level metrics (do this every step, not just every 50 steps)
+                        # Log step-level metrics
                         step_metrics = {
                             'train/step_loss': avg_loss,
                             'train/learning_rate': scheduler.get_last_lr()[0],
@@ -373,6 +374,18 @@ def train(model, train_loader, val_loader, config):
                     print(f"\n🏆 New best model! AUC: {val_metrics['auc']:.4f}")
                 except Exception as e:
                     print(f"Warning: Failed to save checkpoint: {str(e)}")
+            
+            # Check early stopping
+            if early_stopping(val_metrics['auc'], epoch):
+                stop_reason = early_stopping.get_stop_reason()
+                print(f"\nEarly stopping: {stop_reason}")
+                # Log early stopping to wandb
+                wandb.log({
+                    'early_stopping/stopped_epoch': early_stopping.stopped_epoch,
+                    'early_stopping/best_epoch': early_stopping.get_best_epoch(),
+                    'early_stopping/best_auc': early_stopping.best_value
+                }, step=global_step)
+                break
             
             # Log epoch metrics
             epoch_metrics = {
@@ -565,48 +578,15 @@ class WeightedFocalLoss(nn.Module):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
-        
-        # Load language-specific weights
-        with open('weights/language_class_weights.json', 'r') as f:
-            weights_data = json.load(f)
-            self.lang_weights = weights_data['weights']
-        
-        # Get list of toxicity columns in order
-        self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-        
-        # Default weights as fallback (use English weights)
-        self.default_weights = torch.tensor([
-            self.lang_weights['en'][col]['1'] for col in self.toxicity_columns
-        ])
+        self.class_weights = DynamicClassWeights()
     
-    def get_weights_for_batch(self, langs, device):
-        """Get language-specific weights for each sample in the batch"""
-        batch_weights = []
-        
-        for lang in langs:
-            # Get weights for this language
-            lang_weights = [
-                self.lang_weights[lang][col]['1'] 
-                for col in self.toxicity_columns
-            ]
-            batch_weights.append(lang_weights)
-        
-        # Convert to tensor and move to device
-        weights = torch.tensor(batch_weights, dtype=torch.float32).to(device)
-        
-        # Take mean across batch if shape mismatch (shouldn't happen but just in case)
-        if len(weights.shape) > 1:
-            weights = weights.mean(dim=0)
-            
-        return weights
-
     def forward(self, preds, targets, langs=None):
         if langs is None:
             # Use default weights if no language information
-            weights = self.default_weights.to(preds.device)
+            weights = self.class_weights.default_weights.to(preds.device)
         else:
-            # Get language-specific weights
-            weights = self.get_weights_for_batch(langs, preds.device)
+            # Get language-specific weights using DynamicClassWeights
+            weights = self.class_weights.get_weights_for_batch(langs, preds.device)
         
         # Calculate focal loss with dynamic weights
         bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)
