@@ -163,7 +163,7 @@ def train(model, train_loader, val_loader, config):
     scaler = GradScaler(enabled=config.fp16)
     metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
-    early_stopping = EarlyStopping(patience=3, min_delta=1e-4)
+    early_stopping = EarlyStopping(patience=3, min_delta=1e-3)  # Increased min_delta for more stable stopping
     
     # Initialize progress tracking
     best_auc = 0.0
