@@ -237,9 +237,9 @@ class TrainingConfig:
     weight_decay: float = 0.01
     
     # Gradient control parameters
-    initial_max_norm: float = 0.1  # Start with strict clipping
-    final_max_norm: float = 1.0  # Gradually relax to this value
-    min_max_norm: float = 0.1  # Never go below this value
+    initial_max_norm: float = 1.0  # Start with moderate clipping (increased from 0.1)
+    final_max_norm: float = 5.0    # Allow higher gradients as training progresses (increased from 1.0)
+    min_max_norm: float = 0.5      # Increased minimum bound
     grad_norm_adjustment_steps: int = 100  # Steps to adjust norm
     
     # Mixed precision parameters

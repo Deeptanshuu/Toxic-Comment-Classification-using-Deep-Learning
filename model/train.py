@@ -187,7 +187,13 @@ def train(model, train_loader, val_loader, config):
         num_training_steps=num_training_steps
     )
     
-    scaler = GradScaler(enabled=config.fp16)
+    # Initialize scaler based on precision mode
+    scaler = None
+    if config.mixed_precision == 'fp16':
+        scaler = GradScaler(enabled=True)
+    elif config.mixed_precision == 'bf16':
+        scaler = GradScaler(enabled=False)  # BF16 doesn't require scaling
+    
     metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
     early_stopping = EarlyStopping(patience=3, min_delta=1e-3)
@@ -273,6 +279,17 @@ def train(model, train_loader, val_loader, config):
                             model.parameters(), 
                             max_norm=adaptive_max_norm
                         )
+                        
+                        # Check for exploding gradients
+                        if grad_norm > 1000:
+                            print(f"\nExploding gradients detected: {grad_norm:.2f}")
+                            print("Skipping batch and reducing learning rate")
+                            optimizer.zero_grad()
+                            # Reduce learning rate
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] *= 0.5
+                            continue
+                        
                         param_norm = torch.norm(torch.stack([p.norm() for p in model.parameters()]))
                         
                         # Log gradient metrics with improved tracking
@@ -281,7 +298,8 @@ def train(model, train_loader, val_loader, config):
                             'grad/param_norm': param_norm.item(),
                             'grad/ratio': grad_norm.item() / (param_norm.item() + 1e-6),
                             'grad/adaptive_max_norm': adaptive_max_norm,
-                            'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm
+                            'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm,
+                            'grad/is_exploding': float(grad_norm > 1000)
                         }, step=global_step)
                         
                         scaler.step(optimizer)
@@ -749,8 +767,8 @@ class WeightedFocalLoss(nn.Module):
         loss = self.alpha * focal_weights * bce_loss  # [B, C]
         weighted_loss = loss * weights  # [B, C]
         
-        # Reduce mean over both batch and class dimensions
-        return weighted_loss.mean()
+        # First sum over classes to preserve per-sample weighting, then average over batch
+        return weighted_loss.sum(dim=-1).mean()
 
 # Evaluation
 def evaluate(model, loader, config):
@@ -896,8 +914,13 @@ class MultilabelStratifiedSampler(torch.utils.data.Sampler):
         self.weights = self._calculate_weights()
         
         # Calculate samples per group ensuring minimum representation
-        self.samples_per_group = max(1, self.batch_size // len(self.unique_groups))
+        self.samples_per_group = max(2, self.batch_size // len(self.unique_groups))
         self.remainder = self.batch_size - (self.samples_per_group * len(self.unique_groups))
+        
+        # Validate minimum samples per group
+        if self.samples_per_group < 2:
+            print(f"Warning: Batch size {batch_size} too small for {len(self.unique_groups)} groups.")
+            print(f"Consider increasing batch size to at least {2 * len(self.unique_groups)}")
         
     def _calculate_weights(self):
         weights = torch.ones(len(self.labels))
@@ -1000,6 +1023,11 @@ class ThresholdOptimizer:
             
             # Optimize threshold for each class
             for i in range(self.num_classes):
+                # Skip classes with insufficient samples
+                if np.sum(lang_labels[:, i]) < 100:
+                    print(f"Skipping threshold optimization for {lang} class {i}: insufficient positive samples")
+                    continue
+                    
                 try:
                     fpr, tpr, thresholds = roc_curve(lang_labels[:, i], lang_preds[:, i])
                     # Find threshold that maximizes f1 score
