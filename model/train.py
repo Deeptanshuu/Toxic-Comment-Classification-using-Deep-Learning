@@ -699,24 +699,58 @@ class WeightedFocalLoss(nn.Module):
 
 def calculate_metrics(labels, probs, thresholds, class_names):
     """Calculate classification metrics using optimized thresholds"""
-    binary_preds = (probs > thresholds).astype(int)
+    # Handle different threshold formats
+    if isinstance(thresholds, dict):
+        # If thresholds is a dict (from ThresholdOptimizer), get default thresholds
+        default_thresh = np.array([thresholds.get('en', {}).get(name, 0.5) for name in class_names])
+    else:
+        default_thresh = np.array(thresholds)
+    
+    # Ensure thresholds has correct shape
+    if default_thresh.ndim == 1:
+        default_thresh = default_thresh.reshape(1, -1)
+    
+    # Make predictions
+    binary_preds = (probs > default_thresh).astype(int)
     
     # Calculate overall metrics
-    auc = roc_auc_score(labels, probs, average='macro')
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_preds, average='macro'
-    )
+    try:
+        auc = roc_auc_score(labels, probs, average='macro')
+    except Exception as e:
+        print(f"Warning: Could not calculate AUC: {str(e)}")
+        auc = 0.0
+    
+    try:
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, binary_preds, average='macro', zero_division=0
+        )
+    except Exception as e:
+        print(f"Warning: Could not calculate PRF metrics: {str(e)}")
+        precision, recall, f1 = 0.0, 0.0, 0.0
     
     # Calculate per-class metrics
     class_metrics = {}
     for i, class_name in enumerate(class_names):
-        class_metrics[class_name] = {
-            'auc': roc_auc_score(labels[:, i], probs[:, i]),
-            'precision': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[0],
-            'recall': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[1],
-            'f1': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[2],
-            'threshold': thresholds[i]
-        }
+        try:
+            class_metrics[class_name] = {
+                'auc': roc_auc_score(labels[:, i], probs[:, i]),
+                'precision': precision_recall_fscore_support(
+                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
+                )[0],
+                'recall': precision_recall_fscore_support(
+                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
+                )[1],
+                'f1': precision_recall_fscore_support(
+                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
+                )[2],
+                'threshold': default_thresh[0, i] if default_thresh.ndim > 1 else default_thresh[i]
+            }
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for {class_name}: {str(e)}")
+            class_metrics[class_name] = {
+                'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0,
+                'threshold': default_thresh[0, i] if default_thresh.ndim > 1 else default_thresh[i]
+            }
     
     return {
         'auc': auc,
@@ -734,37 +768,93 @@ def evaluate(model, loader, config):
     all_probs = []
     all_langs = []
     
-    with torch.no_grad():
-        for batch in loader:
-            inputs = {
-                k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                for k, v in batch.items()
-            }
-            
-            outputs = model(
-                input_ids=inputs['input_ids'],
-                attention_mask=inputs['attention_mask'],
-                labels=inputs['labels']
+    try:
+        with torch.no_grad():
+            for batch in loader:
+                # Move batch to device
+                inputs = {
+                    k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+                
+                # Forward pass
+                outputs = model(
+                    input_ids=inputs['input_ids'],
+                    attention_mask=inputs['attention_mask'],
+                    labels=inputs['labels']
+                )
+                
+                # Accumulate results
+                total_loss += outputs['loss'].item() if outputs['loss'] is not None else 0
+                all_labels.append(inputs['labels'].cpu().numpy())
+                all_probs.append(outputs['probabilities'].cpu().numpy())
+                all_langs.extend(inputs['lang'])
+        
+        # Concatenate results
+        try:
+            labels = np.concatenate(all_labels)
+            probs = np.concatenate(all_probs)
+        except Exception as e:
+            print(f"Error concatenating results: {str(e)}")
+            return {'loss': float('inf'), 'auc': 0.0, 'class_metrics': {}}
+        
+        # Optimize thresholds per language
+        try:
+            threshold_optimizer = ThresholdOptimizer(
+                min_samples=50,
+                class_names=config.toxicity_labels
             )
-            
-            total_loss += outputs['loss'].item()
-            all_labels.append(inputs['labels'].cpu().numpy())
-            all_probs.append(outputs['probabilities'].cpu().numpy())
-            all_langs.extend(inputs['lang'])
-    
-    # Calculate metrics
-    labels = np.concatenate(all_labels)
-    probs = np.concatenate(all_probs)
-    
-    # Optimize thresholds per language
-    threshold_optimizer = ThresholdOptimizer(min_samples=50, class_names=config.toxicity_labels)
-    threshold_optimizer.optimize(probs, labels, all_langs)
-    
-    # Calculate metrics using optimized thresholds
-    metrics = calculate_metrics(labels, probs, threshold_optimizer.thresholds, config.toxicity_labels)
-    metrics['loss'] = total_loss / len(loader)
-    
-    return metrics
+            thresholds = threshold_optimizer.optimize(
+                y_true=labels,
+                y_pred=probs,
+                languages=all_langs,
+                class_names=config.toxicity_labels
+            )
+        except Exception as e:
+            print(f"Error in threshold optimization: {str(e)}")
+            # Fallback to default thresholds
+            thresholds = {
+                'en': {label: 0.5 for label in config.toxicity_labels}
+            }
+        
+        # Calculate metrics
+        try:
+            metrics = calculate_metrics(
+                labels=labels,
+                probs=probs,
+                thresholds=thresholds,
+                class_names=config.toxicity_labels
+            )
+            metrics['loss'] = total_loss / len(loader)
+        except Exception as e:
+            print(f"Error calculating metrics: {str(e)}")
+            metrics = {
+                'loss': total_loss / len(loader),
+                'auc': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1': 0.0,
+                'class_metrics': {
+                    label: {'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'threshold': 0.5}
+                    for label in config.toxicity_labels
+                }
+            }
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"Fatal error in evaluation: {str(e)}")
+        return {
+            'loss': float('inf'),
+            'auc': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0,
+            'class_metrics': {
+                label: {'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'threshold': 0.5}
+                for label in config.toxicity_labels
+            }
+        }
 
 def predict_toxicity(text, model, tokenizer, config):
     """

@@ -3,6 +3,8 @@ import torch.nn as nn
 from transformers import XLMRobertaModel, XLMRobertaConfig
 from typing import Tuple, Optional
 import logging
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +19,23 @@ class LanguageAwareTransformer(nn.Module):
     ):
         super().__init__()
         
+        # Validate input parameters
+        if num_labels <= 0:
+            raise ValueError(f"Invalid num_labels: {num_labels}")
+        if hidden_size <= 0:
+            raise ValueError(f"Invalid hidden_size: {hidden_size}")
+        if num_attention_heads <= 0:
+            raise ValueError(f"Invalid num_attention_heads: {num_attention_heads}")
+        if not 0 <= dropout < 1:
+            raise ValueError(f"Invalid dropout: {dropout}")
+        
         # Base Model Configuration
         try:
             self.config = XLMRobertaConfig.from_pretrained(
                 model_name,
                 hidden_size=hidden_size,
                 num_hidden_layers=24,
+                num_attention_heads=num_attention_heads,
                 output_hidden_states=True
             )
             self.base_model = XLMRobertaModel(self.config)
@@ -105,6 +118,16 @@ class LanguageAwareTransformer(nn.Module):
         Forward pass with gated feature combination and gradient checkpointing support
         """
         try:
+            # Input validation
+            if input_ids is None or attention_mask is None:
+                raise ValueError("input_ids and attention_mask must not be None")
+            if input_ids.dim() != 2 or attention_mask.dim() != 2:
+                raise ValueError(f"Expected 2D tensors, got input_ids: {input_ids.dim()}D, attention_mask: {attention_mask.dim()}D")
+            if input_ids.shape != attention_mask.shape:
+                raise ValueError(f"Shape mismatch: input_ids {input_ids.shape} != attention_mask {attention_mask.shape}")
+            if labels is not None and labels.shape[0] != input_ids.shape[0]:
+                raise ValueError(f"Batch size mismatch: labels {labels.shape[0]} != input_ids {input_ids.shape[0]}")
+            
             # Base Model with gradient checkpointing if enabled
             if self.gradient_checkpointing and self.training:
                 def create_custom_forward(module):
@@ -168,11 +191,13 @@ class LanguageAwareTransformer(nn.Module):
                 loss_fct = nn.BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
             
+            # Ensure all outputs are on the same device
+            device = pooled.device
             return {
                 'loss': loss,
                 'logits': logits,
                 'probabilities': probabilities,
-                'thresholds': self.thresholds,
+                'thresholds': self.thresholds.to(device),
                 'hidden_states': base_output.hidden_states,
                 'attention_weights': attn_weights,
                 'gate_values': gate.mean(dim=1)  # For monitoring gate behavior
@@ -184,9 +209,44 @@ class LanguageAwareTransformer(nn.Module):
     
     def get_attention_weights(self) -> torch.Tensor:
         """Get the attention weights for interpretation"""
-        return self.lang_attention.get_attention_weights()
+        try:
+            return self.lang_attention.get_attention_weights()
+        except Exception as e:
+            logger.error(f"Error getting attention weights: {str(e)}")
+            return None
+    
+    def save_pretrained(self, save_path: str):
+        """Save model to the specified path"""
+        try:
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Save model state dict
+            model_path = os.path.join(save_path, 'pytorch_model.bin')
+            torch.save(self.state_dict(), model_path)
+            
+            # Save config
+            config_dict = {
+                'num_labels': self.output.out_features,
+                'hidden_size': self.config.hidden_size,
+                'num_attention_heads': self.config.num_attention_heads,
+                'model_name': self.config.name_or_path,
+                'dropout': self.dropout.p
+            }
+            config_path = os.path.join(save_path, 'config.json')
+            with open(config_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+                
+            logger.info(f"Model saved to {save_path}")
+            
+        except Exception as e:
+            logger.error(f"Error saving model: {str(e)}")
+            raise
     
     @property
     def device(self) -> torch.device:
         """Get the device the model is on"""
-        return next(self.parameters()).device 
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            logger.warning("No parameters found in model")
+            return torch.device('cpu') 
