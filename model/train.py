@@ -245,6 +245,10 @@ def train(model, train_loader, val_loader, config):
                     torch.cuda.empty_cache()
                 
                 try:
+                    # Initialize grad_norm for this batch
+                    grad_norm = torch.tensor(0.0, device=config.device)
+                    param_norm = torch.tensor(0.0, device=config.device)
+                    
                     # Move batch to device
                     inputs = {
                         'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
@@ -1088,16 +1092,25 @@ def check_class_wise_gradient_flow(model):
     # Get gradients for class-specific parameters
     classifier_params = list(model.classifier.parameters())
     if not classifier_params[-1].grad is None:  # Check if gradients exist
-        class_grads = classifier_params[-1].grad  # Shape: [num_classes, hidden_dim]
+        class_grads = classifier_params[-1].grad  # Shape might be [num_classes, hidden_dim] or [hidden_dim]
         
-        # Calculate statistics
-        grad_stats['mean'] = class_grads.mean(dim=1).cpu().numpy()
-        grad_stats['std'] = class_grads.std(dim=1).cpu().numpy()
-        grad_stats['norm'] = torch.norm(class_grads, dim=1).cpu().numpy()
+        # Ensure class_grads has the right shape
+        if class_grads.dim() == 1:
+            # If 1D, reshape to [1, hidden_dim]
+            class_grads = class_grads.unsqueeze(0)
         
-        # Calculate gradient diversity (correlation between class gradients)
-        grad_corr = torch.corrcoef(class_grads)
-        grad_stats['correlation'] = grad_corr.cpu().numpy()
+        # Calculate statistics along the correct dimension
+        grad_stats['mean'] = class_grads.mean(dim=-1).cpu().numpy()  # Mean across hidden dimensions
+        grad_stats['std'] = class_grads.std(dim=-1).cpu().numpy()    # Std across hidden dimensions
+        grad_stats['norm'] = torch.norm(class_grads, dim=-1).cpu().numpy()  # Norm across hidden dimensions
+        
+        # Calculate gradient diversity only if we have multiple classes
+        if class_grads.size(0) > 1:
+            # Reshape for correlation calculation if needed
+            flat_grads = class_grads.view(class_grads.size(0), -1)
+            # Calculate correlation matrix
+            grad_corr = torch.corrcoef(flat_grads)
+            grad_stats['correlation'] = grad_corr.cpu().numpy()
     
     return grad_stats
 
