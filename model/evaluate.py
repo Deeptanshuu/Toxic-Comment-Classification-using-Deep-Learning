@@ -247,12 +247,12 @@ def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=1
     
     # Per-class optimal thresholds
     thresholds = {
-        'toxic': 0.42,
-        'severe_toxic': 0.38,
+        'toxic': 0.3991,
+        'severe_toxic': 0.2350,
         'obscene': 0.47,
-        'threat': 0.32,
-        'insult': 0.45,
-        'identity_hate': 0.35
+        'threat': 0.3614,
+        'insult': 0.3906,
+        'identity_hate': 0.2533
     }
     
     threshold_array = np.array([thresholds[ct] for ct in toxicity_types])
