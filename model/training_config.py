@@ -376,6 +376,9 @@ class TrainingConfig:
     warmup_ratio: float = 0.15
     weight_decay: float = 0.01
     
+    # Language parameters
+    language_columns: list = None
+    
     # Multi-GPU parameters
     distributed: bool = True
     world_size: int = 2
@@ -409,7 +412,40 @@ class TrainingConfig:
     tensor_float_32: bool = True
     
     def __post_init__(self):
+        # Initialize language columns
+        self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
+        
         try:
+            # Load language-specific weights
+            weights_path = Path('weights/language_class_weights.json')
+            if not weights_path.exists():
+                raise FileNotFoundError(f"Weights file not found: {weights_path}")
+            
+            with open(weights_path, 'r') as f:
+                self.weights_data = json.load(f)
+                self.weights = self.weights_data['weights']
+            
+            # Get list of toxicity columns in order
+            self.toxicity_columns = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+            
+            # Apply EN weight boosts for critical classes with validation
+            try:
+                self.weights['en']['toxic']['1'] = min(15.0, max(0.5, 3.5))
+                self.weights['en']['threat']['1'] = min(15.0, max(0.5, 15.0))
+                self.weights['en']['identity_hate']['1'] = min(15.0, max(0.5, 5.0))
+            except KeyError as e:
+                print(f"Warning: Could not apply EN weight boosts: {str(e)}")
+            
+            # Default weights (English) with validation
+            try:
+                self.default_weights = torch.tensor([
+                    float(self.weights['en'][col]['1']) 
+                    for col in self.toxicity_columns
+                ]).clamp(0.1, 15.0)  # Ensure weights are in reasonable range
+            except Exception as e:
+                print(f"Warning: Could not set default weights: {str(e)}")
+                self.default_weights = torch.tensor([1.0] * len(self.toxicity_columns))
+            
             # Validate parameters
             self._validate_parameters()
             

@@ -43,11 +43,11 @@ from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker,
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.environ.get('TF_CPP_MIN_LOG_LEVEL', '2')
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
 
-# Global variables for cleanup
-_cleanup_handlers = []
+# Initialize global variables with None
 _model = None
 _optimizer = None
 _scheduler = None
+_cleanup_handlers = []
 
 def register_cleanup(handler):
     """Register cleanup handlers that will be called on exit"""
@@ -74,21 +74,15 @@ def cleanup():
             print(f"Warning: Could not clear CUDA cache: {str(e)}")
     
     # Delete model and optimizer
-    if _model is not None:
-        try:
+    try:
+        if _model is not None:
             del _model
-        except Exception:
-            pass
-    if _optimizer is not None:
-        try:
+        if _optimizer is not None:
             del _optimizer
-        except Exception:
-            pass
-    if _scheduler is not None:
-        try:
+        if _scheduler is not None:
             del _scheduler
-        except Exception:
-            pass
+    except Exception as e:
+        print(f"Warning: Error during cleanup: {str(e)}")
     
     # Force garbage collection
     gc.collect()
