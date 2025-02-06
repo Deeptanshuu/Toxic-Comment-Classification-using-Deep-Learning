@@ -93,12 +93,12 @@ PID_FILE="${LOG_DIR}/train_${TIMESTAMP}.pid"
 touch "$LOG_FILE" "$ERROR_LOG" "$PID_FILE" || { echo "Error: Cannot create log files" >&2; exit 1; }
 
 # Training configuration with validation
-BATCH_SIZE=32  # Reduced per-GPU batch size for stability
-GRAD_ACCUM=2   # Gradient accumulation steps
+BATCH_SIZE=32  # Standard batch size
+GRAD_ACCUM=1   # No gradient accumulation
 NUM_EPOCHS=10
-LEARNING_RATE=1.4e-5  # Base learning rate
+LEARNING_RATE=2e-5  # Standard learning rate for transformers
 NUM_WORKERS=2  # Reduced workers per GPU
-MIXED_PRECISION="bf16"  # Use bfloat16 for better stability
+MIXED_PRECISION="no"  # Disable mixed precision for stability
 
 # Validate configuration
 [[ $BATCH_SIZE -gt 0 ]] || { echo "Error: Invalid batch size" >&2; exit 1; }

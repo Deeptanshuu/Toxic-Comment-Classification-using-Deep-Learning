@@ -363,31 +363,15 @@ class EarlyStopping:
 @dataclass
 class TrainingConfig:
     """Basic training configuration"""
-    # Model parameters
-    model_name: str = "xlm-roberta-large"
-    max_length: int = 128
-    num_labels: int = 6
-    
-    # Training parameters
     batch_size: int = 32
-    grad_accum_steps: int = 4
-    epochs: int = 10
-    lr: float = 2e-5
+    num_epochs: int = 10
+    learning_rate: float = 2e-5
     weight_decay: float = 0.01
-    
-    # System parameters
-    num_workers: int = 4
-    fp16: bool = True
-    device: str = None
+    num_workers: int = 2
+    mixed_precision: str = "no"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     
     def __post_init__(self):
-        # Set device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Set toxicity labels
-        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-        self.num_labels = len(self.toxicity_labels)
-        
-        # Create output directories
-        for directory in ['weights', 'logs']:
-            os.makedirs(directory, exist_ok=True) 
+        """Create necessary directories"""
+        os.makedirs("weights", exist_ok=True)
+        os.makedirs("logs", exist_ok=True) 
