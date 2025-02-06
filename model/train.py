@@ -14,7 +14,8 @@ import argparse
 from dataclasses import dataclass, asdict
 import os
 import warnings
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import time
 from datetime import datetime, timedelta
 import psutil
@@ -257,7 +258,7 @@ def train(model, train_loader, val_loader, config):
                     }
                     
                     # Forward pass
-                    with autocast(enabled=config.fp16):
+                    with autocast('cuda', enabled=config.fp16):
                         outputs = model(**inputs)
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         

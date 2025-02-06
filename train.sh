@@ -14,6 +14,12 @@ export CUDA_LAUNCH_BLOCKING=1  # Better error reporting
 export TORCH_USE_CUDA_DSA=1  # Enable CUDA Graph memory optimizations
 export OMP_NUM_THREADS=1  # Prevent numpy/OpenMP thread contention
 
+# Suppress CUDA registration warnings
+export XLA_FLAGS="--xla_gpu_cuda_data_dir=/usr/local/cuda"
+export TF_CPP_MIN_LOG_LEVEL=2
+export PYTHONWARNINGS="ignore::FutureWarning"
+export CUDA_MODULE_LOADING="LAZY"
+
 # Create necessary directories
 mkdir -p logs
 mkdir -p weights
