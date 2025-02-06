@@ -6,7 +6,7 @@ from transformers import (
     get_cosine_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
+from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, roc_curve, confusion_matrix
 import numpy as np
 import pandas as pd
 import wandb
@@ -633,39 +633,62 @@ def evaluate(model, loader, config):
     all_preds = np.concatenate(all_preds)
     all_targets = np.concatenate(all_targets)
     
-    # Calculate overall metrics
+    # Calculate dynamic thresholds
+    thresholds = {}
+    for i, label in enumerate(config.toxicity_labels):
+        fpr, tpr, thresh = roc_curve(all_targets[:, i], all_preds[:, i])
+        optimal_idx = np.argmax(tpr - fpr)
+        thresholds[label] = thresh[optimal_idx]
+    
+    # Calculate overall metrics using dynamic thresholds
+    threshold_array = np.array([thresholds[label] for label in config.toxicity_labels])
+    binary_preds = (all_preds > threshold_array).astype(int)
+    
     auc = roc_auc_score(all_targets, all_preds, average='macro')
-    binary_preds = (all_preds > 0.5).astype(int)
+    auc_weighted = roc_auc_score(all_targets, all_preds, average='weighted')
     precision, recall, f1, _ = precision_recall_fscore_support(
         all_targets, binary_preds, average='macro'
     )
     
     # Calculate per-class metrics
     class_metrics = {}
-    for label in config.toxicity_labels:
+    for i, label in enumerate(config.toxicity_labels):
         label_preds = np.concatenate(class_preds[label])
         label_targets = np.concatenate(class_targets[label])
-        label_binary_preds = (label_preds > 0.5).astype(int)
+        label_binary_preds = (label_preds > thresholds[label]).astype(int)
         
         label_auc = roc_auc_score(label_targets, label_preds)
         p, r, f, _ = precision_recall_fscore_support(
             label_targets, label_binary_preds, average='binary'
         )
         
+        tn, fp, fn, tp = confusion_matrix(label_targets, label_binary_preds).ravel()
+        specificity = tn / (tn + fp)
+        npv = tn / (tn + fn)
+        
         class_metrics[label] = {
             'auc': label_auc,
             'precision': p,
             'recall': r,
-            'f1': f
+            'f1': f,
+            'specificity': specificity,
+            'npv': npv,
+            'threshold': thresholds[label],
+            'true_positives': int(tp),
+            'false_positives': int(fp),
+            'true_negatives': int(tn),
+            'false_negatives': int(fn)
         }
     
     return {
         'auc': auc,
+        'auc_weighted': auc_weighted,
         'loss': total_loss / len(loader),
         'precision': precision,
         'recall': recall,
         'f1': f1,
-        'class_metrics': class_metrics
+        'class_metrics': class_metrics,
+        'thresholds': thresholds
     }
 
 def predict_toxicity(text, model, tokenizer, config):
