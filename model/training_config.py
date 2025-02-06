@@ -4,6 +4,7 @@ import json
 import torch
 import numpy as np
 from pathlib import Path
+import os
 
 @dataclass
 class DynamicClassWeights:
@@ -241,6 +242,15 @@ class TrainingConfig:
     world_size: int = 2      # Number of GPUs
     dist_backend: str = 'nccl'
     dist_url: str = 'tcp://localhost:23456'
+    find_unused_parameters: bool = False  # DDP optimization
+    
+    # Memory optimization parameters
+    activation_checkpointing: bool = True
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    max_split_size_mb: int = 512
+    empty_cache_freq: int = 100
     
     # Gradient control parameters
     initial_max_norm: float = 0.8
@@ -254,12 +264,9 @@ class TrainingConfig:
     
     # System parameters
     num_workers: int = 16
-    pin_memory: bool = True
-    prefetch_factor: int = 2
     gc_frequency: int = 100
     
     # Optimization flags
-    activation_checkpointing: bool = True  # Enable for large batch size
     tensor_float_32: bool = True
     
     def __post_init__(self):
@@ -272,6 +279,17 @@ class TrainingConfig:
             # Adjust batch size and learning rate for multi-GPU
             self.global_batch_size = self.batch_size * self.world_size
             self.lr = self.lr * (self.global_batch_size / 64)  # Linear scaling rule
+            
+            # Set memory optimization parameters
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+            # Set environment variables for distributed training
+            os.environ['MASTER_ADDR'] = 'localhost'
+            os.environ['MASTER_PORT'] = '23456'
+            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = f'max_split_size_mb:{self.max_split_size_mb}'
         else:
             self.distributed = False
             self.world_size = 1
