@@ -3,20 +3,18 @@ import torch.nn as nn
 import logging
 import os
 import gc
-import time
 import wandb
 from datetime import datetime
 from torch.cuda.amp import autocast, GradScaler
-from transformers import get_linear_schedule_with_warmup
+from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts
 
 logger = logging.getLogger(__name__)
 
 from transformers import (
-    XLMRobertaForSequenceClassification, 
     XLMRobertaTokenizer,
 )
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, roc_curve, confusion_matrix
+from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 import numpy as np
 import pandas as pd
 import wandb
@@ -25,20 +23,18 @@ import os
 import warnings
 from torch.amp import autocast, GradScaler
 import time
-from datetime import datetime, timedelta
-import psutil
+from datetime import datetime
 import GPUtil
 import json
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
-from itertools import chain
 import sys
 import signal
 import atexit
 from pathlib import Path
-from model.training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
+from model.training_config import TrainingConfig, DynamicClassWeights, EarlyStopping
 from model.data.sampler import MultilabelStratifiedSampler
 from model.evaluation.threshold_optimizer import ThresholdOptimizer
 from model.language_aware_transformer import LanguageAwareTransformer
@@ -338,27 +334,55 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
     return lang_losses
 
 def train(model, train_loader, val_loader, config):
-    """Training loop with language-aware model"""
+    """Training loop with enhanced optimization"""
     model.train()
+    
+    # Calculate training steps
+    num_training_steps = len(train_loader) * config.epochs
+    steps_per_epoch = len(train_loader)
+    
+    # Initialize optimizer with automatic gradient accumulation
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.lr,
-        weight_decay=config.weight_decay
+        weight_decay=config.weight_decay,
+        eps=1e-8
     )
     
-    num_training_steps = len(train_loader) * config.epochs
-    num_warmup_steps = len(train_loader)  # 1 epoch warmup
-    scheduler = get_linear_schedule_with_warmup(
+    # Initialize OneCycle scheduler for the first half of training
+    onecycle_scheduler = OneCycleLR(
         optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps
+        max_lr=config.lr,
+        epochs=config.epochs // 2,
+        steps_per_epoch=steps_per_epoch,
+        pct_start=0.1,  # 10% warmup
+        anneal_strategy='cos',
+        cycle_momentum=True,
+        div_factor=25.0,
+        final_div_factor=1e4
+    )
+    
+    # Initialize Cosine Annealing with Warm Restarts for the second half
+    cosine_scheduler = CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=steps_per_epoch * 2,  # Restart every 2 epochs
+        T_mult=2,  # Double the restart interval after each restart
+        eta_min=config.lr / 100  # Minimum learning rate
     )
     
     scaler = GradScaler(enabled=config.fp16)
     
+    # Initialize early stopping
+    early_stopping = EarlyStopping(patience=3, min_delta=1e-4)
+    best_auc = 0
+    
+    # Training loop
     for epoch in range(config.epochs):
         model.train()
         total_loss = 0
+        
+        # Use appropriate scheduler based on training phase
+        scheduler = onecycle_scheduler if epoch < config.epochs // 2 else cosine_scheduler
         
         for batch_idx, batch in enumerate(train_loader):
             try:
@@ -368,7 +392,7 @@ def train(model, train_loader, val_loader, config):
                     for k, v in batch.items()
                 }
                 
-                # Forward pass with language-aware model
+                # Forward pass with automatic mixed precision
                 with autocast(enabled=config.fp16):
                     outputs = model(
                         input_ids=inputs['input_ids'],
@@ -376,7 +400,7 @@ def train(model, train_loader, val_loader, config):
                         labels=inputs['labels']
                     )
                     loss = outputs['loss']
-                    
+                
                 # Scale loss and backward pass
                 scaled_loss = loss / config.grad_accum_steps
                 scaler.scale(scaled_loss).backward()
@@ -384,7 +408,7 @@ def train(model, train_loader, val_loader, config):
                 # Step if we've accumulated enough gradients
                 if (batch_idx + 1) % config.grad_accum_steps == 0:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
                     
                     scaler.step(optimizer)
                     scaler.update()
@@ -411,6 +435,7 @@ def train(model, train_loader, val_loader, config):
                             'train/loss': avg_loss,
                             'train/learning_rate': lr,
                             'train/epoch': epoch,
+                            'train/gate_values': outputs['gate_values'].mean().item(),
                             'train/thresholds': outputs['thresholds'].detach().cpu().numpy()
                         })
                 
@@ -422,12 +447,23 @@ def train(model, train_loader, val_loader, config):
         val_metrics = evaluate(model, val_loader, config)
         print(f"\nValidation - Loss: {val_metrics['loss']:.4f} AUC: {val_metrics['auc']:.4f}")
         
+        # Check early stopping
+        if early_stopping(val_metrics['auc'], epoch):
+            print(f"Early stopping triggered. Best AUC: {best_auc:.4f}")
+            break
+            
+        # Update best AUC and save model
+        if val_metrics['auc'] > best_auc:
+            best_auc = val_metrics['auc']
+            save_model(model, config, epoch, best_auc)
+        
         # Log validation metrics
         if wandb.run is not None:
             wandb.log({
                 'val/loss': val_metrics['loss'],
                 'val/auc': val_metrics['auc'],
-                'val/epoch': epoch
+                'val/epoch': epoch,
+                'val/best_auc': best_auc
             })
             
             # Log per-class metrics
@@ -660,14 +696,42 @@ class WeightedFocalLoss(nn.Module):
         # First sum over classes to preserve per-sample weighting, then average over batch
         return weighted_loss.sum(dim=-1).mean()
 
-# Evaluation
+def calculate_metrics(labels, probs, thresholds, class_names):
+    """Calculate classification metrics using optimized thresholds"""
+    binary_preds = (probs > thresholds).astype(int)
+    
+    # Calculate overall metrics
+    auc = roc_auc_score(labels, probs, average='macro')
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, binary_preds, average='macro'
+    )
+    
+    # Calculate per-class metrics
+    class_metrics = {}
+    for i, class_name in enumerate(class_names):
+        class_metrics[class_name] = {
+            'auc': roc_auc_score(labels[:, i], probs[:, i]),
+            'precision': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[0],
+            'recall': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[1],
+            'f1': precision_recall_fscore_support(labels[:, i], binary_preds[:, i], average='binary')[2],
+            'threshold': thresholds[i]
+        }
+    
+    return {
+        'auc': auc,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'class_metrics': class_metrics
+    }
+
 def evaluate(model, loader, config):
     """Evaluation function for language-aware model"""
     model.eval()
     total_loss = 0
     all_labels = []
     all_probs = []
-    all_thresholds = []
+    all_langs = []
     
     with torch.no_grad():
         for batch in loader:
@@ -685,15 +749,18 @@ def evaluate(model, loader, config):
             total_loss += outputs['loss'].item()
             all_labels.append(inputs['labels'].cpu().numpy())
             all_probs.append(outputs['probabilities'].cpu().numpy())
-            all_thresholds.append(outputs['thresholds'].cpu().numpy())
+            all_langs.extend(inputs['lang'])
     
     # Calculate metrics
     labels = np.concatenate(all_labels)
     probs = np.concatenate(all_probs)
-    thresholds = np.mean(all_thresholds, axis=0)
     
-    # Calculate AUC and other metrics
-    metrics = calculate_metrics(labels, probs, thresholds, config.toxicity_labels)
+    # Optimize thresholds per language
+    threshold_optimizer = ThresholdOptimizer(min_samples=50, class_names=config.toxicity_labels)
+    threshold_optimizer.optimize(probs, labels, all_langs)
+    
+    # Calculate metrics using optimized thresholds
+    metrics = calculate_metrics(labels, probs, threshold_optimizer.thresholds, config.toxicity_labels)
     metrics['loss'] = total_loss / len(loader)
     
     return metrics
@@ -835,63 +902,6 @@ class MultilabelStratifiedSampler(torch.utils.data.Sampler):
     
     def __len__(self):
         return len(self.labels)
-
-class ThresholdOptimizer:
-    """Optimizes classification thresholds per language with F1-oriented selection"""
-    def __init__(self, num_classes, languages):
-        self.num_classes = num_classes
-        self.languages = languages
-        self.thresholds = {lang: np.array([0.5] * num_classes) for lang in languages}
-        self.f1_scores = {lang: np.zeros(num_classes) for lang in languages}
-        
-    def optimize(self, val_preds, val_labels, langs):
-        """Optimize thresholds using validation data with F1-oriented selection"""
-        for lang in self.languages:
-            lang_mask = langs == lang
-            if not lang_mask.any():
-                continue
-                
-            lang_preds = val_preds[lang_mask]
-            lang_labels = val_labels[lang_mask]
-            
-            # Optimize threshold for each class
-            for i in range(self.num_classes):
-                # Skip classes with insufficient samples
-                if np.sum(lang_labels[:, i]) < 50:  # Reduced minimum samples
-                    print(f"Skipping threshold optimization for {lang} class {i}: insufficient positive samples")
-                    continue
-                    
-                try:
-                    fpr, tpr, thresholds = roc_curve(lang_labels[:, i], lang_preds[:, i])
-                    
-                    # Calculate F1 scores for each threshold
-                    f1_scores = []
-                    for t in thresholds:
-                        binary_preds = (lang_preds[:, i] > t).astype(int)
-                        precision, recall, f1, _ = precision_recall_fscore_support(
-                            lang_labels[:, i], binary_preds, average='binary'
-                        )
-                        # F1-oriented metric with TPR boost
-                        f1_scores.append(f1 + tpr[thresholds == t][0] * 0.5)
-                    
-                    optimal_idx = np.argmax(f1_scores)
-                    self.thresholds[lang][i] = thresholds[optimal_idx]
-                    self.f1_scores[lang][i] = f1_scores[optimal_idx]
-                    
-                    # Special handling for threat class
-                    if i == 3:  # Assuming threat is index 3
-                        print(f"\nOptimized {lang} threat threshold: {self.thresholds[lang][i]:.4f}")
-                        print(f"F1 score at threshold: {self.f1_scores[lang][i]:.4f}")
-                except Exception as e:
-                    print(f"Warning: Could not optimize threshold for {lang} class {i}: {str(e)}")
-                    continue
-    
-    def get_thresholds(self, langs):
-        """Get thresholds for a batch of languages"""
-        batch_thresholds = []
-        for lang in langs:
-            batch_thresholds.append(self.thresholds.get(lang, self.thresholds['en']))
-        return np.array(batch_thresholds)
 
 def setup_distributed(config, rank):
     """Initialize distributed training"""

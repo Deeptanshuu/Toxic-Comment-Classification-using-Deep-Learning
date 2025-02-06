@@ -11,7 +11,7 @@ class LanguageAwareTransformer(nn.Module):
         self, 
         num_labels: int = 6,
         hidden_size: int = 1024,
-        num_attention_heads: int = 16,
+        num_attention_heads: int = 24,
         model_name: str = "xlm-roberta-large",
         dropout: float = 0.1
     ):
@@ -36,20 +36,26 @@ class LanguageAwareTransformer(nn.Module):
             embed_dim=hidden_size,
             num_heads=num_attention_heads,
             dropout=dropout,
-            batch_first=True  # Important for modern PyTorch versions
+            batch_first=True
         )
+        
+        # Gating Mechanism
+        self.gate_layer = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.LayerNorm(hidden_size)
+        )
+        
+        # Feature Processing
+        self.feature_projection = nn.Linear(hidden_size, hidden_size)
+        self.layer_norm = nn.LayerNorm(hidden_size)
         
         # Activation and Regularization
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(dropout)
         
-        # Feature Concatenation and Processing
-        self.concat_projection = nn.Linear(hidden_size * 2, hidden_size)
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        
-        # Output Layer
+        # Output Layer with Layer Normalization
+        self.pre_output = nn.LayerNorm(hidden_size)
         self.output = nn.Linear(hidden_size, num_labels)
-        self.sigmoid = nn.Sigmoid()
         
         # Language-specific thresholds (learnable)
         self.thresholds = nn.Parameter(torch.ones(num_labels) * 0.5)
@@ -61,38 +67,29 @@ class LanguageAwareTransformer(nn.Module):
         """Initialize the weights of the custom layers"""
         def _init_layer(module):
             if isinstance(module, (nn.Linear, nn.Embedding)):
-                module.weight.data.normal_(mean=0.0, std=0.02)
+                # Use Xavier/Glorot initialization for linear layers
+                nn.init.xavier_uniform_(module.weight)
                 if isinstance(module, nn.Linear) and module.bias is not None:
-                    module.bias.data.zero_()
+                    nn.init.constant_(module.bias, 0)
             elif isinstance(module, nn.LayerNorm):
-                module.bias.data.zero_()
-                module.weight.data.fill_(1.0)
+                nn.init.constant_(module.bias, 0)
+                nn.init.constant_(module.weight, 1.0)
         
         # Apply to custom layers
-        _init_layer(self.concat_projection)
-        _init_layer(self.output)
+        _init_layer(self.gate_layer[0])  # Linear layer in gate
+        _init_layer(self.feature_projection)
         _init_layer(self.layer_norm)
+        _init_layer(self.pre_output)
+        _init_layer(self.output)
 
     def forward(
         self, 
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         labels: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> dict:
         """
-        Forward pass with optional loss calculation
-        
-        Args:
-            input_ids: Input token IDs [batch_size, seq_len]
-            attention_mask: Attention mask [batch_size, seq_len]
-            labels: Optional labels for loss calculation [batch_size, num_labels]
-            
-        Returns:
-            Tuple containing:
-            - logits: Raw logits before sigmoid [batch_size, num_labels]
-            - probabilities: Sigmoid activated outputs [batch_size, num_labels]
-            - thresholds: Learned thresholds [num_labels]
-            - loss: Optional loss value if labels provided
+        Forward pass with gated feature combination
         """
         try:
             # Base Model
@@ -100,32 +97,38 @@ class LanguageAwareTransformer(nn.Module):
                 input_ids=input_ids,
                 attention_mask=attention_mask
             )
-            embeddings = base_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
+            embeddings = base_output.last_hidden_state
             
             # Language-aware Attention
-            attn_output, _ = self.lang_attention(
+            attn_output, attn_weights = self.lang_attention(
                 embeddings, embeddings, embeddings,
                 key_padding_mask=~attention_mask.bool()
             )
             
             # Feature Processing
             attended_features = self.gelu(attn_output)
+            attended_features = self.feature_projection(attended_features)
+            
+            # Gating Mechanism
             combined = torch.cat([embeddings, attended_features], dim=-1)
-            combined = self.concat_projection(combined)
-            combined = self.layer_norm(combined)
-            combined = self.dropout(combined)
+            gate = torch.sigmoid(self.gate_layer(combined))
             
-            # Pool sequence dimension (use [CLS] token or mean pooling)
-            pooled = combined[:, 0]  # Use [CLS] token
+            # Gated feature combination
+            features = gate * embeddings + (1 - gate) * attended_features
+            features = self.layer_norm(features)
+            features = self.dropout(features)
             
-            # Output
+            # Pool sequence dimension (use [CLS] token)
+            pooled = features[:, 0]
+            
+            # Output with layer normalization
+            pooled = self.pre_output(pooled)
             logits = self.output(pooled)
-            probabilities = self.sigmoid(logits)
+            probabilities = torch.sigmoid(logits)
             
             # Calculate loss if labels provided
             loss = None
             if labels is not None:
-                # Binary Cross Entropy Loss
                 loss_fct = nn.BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
             
@@ -134,7 +137,9 @@ class LanguageAwareTransformer(nn.Module):
                 'logits': logits,
                 'probabilities': probabilities,
                 'thresholds': self.thresholds,
-                'hidden_states': base_output.hidden_states
+                'hidden_states': base_output.hidden_states,
+                'attention_weights': attn_weights,
+                'gate_values': gate.mean(dim=1)  # For monitoring gate behavior
             }
             
         except Exception as e:

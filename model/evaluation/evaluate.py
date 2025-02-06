@@ -1,5 +1,6 @@
 import torch
-from transformers import XLMRobertaForSequenceClassification, XLMRobertaTokenizer
+from model.language_aware_transformer import LanguageAwareTransformer
+from transformers import XLMRobertaTokenizer
 import pandas as pd
 import numpy as np
 from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
@@ -48,7 +49,19 @@ class ToxicDataset(Dataset):
 def load_model(model_path):
     """Load model and tokenizer"""
     try:
-        model = XLMRobertaForSequenceClassification.from_pretrained(model_path)
+        # Initialize the custom model architecture
+        model = LanguageAwareTransformer(
+            num_labels=6,
+            hidden_size=1024,
+            num_attention_heads=16,
+            model_name='xlm-roberta-large',
+            dropout=0.1
+        )
+        
+        # Load the trained weights
+        state_dict = torch.load(os.path.join(model_path, 'pytorch_model.bin'))
+        model.load_state_dict(state_dict)
+        
         try:
             tokenizer = XLMRobertaTokenizer.from_pretrained(model_path)
         except:
@@ -80,8 +93,8 @@ def evaluate_model(model, test_loader, device, output_dir):
             langs = batch['lang']
             
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            loss = outputs.loss.item()
-            predictions = torch.sigmoid(outputs.logits).cpu().numpy()
+            loss = outputs['loss'].item()
+            predictions = outputs['probabilities'].cpu().numpy()
             
             all_predictions.extend(predictions)
             all_labels.extend(labels.cpu().numpy())

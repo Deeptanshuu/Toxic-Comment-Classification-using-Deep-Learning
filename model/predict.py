@@ -1,5 +1,6 @@
 import torch
-from transformers import XLMRobertaForSequenceClassification, XLMRobertaTokenizer
+from model.language_aware_transformer import LanguageAwareTransformer
+from transformers import XLMRobertaTokenizer
 import argparse
 import os
 
@@ -12,8 +13,18 @@ def load_model(model_path):
         return None, None, None
         
     try:
-        # Try to load the model
-        model = XLMRobertaForSequenceClassification.from_pretrained(model_path)
+        # Initialize the custom model architecture
+        model = LanguageAwareTransformer(
+            num_labels=6,
+            hidden_size=1024,
+            num_attention_heads=16,
+            model_name='xlm-roberta-large',
+            dropout=0.1
+        )
+        
+        # Load the trained weights
+        state_dict = torch.load(os.path.join(model_path, 'pytorch_model.bin'))
+        model.load_state_dict(state_dict)
         
         # For tokenizer, first try to load from model path, if fails, load base model tokenizer
         try:
@@ -54,7 +65,7 @@ def predict_toxicity(text, model, tokenizer, device):
     # Get predictions
     with torch.no_grad():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        predictions = torch.sigmoid(outputs.logits)
+        predictions = outputs['probabilities']
     
     # Convert to probabilities
     probabilities = predictions[0].cpu().numpy()
