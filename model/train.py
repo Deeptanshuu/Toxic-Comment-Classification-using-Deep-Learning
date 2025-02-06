@@ -334,8 +334,17 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
     return lang_losses
 
 def train(model, train_loader, val_loader, config):
-    """Training loop with enhanced optimization"""
+    """Training loop with enhanced optimization and detailed logging"""
     model.train()
+    print("\n" + "="*50)
+    print("Starting Training")
+    print("="*50)
+    print(f"Total epochs: {config.epochs}")
+    print(f"Training samples: {len(train_loader.dataset):,}")
+    print(f"Validation samples: {len(val_loader.dataset):,}")
+    print(f"Batch size: {config.batch_size}")
+    print(f"Steps per epoch: {len(train_loader)}")
+    print("="*50 + "\n")
     
     # Calculate training steps
     num_training_steps = len(train_loader) * config.epochs
@@ -380,6 +389,10 @@ def train(model, train_loader, val_loader, config):
     for epoch in range(config.epochs):
         model.train()
         total_loss = 0
+        epoch_start_time = time.time()
+        
+        print(f"\nEpoch {epoch+1}/{config.epochs}")
+        print("-"*20)
         
         # Use appropriate scheduler based on training phase
         scheduler = onecycle_scheduler if epoch < config.epochs // 2 else cosine_scheduler
@@ -409,7 +422,7 @@ def train(model, train_loader, val_loader, config):
                 # Step if we've accumulated enough gradients
                 if (batch_idx + 1) % config.grad_accum_steps == 0:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
                     
                     scaler.step(optimizer)
                     scaler.update()
@@ -419,14 +432,23 @@ def train(model, train_loader, val_loader, config):
                 # Update metrics
                 total_loss += loss.item()
                 
-                # Log progress
+                # Log progress every 10 batches
                 if batch_idx % 10 == 0:
                     lr = scheduler.get_last_lr()[0]
                     avg_loss = total_loss / (batch_idx + 1)
+                    progress = (batch_idx + 1) / len(train_loader) * 100
+                    
+                    # Calculate ETA
+                    elapsed_time = time.time() - epoch_start_time
+                    batches_remaining = len(train_loader) - (batch_idx + 1)
+                    eta = (elapsed_time / (batch_idx + 1)) * batches_remaining
+                    
                     print(
-                        f"\rEpoch {epoch+1}/{config.epochs} "
-                        f"[{batch_idx}/{len(train_loader)}] "
-                        f"Loss: {avg_loss:.4f} LR: {lr:.2e}",
+                        f"\rProgress: [{batch_idx+1}/{len(train_loader)} ({progress:.1f}%)] "
+                        f"Loss: {avg_loss:.4f} "
+                        f"LR: {lr:.2e} "
+                        f"Grad Norm: {grad_norm:.2f} "
+                        f"ETA: {eta/60:.1f}min",
                         end=""
                     )
                     
@@ -436,6 +458,7 @@ def train(model, train_loader, val_loader, config):
                             'train/loss': avg_loss,
                             'train/learning_rate': lr,
                             'train/epoch': epoch,
+                            'train/grad_norm': grad_norm,
                             'train/gate_values': outputs['gate_values'].mean().item(),
                             'train/thresholds': outputs['thresholds'].detach().cpu().numpy()
                         })
@@ -444,18 +467,38 @@ def train(model, train_loader, val_loader, config):
                 print(f"\nError in training batch: {str(e)}")
                 continue
         
+        # End of epoch metrics
+        epoch_time = time.time() - epoch_start_time
+        print(f"\n\nEpoch {epoch+1} completed in {epoch_time/60:.1f} minutes")
+        print(f"Average training loss: {total_loss/len(train_loader):.4f}")
+        
         # Validation
+        print("\nRunning validation...")
         val_metrics = evaluate(model, val_loader, config)
-        print(f"\nValidation - Loss: {val_metrics['loss']:.4f} AUC: {val_metrics['auc']:.4f}")
+        print("\nValidation Metrics:")
+        print(f"Loss: {val_metrics['loss']:.4f}")
+        print(f"AUC: {val_metrics['auc']:.4f}")
+        print(f"F1: {val_metrics['f1']:.4f}")
+        print(f"Precision: {val_metrics['precision']:.4f}")
+        print(f"Recall: {val_metrics['recall']:.4f}")
+        
+        # Print per-class metrics
+        print("\nPer-class Metrics:")
+        for label, metrics in val_metrics['class_metrics'].items():
+            print(f"\n{label}:")
+            print(f"  AUC: {metrics['auc']:.4f}")
+            print(f"  F1: {metrics['f1']:.4f}")
+            print(f"  Threshold: {metrics['threshold']:.4f}")
         
         # Check early stopping
         if early_stopping(val_metrics['auc'], epoch):
-            print(f"Early stopping triggered. Best AUC: {best_auc:.4f}")
+            print(f"\nEarly stopping triggered. Best AUC: {best_auc:.4f}")
             break
             
         # Update best AUC and save model
         if val_metrics['auc'] > best_auc:
             best_auc = val_metrics['auc']
+            print(f"\nNew best AUC: {best_auc:.4f} - Saving model...")
             save_model(model, config, epoch, best_auc)
         
         # Log validation metrics
@@ -464,7 +507,8 @@ def train(model, train_loader, val_loader, config):
                 'val/loss': val_metrics['loss'],
                 'val/auc': val_metrics['auc'],
                 'val/epoch': epoch,
-                'val/best_auc': best_auc
+                'val/best_auc': best_auc,
+                'time/epoch_minutes': epoch_time/60
             })
             
             # Log per-class metrics
@@ -474,6 +518,8 @@ def train(model, train_loader, val_loader, config):
                     f'val/class/{label}/f1': metrics['f1'],
                     f'val/class/{label}/threshold': metrics['threshold']
                 })
+        
+        print("\n" + "="*50)
 
 def get_grad_norm(model):
     """Calculate gradient norm for monitoring"""
