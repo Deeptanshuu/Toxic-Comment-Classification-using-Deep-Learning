@@ -56,9 +56,9 @@ fi
 echo "Starting training..."
 cd "${PROJECT_DIR}"  # Change to project directory
 nohup python -u model/train.py \
-    --batch_size 64 \
+    --batch_size 32 \
     --grad_accum_steps 2 \
-    --epochs 5 \
+    --epochs 10 \
     --lr 2e-5 \
     --model_name xlm-roberta-large \
     --mixed_precision bf16 \
