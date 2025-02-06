@@ -3,6 +3,7 @@
 # Basic configuration
 export CUDA_VISIBLE_DEVICES="0,1"
 export PYTHONWARNINGS="ignore"
+export PYTHONPATH="${PYTHONPATH}:${PWD}"  # Add current directory to Python path
 
 # Training parameters
 BATCH_SIZE=32
@@ -29,6 +30,7 @@ echo "Number of epochs: $NUM_EPOCHS"
 echo "Mixed precision: $MIXED_PRECISION"
 echo "Log file: $LOG_FILE"
 echo "Error log: $ERROR_LOG"
+echo "PYTHONPATH: $PYTHONPATH"
 echo "======================================"
 
 # Start training with nohup
