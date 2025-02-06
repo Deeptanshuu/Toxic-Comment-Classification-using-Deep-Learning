@@ -364,6 +364,9 @@ class TrainingConfig:
     # Model parameters
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
+    hidden_size: int = 1024
+    num_attention_heads: int = 16
+    model_dropout: float = 0.1
     
     # Training parameters
     batch_size: int = 32
@@ -371,6 +374,7 @@ class TrainingConfig:
     epochs: int = 4
     lr: float = 2e-5
     weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
     
     # System parameters
     num_workers: int = 12
@@ -400,10 +404,19 @@ class TrainingConfig:
             raise ValueError(f"Invalid num_workers: {self.num_workers}")
         if self.gc_frequency <= 0:
             raise ValueError(f"Invalid gc_frequency: {self.gc_frequency}")
+        if self.hidden_size <= 0:
+            raise ValueError(f"Invalid hidden_size: {self.hidden_size}")
+        if self.num_attention_heads <= 0:
+            raise ValueError(f"Invalid num_attention_heads: {self.num_attention_heads}")
+        if not 0 <= self.model_dropout < 1:
+            raise ValueError(f"Invalid model_dropout: {self.model_dropout}")
+        if self.max_grad_norm <= 0:
+            raise ValueError(f"Invalid max_grad_norm: {self.max_grad_norm}")
         
         # Set device with error handling
         try:
             if torch.cuda.is_available():
+                torch.cuda.init()
                 self.device = torch.device('cuda')
                 # Enable TF32 if requested and available
                 if self.tensor_float_32 and torch.cuda.get_device_capability()[0] >= 8:
@@ -462,7 +475,11 @@ class TrainingConfig:
                 'distributed': self.distributed,
                 'world_size': self.world_size,
                 'num_labels': self.num_labels,
-                'toxicity_labels': self.toxicity_labels
+                'toxicity_labels': self.toxicity_labels,
+                'hidden_size': self.hidden_size,
+                'num_attention_heads': self.num_attention_heads,
+                'model_dropout': self.model_dropout,
+                'max_grad_norm': self.max_grad_norm
             }
             
             # Validate all values are JSON serializable
