@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 from transformers import (
     XLMRobertaForSequenceClassification, 
     XLMRobertaTokenizer,
-    get_cosine_schedule_with_warmup
+    get_cosine_schedule_with_warmup,
+    get_linear_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, roc_curve, confusion_matrix
@@ -356,20 +357,15 @@ def train(model, train_loader, val_loader, config):
     )
     
     try:
-        # Use linear warmup with hold instead of cosine
-        num_warmup_steps = 1000
-        num_training_steps = 30000
+        # Calculate warmup steps (1000 steps for warmup)
+        num_training_steps = len(train_loader) * config.epochs
+        num_warmup_steps = 1000  # Fixed warmup steps instead of ratio
         
-        def lr_lambda(current_step):
-            if current_step < num_warmup_steps:
-                # Linear warmup
-                return float(current_step) / float(max(1, num_warmup_steps))
-            # Hold at max learning rate after warmup
-            return 1.0
-        
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
+        # Create linear warmup scheduler with hold
+        scheduler = get_linear_schedule_with_warmup(
             optimizer,
-            lr_lambda=lr_lambda
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps
         )
     except Exception as e:
         logger.error(f"Failed to create scheduler: {e}")
@@ -395,6 +391,10 @@ def train(model, train_loader, val_loader, config):
     print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
     print("="*80 + "\n")
     
+    # Initialize gradient clipping parameters
+    max_grad_norm = 1.0
+    grad_clip_percentile = 0.95  # Clip gradients above 95th percentile
+    
     try:
         for epoch in range(config.epochs):
             model.train()
@@ -410,6 +410,9 @@ def train(model, train_loader, val_loader, config):
             total_loss = 0.0
             num_batches = 0
             epoch_start = time.time()
+            
+            # Track gradient norms for adaptive clipping
+            grad_norms = []
             
             # Update weights based on validation performance every 2 epochs
             if epoch > 0 and epoch % 2 == 0:
@@ -436,91 +439,51 @@ def train(model, train_loader, val_loader, config):
                     inputs = {k: v.to(config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                             for k, v in batch.items()}
                     
-                    # Forward pass
-                    with autocast('cuda', enabled=config.fp16):
+                    # Forward pass with mixed precision
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=config.fp16):
                         outputs = model(**{k: v for k, v in inputs.items() 
                                          if k in ['input_ids', 'attention_mask', 'labels']})
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         
                         # Ensure proper broadcasting for per-sample weighting
                         if outputs.loss.dim() == 2:
-                            # If loss is already [B,C], apply weights directly
                             weighted_loss = outputs.loss * batch_weights
                         else:
-                            # If loss is [B], reshape for proper broadcasting
                             weighted_loss = outputs.loss.view(-1, 1) * batch_weights
                         
-                        # No mean reduction here to preserve per-sample weights
                         loss = weighted_loss.sum() / (weighted_loss.size(0) * config.grad_accum_steps)
                     
-                    # Calculate language-specific losses
-                    if not config.distributed or (config.distributed and dist.get_rank() == 0):
-                        lang_losses = calculate_lang_specific_loss(batch, weighted_loss, config.device)
-                        
-                        # Log language-specific metrics if available and wandb is initialized
-                        if lang_losses and wandb.run is not None:
-                            for lang, losses in lang_losses.items():
-                                if losses:
-                                    wandb.log({
-                                        f'train/loss_{lang}': np.mean(losses),
-                                        f'train/samples_{lang}': len(losses)
-                                    }, step=global_step)
+                    # Backward pass with gradient scaling
+                    scaler.scale(loss).backward()
                     
-                    # Track gradients with improved adaptive clipping
+                    # Gradient clipping and normalization
                     if (batch_idx + 1) % config.grad_accum_steps == 0:
                         scaler.unscale_(optimizer)
                         
-                        # Get adaptive max norm with exponential decay
-                        adaptive_max_norm = max(
-                            config.min_max_norm,
-                            config.initial_max_norm * (0.95 ** epoch)  # Exponential decay
-                        )
-                        
-                        # Apply gradient clipping with monitoring
+                        # Calculate gradient norm
                         grad_norm = torch.nn.utils.clip_grad_norm_(
                             model.parameters(), 
-                            max_norm=adaptive_max_norm
+                            max_norm=max_grad_norm
                         )
                         
-                        # Enhanced gradient monitoring
-                        grad_stats = {
-                            'grad/norm': grad_norm.item(),
-                            'grad/adaptive_max_norm': adaptive_max_norm,
-                            'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm,
-                            'grad/is_exploding': float(grad_norm > adaptive_max_norm * 0.9),  # Alert at 90% of max
-                            'grad/accumulation_step': (batch_idx % config.grad_accum_steps) + 1
-                        }
+                        # Track gradient norms for adaptive clipping
+                        if not torch.isnan(grad_norm):
+                            grad_norms.append(grad_norm.item())
+                            
+                            # Update max_grad_norm based on recent history
+                            if len(grad_norms) > 100:
+                                max_grad_norm = np.percentile(grad_norms[-100:], grad_clip_percentile)
                         
-                        # Add per-parameter group gradient norms
-                        for i, group in enumerate(optimizer.param_groups):
-                            group_norm = torch.norm(
-                                torch.stack([torch.norm(p.grad) for p in group['params'] if p.grad is not None])
-                            ).item()
-                            grad_stats[f'grad/group_{i}_norm'] = group_norm
-                        
-                        # Log gradient statistics
-                        wandb.log(grad_stats, step=global_step)
-                        
-                        # Check for exploding gradients with enhanced monitoring
-                        if grad_norm > adaptive_max_norm * 0.9 or grad_norm.isnan().any():
-                            print(f"\nHigh gradient norm detected: {grad_norm:.2f}/{adaptive_max_norm:.2f}")
-                            print("Gradient statistics:")
-                            for k, v in grad_stats.items():
-                                print(f"  {k}: {v}")
-                            print("\nReducing learning rate and skipping update")
+                        # Skip step if gradients exploded
+                        if grad_norm > max_grad_norm * 2:
+                            print(f"\nGradient spike detected: {grad_norm:.2f}. Skipping update.")
                             optimizer.zero_grad()
-                            # Reduce learning rate more aggressively
-                            for param_group in optimizer.param_groups:
-                                param_group['lr'] *= 0.5
                             continue
                         
                         scaler.step(optimizer)
                         scaler.update()
                         scheduler.step()
                         optimizer.zero_grad()
-                        
-                        # Clear accumulated metrics
-                        lang_losses.clear()
                     
                     running_loss += loss.item() * config.grad_accum_steps
                     total_loss += loss.item() * config.grad_accum_steps

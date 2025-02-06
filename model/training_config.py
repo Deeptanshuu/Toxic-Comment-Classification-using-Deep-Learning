@@ -368,13 +368,17 @@ class TrainingConfig:
     max_length: int = 128
     num_labels: int = 6
     
-    # Training parameters
-    batch_size: int = 64
-    grad_accum_steps: int = 2
+    # Training parameters with adjusted defaults for stability
+    batch_size: int = 32  # Reduced batch size
+    grad_accum_steps: int = 4  # Increased accumulation steps
     epochs: int = 10
-    lr: float = 1.4e-5
+    lr: float = 8e-6  # Reduced learning rate
     warmup_ratio: float = 0.15
     weight_decay: float = 0.01
+    max_grad_norm: float = 1.0  # Added explicit grad norm
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999  # Increased beta2 for more stability
+    adam_epsilon: float = 1e-8
     
     # Language parameters
     language_columns: list = None
