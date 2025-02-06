@@ -1,5 +1,9 @@
 import torch
 import torch.nn as nn
+import logging
+
+logger = logging.getLogger(__name__)
+
 from transformers import (
     XLMRobertaForSequenceClassification, 
     XLMRobertaTokenizer,
@@ -14,7 +18,7 @@ import argparse
 from dataclasses import dataclass, asdict
 import os
 import warnings
-from torch.amp import autocast
+from torch.amp import autocast, GradScaler
 from torch.cuda.amp import GradScaler
 import time
 from datetime import datetime, timedelta
@@ -30,11 +34,78 @@ import gc
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import sys
+import signal
+import atexit
 
 from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
+# Set environment variables if not already set
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.environ.get('TF_CPP_MIN_LOG_LEVEL', '2')
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
+
+# Global variables for cleanup
+_cleanup_handlers = []
+_model = None
+_optimizer = None
+_scheduler = None
+
+def register_cleanup(handler):
+    """Register cleanup handlers that will be called on exit"""
+    _cleanup_handlers.append(handler)
+
+def cleanup():
+    """Cleanup function to be called on exit"""
+    global _model, _optimizer, _scheduler
+    
+    print("\nPerforming cleanup...")
+    
+    # Call all registered cleanup handlers
+    for handler in _cleanup_handlers:
+        try:
+            handler()
+        except Exception as e:
+            print(f"Warning: Cleanup handler failed: {str(e)}")
+    
+    # Clear CUDA cache
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"Warning: Could not clear CUDA cache: {str(e)}")
+    
+    # Delete model and optimizer
+    if _model is not None:
+        try:
+            del _model
+        except Exception:
+            pass
+    if _optimizer is not None:
+        try:
+            del _optimizer
+        except Exception:
+            pass
+    if _scheduler is not None:
+        try:
+            del _scheduler
+        except Exception:
+            pass
+    
+    # Force garbage collection
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+# Register cleanup function
+atexit.register(cleanup)
+
+# Handle termination signals
+def signal_handler(signum, frame):
+    print(f"\nReceived signal {signum}. Cleaning up...")
+    cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 @dataclass
 class Config:
@@ -43,11 +114,11 @@ class Config:
     batch_size: int = 32
     grad_accum_steps: int = 4
     epochs: int = 10
-    lr: float = 1e-5  # Lower learning rate for stability
+    lr: float = 1e-5
     warmup_ratio: float = 0.1
-    weight_decay: float = 0.01  # Added weight decay
-    max_grad_norm: float = 1.0  # Added gradient clipping
-    label_smoothing: float = 0.01  # Added label smoothing
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
+    label_smoothing: float = 0.01
     device: str = None
     fp16: bool = True
     mixed_precision: str = 'bf16'
@@ -59,101 +130,205 @@ class Config:
     gc_frequency: int = 100
     
     def __post_init__(self):
-        # Load language-specific weights
-        with open('weights/language_class_weights.json', 'r') as f:
-            weights_data = json.load(f)
-            self.lang_weights = weights_data['weights']
+        try:
+            # Load language-specific weights
+            weights_path = Path('weights/language_class_weights.json')
+            if not weights_path.exists():
+                raise FileNotFoundError(f"Weights file not found: {weights_path}")
+                
+            with open(weights_path, 'r') as f:
+                weights_data = json.load(f)
+                self.lang_weights = weights_data['weights']
+        except Exception as e:
+            print(f"Error loading language weights: {str(e)}")
+            print("Using default weights...")
+            self.lang_weights = self._get_default_weights()
             
-        # Set device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Set device with error handling
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.init()
+                self.device = torch.device('cuda')
+            except Exception as e:
+                print(f"Warning: CUDA initialization failed: {str(e)}")
+                self.device = torch.device('cpu')
         
-        # Set TF32 if requested
+        # Set TF32 if requested and available
         if torch.cuda.is_available() and self.tensor_float_32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
+            if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            else:
+                print("Warning: TF32 not supported on this GPU. Disabling.")
+                self.tensor_float_32 = False
             
         # Define toxicity labels
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.num_labels = len(self.toxicity_labels)
+    
+    def _get_default_weights(self):
+        """Provide default weights if loading fails"""
+        return {
+            'en': {label: {'0': 0.5, '1': 1.0} for label in self.toxicity_labels},
+            'default': {label: {'0': 0.5, '1': 1.0} for label in self.toxicity_labels}
+        }
 
 def init_model(config):
-    """Initialize model"""
-    model = XLMRobertaForSequenceClassification.from_pretrained(
-        config.model_name,
-        num_labels=config.num_labels,
-        problem_type="multi_label_classification"
-    )
+    """Initialize model with error handling"""
+    global _model
     
-    return model.to(config.device)
+    try:
+        # Check if CUDA is available and working
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.init()
+            except Exception as e:
+                print(f"Warning: CUDA initialization failed: {str(e)}")
+                config.device = torch.device('cpu')
+        
+        # Initialize model with error handling
+        try:
+            _model = XLMRobertaForSequenceClassification.from_pretrained(
+                config.model_name,
+                num_labels=config.num_labels,
+                problem_type="multi_label_classification"
+            )
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            print("Attempting to download model...")
+            _model = XLMRobertaForSequenceClassification.from_pretrained(
+                config.model_name,
+                num_labels=config.num_labels,
+                problem_type="multi_label_classification",
+                force_download=True
+            )
+        
+        # Move model to device with error handling
+        try:
+            _model = _model.to(config.device)
+        except Exception as e:
+            print(f"Error moving model to device: {str(e)}")
+            if config.device.type == 'cuda':
+                print("Falling back to CPU")
+                config.device = torch.device('cpu')
+                _model = _model.to(config.device)
+        
+        # Enable gradient checkpointing if requested
+        if config.activation_checkpointing:
+            _model.gradient_checkpointing_enable()
+        
+        return _model
+        
+    except Exception as e:
+        print(f"Fatal error initializing model: {str(e)}")
+        raise
 
 def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, config, is_best=False):
-    """Save training checkpoint"""
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),  # No need to check for DDP since we're not using it
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'scaler_state_dict': scaler.state_dict() if scaler else None,
-        'metrics': metrics,
-        'config': asdict(config)
-    }
-    
-    # Save latest checkpoint
-    checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
-    torch.save(checkpoint, checkpoint_path)
-    
-    # Save best model separately
-    if is_best:
-        best_path = Path('weights') / 'best_model.pt'
-        torch.save(checkpoint, best_path)
+    """Save training checkpoint with error handling"""
+    try:
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+            'scaler_state_dict': scaler.state_dict() if scaler else None,
+            'metrics': metrics,
+            'config': asdict(config)
+        }
         
-        # Log best model to wandb
-        artifact = wandb.Artifact(
-            name=f"best-model-auc{metrics['auc']:.4f}",
-            type="model",
-            description=f"Best model checkpoint with AUC {metrics['auc']:.4f}"
-        )
-        artifact.add_file(str(best_path))
-        wandb.log_artifact(artifact)
+        # Create weights directory if it doesn't exist
+        Path('weights').mkdir(exist_ok=True)
+        
+        # Save latest checkpoint
+        checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
+        torch.save(checkpoint, checkpoint_path)
+        
+        # Save best model separately
+        if is_best:
+            best_path = Path('weights') / 'best_model.pt'
+            torch.save(checkpoint, best_path)
+            
+            # Log best model to wandb if initialized
+            if wandb.run is not None:
+                try:
+                    artifact = wandb.Artifact(
+                        name=f"best-model-auc{metrics['auc']:.4f}",
+                        type="model",
+                        description=f"Best model checkpoint with AUC {metrics['auc']:.4f}"
+                    )
+                    artifact.add_file(str(best_path))
+                    wandb.log_artifact(artifact)
+                except Exception as e:
+                    print(f"Warning: Could not log best model to wandb: {str(e)}")
+        
+    except Exception as e:
+        print(f"Warning: Could not save checkpoint: {str(e)}")
+        # Try to save with pickle protocol 4 as fallback
+        try:
+            torch.save(checkpoint, checkpoint_path, _use_new_zipfile_serialization=False, pickle_protocol=4)
+        except Exception as e2:
+            print(f"Error: Could not save checkpoint even with fallback method: {str(e2)}")
 
 def load_checkpoint(model, optimizer, scheduler, scaler, config):
-    """Load training checkpoint"""
+    """Load training checkpoint with error handling"""
     checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
     if not checkpoint_path.exists():
         return 0, 0  # Start from epoch 0
         
-    print(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=config.device)
-    
-    # Load model state
-    if config.ddp:
-        model.module.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    
-    # Load optimizer state
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
-    # Load scheduler state if it exists
-    if scheduler and checkpoint['scheduler_state_dict']:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    
-    # Load scaler state if it exists
-    if scaler and checkpoint['scaler_state_dict']:
-        scaler.load_state_dict(checkpoint['scaler_state_dict'])
-    
-    return checkpoint['epoch'] + 1, checkpoint['metrics'].get('auc', 0)
+    try:
+        print(f"Loading checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=config.device)
+        
+        # Load model state with error handling
+        try:
+            if config.ddp:
+                model.module.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint['model_state_dict'])
+        except Exception as e:
+            print(f"Warning: Could not load model state: {str(e)}")
+            return 0, 0
+        
+        # Load optimizer state
+        try:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        except Exception as e:
+            print(f"Warning: Could not load optimizer state: {str(e)}")
+        
+        # Load scheduler state if it exists
+        if scheduler and checkpoint['scheduler_state_dict']:
+            try:
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except Exception as e:
+                print(f"Warning: Could not load scheduler state: {str(e)}")
+        
+        # Load scaler state if it exists
+        if scaler and checkpoint['scaler_state_dict']:
+            try:
+                scaler.load_state_dict(checkpoint['scaler_state_dict'])
+            except Exception as e:
+                print(f"Warning: Could not load scaler state: {str(e)}")
+        
+        return checkpoint['epoch'] + 1, checkpoint.get('metrics', {}).get('auc', 0)
+        
+    except Exception as e:
+        print(f"Error loading checkpoint: {str(e)}")
+        return 0, 0
 
 def train(model, train_loader, val_loader, config):
     """Training loop with optimized configuration"""
     
-    # Initialize wandb at the start of training
+    # Initialize wandb at the start of training if not distributed or on master process
     if not config.distributed or (config.distributed and dist.get_rank() == 0):
-        wandb.init(
-            project="toxic-comment-classification",
-            config=config.to_serializable_dict(),
-            reinit=True
-        )
+        if wandb.run is None:
+            try:
+                wandb.init(
+                    project="toxic-comment-classification",
+                    config=config.to_serializable_dict(),
+                    reinit=True
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize wandb: {str(e)}")
     
     # Initialize threshold optimizer
     threshold_optimizer = ThresholdOptimizer(
@@ -186,29 +361,38 @@ def train(model, train_loader, val_loader, config):
         weight_decay=config.weight_decay
     )
     
-    # Use warmup ratio instead of fixed steps
-    num_training_steps = len(train_loader) * config.epochs
-    num_warmup_steps = int(num_training_steps * config.warmup_ratio)
-    
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps
-    )
+    try:
+        # Use linear warmup with hold instead of cosine
+        num_warmup_steps = 1000
+        num_training_steps = 30000
+        
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                # Linear warmup
+                return float(current_step) / float(max(1, num_warmup_steps))
+            # Hold at max learning rate after warmup
+            return 1.0
+        
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lr_lambda
+        )
+    except Exception as e:
+        logger.error(f"Failed to create scheduler: {e}")
+        raise
     
     # Initialize scaler based on precision mode
     scaler = None
     if config.mixed_precision == 'fp16':
-        scaler = GradScaler(enabled=True)
+        scaler = GradScaler('cuda', enabled=True)
     elif config.mixed_precision == 'bf16':
-        scaler = GradScaler(enabled=False)  # BF16 doesn't require scaling
+        scaler = GradScaler('cuda', enabled=False)  # BF16 doesn't require scaling
     
     metrics_tracker = MetricsTracker()
     class_weights = config.class_weights
     early_stopping = EarlyStopping(patience=3, min_delta=1e-3)
     
     # Initialize progress tracking
-    best_auc = 0.0
     train_start_time = time.time()
     global_step = 0
     
@@ -264,12 +448,16 @@ def train(model, train_loader, val_loader, config):
                                          if k in ['input_ids', 'attention_mask', 'labels']})
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         
+                        # Ensure proper broadcasting for per-sample weighting
                         if outputs.loss.dim() == 2:
+                            # If loss is already [B,C], apply weights directly
                             weighted_loss = outputs.loss * batch_weights
                         else:
-                            weighted_loss = outputs.loss.view(-1, 1) * batch_weights.mean(dim=1, keepdim=True)
+                            # If loss is [B], reshape for proper broadcasting
+                            weighted_loss = outputs.loss.view(-1, 1) * batch_weights
                         
-                        loss = weighted_loss.mean() / config.grad_accum_steps
+                        # No mean reduction here to preserve per-sample weights
+                        loss = weighted_loss.sum() / (weighted_loss.size(0) * config.grad_accum_steps)
                     
                     # Calculate language-specific losses
                     if not config.distributed or (config.distributed and dist.get_rank() == 0):
@@ -288,8 +476,11 @@ def train(model, train_loader, val_loader, config):
                     if (batch_idx + 1) % config.grad_accum_steps == 0:
                         scaler.unscale_(optimizer)
                         
-                        # Get adaptive max norm based on training progress
-                        adaptive_max_norm = config.get_adaptive_max_norm(epoch, global_step)
+                        # Get adaptive max norm with exponential decay
+                        adaptive_max_norm = max(
+                            config.min_max_norm,
+                            config.initial_max_norm * (0.95 ** epoch)  # Exponential decay
+                        )
                         
                         # Apply gradient clipping with monitoring
                         grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -302,7 +493,7 @@ def train(model, train_loader, val_loader, config):
                             'grad/norm': grad_norm.item(),
                             'grad/adaptive_max_norm': adaptive_max_norm,
                             'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm,
-                            'grad/is_exploding': float(grad_norm > 1000),
+                            'grad/is_exploding': float(grad_norm > adaptive_max_norm * 0.9),  # Alert at 90% of max
                             'grad/accumulation_step': (batch_idx % config.grad_accum_steps) + 1
                         }
                         
@@ -317,16 +508,16 @@ def train(model, train_loader, val_loader, config):
                         wandb.log(grad_stats, step=global_step)
                         
                         # Check for exploding gradients with enhanced monitoring
-                        if grad_norm > 1000 or grad_norm.isnan().any():
-                            print(f"\nExploding/Invalid gradients detected: {grad_norm:.2f}")
+                        if grad_norm > adaptive_max_norm * 0.9 or grad_norm.isnan().any():
+                            print(f"\nHigh gradient norm detected: {grad_norm:.2f}/{adaptive_max_norm:.2f}")
                             print("Gradient statistics:")
                             for k, v in grad_stats.items():
                                 print(f"  {k}: {v}")
-                            print("\nSkipping batch and reducing learning rate")
+                            print("\nReducing learning rate and skipping update")
                             optimizer.zero_grad()
-                            # Reduce learning rate more gradually
+                            # Reduce learning rate more aggressively
                             for param_group in optimizer.param_groups:
-                                param_group['lr'] *= 0.7  # Reduced from 0.5 for smoother adjustment
+                                param_group['lr'] *= 0.5
                             continue
                         
                         scaler.step(optimizer)
@@ -1035,14 +1226,15 @@ class MultilabelStratifiedSampler(torch.utils.data.Sampler):
         return len(self.labels)
 
 class ThresholdOptimizer:
-    """Optimizes classification thresholds per language"""
+    """Optimizes classification thresholds per language with F1-oriented selection"""
     def __init__(self, num_classes, languages):
         self.num_classes = num_classes
         self.languages = languages
         self.thresholds = {lang: np.array([0.5] * num_classes) for lang in languages}
+        self.f1_scores = {lang: np.zeros(num_classes) for lang in languages}
         
     def optimize(self, val_preds, val_labels, langs):
-        """Optimize thresholds using validation data"""
+        """Optimize thresholds using validation data with F1-oriented selection"""
         for lang in self.languages:
             lang_mask = langs == lang
             if not lang_mask.any():
@@ -1054,24 +1246,33 @@ class ThresholdOptimizer:
             # Optimize threshold for each class
             for i in range(self.num_classes):
                 # Skip classes with insufficient samples
-                if np.sum(lang_labels[:, i]) < 100:
+                if np.sum(lang_labels[:, i]) < 50:  # Reduced minimum samples
                     print(f"Skipping threshold optimization for {lang} class {i}: insufficient positive samples")
                     continue
                     
                 try:
                     fpr, tpr, thresholds = roc_curve(lang_labels[:, i], lang_preds[:, i])
-                    # Find threshold that maximizes f1 score
+                    
+                    # Calculate F1 scores for each threshold
                     f1_scores = []
                     for t in thresholds:
                         binary_preds = (lang_preds[:, i] > t).astype(int)
                         precision, recall, f1, _ = precision_recall_fscore_support(
                             lang_labels[:, i], binary_preds, average='binary'
                         )
-                        f1_scores.append(f1)
+                        # F1-oriented metric with TPR boost
+                        f1_scores.append(f1 + tpr[thresholds == t][0] * 0.5)
                     
                     optimal_idx = np.argmax(f1_scores)
                     self.thresholds[lang][i] = thresholds[optimal_idx]
-                except:
+                    self.f1_scores[lang][i] = f1_scores[optimal_idx]
+                    
+                    # Special handling for threat class
+                    if i == 3:  # Assuming threat is index 3
+                        print(f"\nOptimized {lang} threat threshold: {self.thresholds[lang][i]:.4f}")
+                        print(f"F1 score at threshold: {self.f1_scores[lang][i]:.4f}")
+                except Exception as e:
+                    print(f"Warning: Could not optimize threshold for {lang} class {i}: {str(e)}")
                     continue
     
     def get_thresholds(self, langs):
@@ -1160,28 +1361,35 @@ def check_class_wise_gradient_flow(model):
     """Monitor gradient flow for each class head"""
     grad_stats = {}
     
-    # Get gradients for class-specific parameters
-    classifier_params = list(model.classifier.parameters())
-    if not classifier_params[-1].grad is None:  # Check if gradients exist
-        class_grads = classifier_params[-1].grad  # Shape might be [num_classes, hidden_dim] or [hidden_dim]
+    try:
+        # Get the base model from DDP if needed
+        base_model = model.module if hasattr(model, 'module') else model
         
-        # Ensure class_grads has the right shape
-        if class_grads.dim() == 1:
-            # If 1D, reshape to [1, hidden_dim]
-            class_grads = class_grads.unsqueeze(0)
-        
-        # Calculate statistics along the correct dimension
-        grad_stats['mean'] = class_grads.mean(dim=-1).cpu().numpy()  # Mean across hidden dimensions
-        grad_stats['std'] = class_grads.std(dim=-1).cpu().numpy()    # Std across hidden dimensions
-        grad_stats['norm'] = torch.norm(class_grads, dim=-1).cpu().numpy()  # Norm across hidden dimensions
-        
-        # Calculate gradient diversity only if we have multiple classes
-        if class_grads.size(0) > 1:
-            # Reshape for correlation calculation if needed
-            flat_grads = class_grads.view(class_grads.size(0), -1)
-            # Calculate correlation matrix
-            grad_corr = torch.corrcoef(flat_grads)
-            grad_stats['correlation'] = grad_corr.cpu().numpy()
+        # Get gradients for class-specific parameters
+        classifier_params = list(base_model.classifier.parameters())
+        if not classifier_params[-1].grad is None:  # Check if gradients exist
+            class_grads = classifier_params[-1].grad  # Shape might be [num_classes, hidden_dim]
+            
+            # Ensure class_grads has the right shape
+            if class_grads.dim() == 1:
+                # If 1D, reshape to [1, hidden_dim]
+                class_grads = class_grads.unsqueeze(0)
+            
+            # Calculate statistics along the correct dimension
+            grad_stats['mean'] = class_grads.mean(dim=-1).cpu().numpy()  # Mean across hidden dimensions
+            grad_stats['std'] = class_grads.std(dim=-1).cpu().numpy()    # Std across hidden dimensions
+            grad_stats['norm'] = torch.norm(class_grads, dim=-1).cpu().numpy()  # Norm across hidden dimensions
+            
+            # Calculate gradient diversity only if we have multiple classes
+            if class_grads.size(0) > 1:
+                # Reshape for correlation calculation if needed
+                flat_grads = class_grads.view(class_grads.size(0), -1)
+                # Calculate correlation matrix
+                grad_corr = torch.corrcoef(flat_grads)
+                grad_stats['correlation'] = grad_corr.cpu().numpy()
+    except Exception as e:
+        print(f"Warning: Could not calculate gradient stats: {str(e)}")
+        return None
     
     return grad_stats
 
@@ -1217,28 +1425,35 @@ def train_worker(rank, config, train_dataset, val_dataset):
         # Create model
         model = init_model(config)
         if is_distributed:
-            model = DDP(model, device_ids=[rank])
+            model = DDP(model, device_ids=[rank], find_unused_parameters=False)
         
-        # Create dataloaders
+        # Create dataloaders with proper error handling
         train_loader, val_loader = create_dataloaders(
             train_dataset, val_dataset, config, rank
         )
         
-        # Only initialize wandb on master process
+        # Initialize wandb only on master process and ensure it's done before training
         if not is_distributed or rank == 0:
-            wandb.init(
-                project="toxic-comment-classification",
-                config=config.to_serializable_dict()
-            )
+            try:
+                wandb.init(
+                    project="toxic-comment-classification",
+                    config=config.to_serializable_dict(),
+                    reinit=True
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize wandb: {str(e)}")
         
         # Train model
         train(model, train_loader, val_loader, config)
         
+    except Exception as e:
+        print(f"Error in worker {rank}: {str(e)}")
+        raise
     finally:
         cleanup_distributed()
 
 def main():
-    """Main training function"""
+    """Main training function with enhanced error handling"""
     try:
         # Parse arguments
         args = parse_args()
@@ -1259,45 +1474,69 @@ def main():
             world_size=torch.cuda.device_count()
         )
         
-        # Load datasets
+        # Load datasets with error handling
         print("Loading datasets...")
-        train_df = pd.read_csv("dataset/split/train.csv")
-        val_df = pd.read_csv("dataset/split/val.csv")
+        try:
+            train_df = pd.read_csv("dataset/split/train.csv")
+            val_df = pd.read_csv("dataset/split/val.csv")
+        except Exception as e:
+            print(f"Error loading datasets: {str(e)}")
+            raise
         
-        # Create datasets
-        tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
-        train_dataset = ToxicDataset(train_df, tokenizer, config)
-        val_dataset = ToxicDataset(val_df, tokenizer, config)
+        # Create datasets with error handling
+        try:
+            tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
+            train_dataset = ToxicDataset(train_df, tokenizer, config)
+            val_dataset = ToxicDataset(val_df, tokenizer, config)
+        except Exception as e:
+            print(f"Error creating datasets: {str(e)}")
+            raise
         
         if config.distributed:
-            # Launch distributed processes
-            mp.spawn(
-                train_worker,
-                args=(config, train_dataset, val_dataset),
-                nprocs=config.world_size,
-                join=True
-            )
+            # Launch distributed processes with error handling
+            try:
+                mp.spawn(
+                    train_worker,
+                    args=(config, train_dataset, val_dataset),
+                    nprocs=config.world_size,
+                    join=True
+                )
+            except Exception as e:
+                print(f"Error in distributed training: {str(e)}")
+                raise
         else:
             # Single GPU training
             train_worker(0, config, train_dataset, val_dataset)
         
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+        cleanup()
     except Exception as e:
         print(f"Error during training: {str(e)}")
         import traceback
         traceback.print_exc()
         raise
-    
     finally:
         if wandb.run is not None:
-            wandb.finish()
+            try:
+                wandb.finish()
+            except Exception as e:
+                print(f"Warning: Could not finish wandb run: {str(e)}")
         cleanup_distributed()
-        gc.collect()
-        torch.cuda.empty_cache()
+        cleanup()
 
 if __name__ == "__main__":
+    # Set numerical precision options
     np.set_printoptions(precision=4, suppress=True)
     torch.set_printoptions(precision=4, sci_mode=False)
-    main()
+    
+    # Run main with error handling
+    try:
+        main()
+    except Exception as e:
+        print(f"Fatal error: {str(e)}")
+        cleanup()
+        sys.exit(1)
 
 def calculate_lang_specific_loss(batch, weighted_loss, device):
     """Helper function to calculate language-specific losses with proper error handling"""
@@ -1307,17 +1546,25 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
         batch_size = weighted_loss.size(0)
         num_classes = weighted_loss.size(1) if weighted_loss.dim() > 1 else 1
         
-        for lang in set(batch['lang']):  # Use set for unique languages
+        # Convert batch['lang'] to list if it's a tensor
+        langs = batch['lang']
+        if isinstance(langs, torch.Tensor):
+            langs = langs.tolist()
+        
+        for lang in set(langs):  # Use set for unique languages
             if lang not in lang_losses:
                 lang_losses[lang] = []
             
-            # Create mask with correct shape
-            lang_mask = torch.tensor([l == lang for l in batch['lang']], 
-                                   device=device, dtype=torch.bool)
-            
-            # Ensure mask has correct shape for broadcasting
-            if lang_mask.sum() > 0:  # Only process if we have samples for this language
-                # Reshape mask to match weighted_loss dimensions
+            try:
+                # Create mask with correct shape
+                lang_mask = torch.tensor([l == lang for l in langs], 
+                                       device=device, dtype=torch.bool)
+                
+                # Skip if no samples for this language
+                if not lang_mask.any():
+                    continue
+                
+                # Ensure mask has correct shape for broadcasting
                 if weighted_loss.dim() > 1:
                     # For 2D tensor [batch_size, num_classes]
                     lang_mask = lang_mask.view(-1, 1).expand(-1, num_classes)
@@ -1327,10 +1574,13 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
                 if len(masked_loss) > 0:
                     lang_loss = masked_loss.mean().item()
                     lang_losses[lang].append(lang_loss)
+            
+            except Exception as e:
+                print(f"Warning: Error processing language {lang}: {str(e)}")
+                continue
     
     except Exception as e:
         print(f"Warning: Error in language-specific loss calculation: {str(e)}")
-        # Return empty dict on error to allow training to continue
         return {}
     
     return lang_losses
