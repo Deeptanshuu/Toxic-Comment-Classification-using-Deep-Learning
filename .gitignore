@@ -10,7 +10,8 @@ env.bak/
 venv.bak/
 
 # Weights and Biases
-weights/toxic_classifier_xlm-roberta-large
+weights/*
+dataset/*
 
 # IDE and editor files
 .idea/
