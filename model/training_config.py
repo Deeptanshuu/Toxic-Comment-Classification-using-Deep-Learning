@@ -230,17 +230,17 @@ class TrainingConfig:
     
     # Training parameters
     batch_size: int = 64  # Increased from 48 for better XLM-R utilization
-    grad_accum_steps: int = 1  # Removed accumulation for stability
+    grad_accum_steps: int = 2  # Added accumulation for stability
     epochs: int = 10
-    lr: float = 2e-5  # Standard XLM-R fine-tuning rate
-    warmup_ratio: float = 0.15
+    lr: float = 1.4e-5  # Reduced by 30% from 2e-5 for stability
+    warmup_ratio: float = 0.15  # Increased warmup for better stability
     weight_decay: float = 0.01
     
     # Gradient control parameters
-    initial_max_norm: float = 1.0  # Start with moderate clipping (increased from 0.1)
-    final_max_norm: float = 5.0    # Allow higher gradients as training progresses (increased from 1.0)
-    min_max_norm: float = 0.5      # Increased minimum bound
-    grad_norm_adjustment_steps: int = 100  # Steps to adjust norm
+    initial_max_norm: float = 0.8  # Start more conservatively
+    final_max_norm: float = 4.0    # Reduced from 5.0 for stability
+    min_max_norm: float = 0.5      # Minimum bound
+    grad_norm_adjustment_steps: int = 200  # Increased for more gradual adjustment
     
     # Mixed precision parameters
     fp16: bool = True
@@ -373,14 +373,17 @@ class TrainingConfig:
         }
 
     def get_adaptive_max_norm(self, epoch: int, step: int) -> float:
-        """Calculate adaptive gradient norm based on training progress"""
+        """Calculate adaptive gradient norm based on training progress with smoother transition"""
         # Calculate progress as combination of epochs and steps
         total_steps = self.grad_norm_adjustment_steps
         current_step = (epoch * total_steps / self.epochs) + (step / total_steps)
         progress = min(1.0, current_step / total_steps)
         
-        # Start strict and gradually relax
-        max_norm = self.initial_max_norm + (self.final_max_norm - self.initial_max_norm) * progress
+        # Use a smoother transition curve (quadratic)
+        smooth_progress = progress * progress
+        
+        # Start strict and gradually relax with smoother curve
+        max_norm = self.initial_max_norm + (self.final_max_norm - self.initial_max_norm) * smooth_progress
         
         # Apply safety bounds
         max_norm = max(self.min_max_norm, min(self.final_max_norm, max_norm))
