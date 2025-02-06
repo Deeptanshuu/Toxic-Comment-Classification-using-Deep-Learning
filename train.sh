@@ -54,7 +54,7 @@ fi
 
 # Run training in background with nohup
 echo "Starting training..."
-cd "${PROJECT_DIR}"  # Change to project directory
+cd "${PROJECT_DIR}"
 nohup python -u model/train.py \
     --batch_size 32 \
     --grad_accum_steps 2 \
