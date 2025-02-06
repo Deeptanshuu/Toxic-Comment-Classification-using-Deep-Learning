@@ -340,13 +340,30 @@ def plot_metrics(results, output_dir):
     plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
     plt.close()
 
+def convert_to_serializable(obj):
+    """Convert numpy types to Python native types for JSON serialization"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(item) for item in obj]
+    return obj
+
 def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
     
+    # Convert results to JSON serializable format
+    serializable_results = convert_to_serializable(results)
+    
     # Save detailed metrics
     with open(os.path.join(output_dir, 'evaluation_results.json'), 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(serializable_results, f, indent=2)
     
     # Save raw predictions for further analysis
     np.savez_compressed(
@@ -393,7 +410,7 @@ def main():
                       help='Path to the trained model')
     parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                       help='Directory to save results')
@@ -433,6 +450,7 @@ def main():
         results = evaluate_model(model, test_loader, device, args.output_dir)
         
         print(f"\nEvaluation complete! Results saved to {args.output_dir}")
+        return results
         
     except Exception as e:
         print(f"Error during evaluation: {str(e)}")
