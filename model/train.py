@@ -1248,7 +1248,7 @@ TRAINING_CONFIG = {
     "model_name": "xlm-roberta-large",
     "batch_size": 32,
     "grad_accum_steps": 2,
-    "epochs": 5,
+    "epochs": 4,
     "lr": 2e-5,
     "mixed_precision": "bf16",
     "num_workers": 12,
