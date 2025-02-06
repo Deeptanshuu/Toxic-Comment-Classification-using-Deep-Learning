@@ -11,7 +11,7 @@ class LanguageAwareTransformer(nn.Module):
         self, 
         num_labels: int = 6,
         hidden_size: int = 1024,
-        num_attention_heads: int = 24,
+        num_attention_heads: int = 16,
         model_name: str = "xlm-roberta-large",
         dropout: float = 0.1
     ):
@@ -62,6 +62,19 @@ class LanguageAwareTransformer(nn.Module):
         
         # Initialize weights
         self._init_weights()
+        
+        # Gradient checkpointing flag
+        self.gradient_checkpointing = False
+    
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing for memory efficiency"""
+        self.gradient_checkpointing = True
+        self.base_model.gradient_checkpointing_enable()
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing"""
+        self.gradient_checkpointing = False
+        self.base_model.gradient_checkpointing_disable()
     
     def _init_weights(self):
         """Initialize the weights of the custom layers"""
@@ -89,21 +102,44 @@ class LanguageAwareTransformer(nn.Module):
         labels: Optional[torch.Tensor] = None
     ) -> dict:
         """
-        Forward pass with gated feature combination
+        Forward pass with gated feature combination and gradient checkpointing support
         """
         try:
-            # Base Model
-            base_output = self.base_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
+            # Base Model with gradient checkpointing if enabled
+            if self.gradient_checkpointing and self.training:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+                
+                base_output = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(self.base_model),
+                    input_ids,
+                    attention_mask
+                )
+            else:
+                base_output = self.base_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+            
             embeddings = base_output.last_hidden_state
             
-            # Language-aware Attention
-            attn_output, attn_weights = self.lang_attention(
-                embeddings, embeddings, embeddings,
-                key_padding_mask=~attention_mask.bool()
-            )
+            # Language-aware Attention with gradient checkpointing
+            if self.gradient_checkpointing and self.training:
+                def attention_forward(*inputs):
+                    return self.lang_attention(*inputs)
+                
+                attn_output, attn_weights = torch.utils.checkpoint.checkpoint(
+                    attention_forward,
+                    embeddings, embeddings, embeddings,
+                    ~attention_mask.bool()
+                )
+            else:
+                attn_output, attn_weights = self.lang_attention(
+                    embeddings, embeddings, embeddings,
+                    key_padding_mask=~attention_mask.bool()
+                )
             
             # Feature Processing
             attended_features = self.gelu(attn_output)
