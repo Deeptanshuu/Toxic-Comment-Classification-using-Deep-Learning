@@ -93,7 +93,7 @@ PID_FILE="${LOG_DIR}/train_${TIMESTAMP}.pid"
 touch "$LOG_FILE" "$ERROR_LOG" "$PID_FILE" || { echo "Error: Cannot create log files" >&2; exit 1; }
 
 # Training configuration with validation
-BATCH_SIZE=24  # Reduced per-GPU batch size for stability
+BATCH_SIZE=32  # Reduced per-GPU batch size for stability
 GRAD_ACCUM=2   # Gradient accumulation steps
 NUM_EPOCHS=10
 LEARNING_RATE=1.4e-5  # Base learning rate

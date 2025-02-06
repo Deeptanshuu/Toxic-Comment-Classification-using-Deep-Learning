@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 from transformers import (
     XLMRobertaForSequenceClassification, 
     XLMRobertaTokenizer,
-    get_cosine_schedule_with_warmup,
     get_linear_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
@@ -311,385 +310,100 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
         return 0, 0
 
 def train(model, train_loader, val_loader, config):
-    """Training loop with optimized configuration"""
+    """Training loop with simplified configuration"""
     
-    # Initialize wandb at the start of training if not distributed or on master process
-    if not config.distributed or (config.distributed and dist.get_rank() == 0):
-        if wandb.run is None:
-            try:
-                wandb.init(
-                    project="toxic-comment-classification",
-                    config=config.to_serializable_dict(),
-                    reinit=True
-                )
-            except Exception as e:
-                print(f"Warning: Could not initialize wandb: {str(e)}")
-    
-    # Initialize threshold optimizer
-    threshold_optimizer = ThresholdOptimizer(
-        num_classes=len(config.toxicity_labels),
-        languages=config.language_columns
-    )
-    
-    # Create parameter groups with different learning rates
-    no_decay = ['bias', 'LayerNorm.weight']
-    optimizer_grouped_parameters = [
-        {
-            'params': [p for n, p in model.named_parameters() 
-                      if not any(nd in n for nd in no_decay)],
-            'weight_decay': config.weight_decay,
-            'lr': config.lr
-        },
-        {
-            'params': [p for n, p in model.named_parameters() 
-                      if any(nd in n for nd in no_decay)],
-            'weight_decay': 0.0,
-            'lr': config.lr
-        }
-    ]
-    
-    optimizer = torch.optim.AdamW(
-        optimizer_grouped_parameters,
-        lr=config.lr,
+    # Simple Adam optimizer with basic parameters
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=2e-5,  # Standard learning rate for transformers
         betas=(0.9, 0.999),
         eps=1e-8,
-        weight_decay=config.weight_decay
+        weight_decay=0.01
     )
     
-    try:
-        # Calculate warmup steps (1000 steps for warmup)
-        num_training_steps = len(train_loader) * config.epochs
-        num_warmup_steps = 1000  # Fixed warmup steps instead of ratio
-        
-        # Create linear warmup scheduler with hold
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
-        )
-    except Exception as e:
-        logger.error(f"Failed to create scheduler: {e}")
-        raise
+    # Simple linear warmup scheduler
+    num_training_steps = len(train_loader) * config.epochs
+    num_warmup_steps = len(train_loader)  # 1 epoch warmup
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
+    )
     
-    # Initialize scaler based on precision mode
-    scaler = None
-    if config.mixed_precision == 'fp16':
-        scaler = GradScaler('cuda', enabled=True)
-    elif config.mixed_precision == 'bf16':
-        scaler = GradScaler('cuda', enabled=False)  # BF16 doesn't require scaling
-    
-    metrics_tracker = MetricsTracker()
-    class_weights = config.class_weights
-    early_stopping = EarlyStopping(patience=3, min_delta=1e-3)
-    
-    # Initialize progress tracking
-    train_start_time = time.time()
-    global_step = 0
+    # Initialize scaler for mixed precision
+    scaler = GradScaler(enabled=config.fp16)
     
     print("\n" + "="*80)
     print(f"Starting training for {config.epochs} epochs...")
     print(f"Total steps: {num_training_steps:,}, Warmup steps: {num_warmup_steps:,}")
     print("="*80 + "\n")
     
-    # Initialize gradient clipping parameters
-    max_grad_norm = 1.0
-    grad_clip_percentile = 0.95  # Clip gradients above 95th percentile
-    
     try:
         for epoch in range(config.epochs):
             model.train()
-            
-            # Validate distribution shift at the start of each epoch
-            if epoch > 0:
-                shifts = validate_distribution_shift(train_loader.dataset, val_loader.dataset)
-                print("\nDistribution Shift Analysis:")
-                for metric, value in shifts['token_usage'].items():
-                    print(f"Token usage {metric}: {value:.4f}")
-            
             running_loss = 0.0
             total_loss = 0.0
             num_batches = 0
             epoch_start = time.time()
             
-            # Track gradient norms for adaptive clipping
-            grad_norms = []
-            
-            # Update weights based on validation performance every 2 epochs
-            if epoch > 0 and epoch % 2 == 0:
-                class_weights.update_weights_based_on_performance(val_metrics)
-            
-            # Initialize per-class metrics
-            class_losses = {label: 0.0 for label in config.toxicity_labels}
-            class_counts = {label: 0 for label in config.toxicity_labels}
-            
-            # Calculate ETA using metrics tracker
-            eta = metrics_tracker.get_eta(epoch, config.epochs)
-            
-            print(f"\nEpoch {epoch+1}/{config.epochs}")
-            print(f"{'='*40} Training {'='*40}")
-            
-            optimizer.zero_grad()
-            
             for batch_idx, batch in enumerate(train_loader):
-                if batch_idx % config.gc_frequency == 0:
-                    torch.cuda.empty_cache()
+                # Move batch to device
+                inputs = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                         for k, v in batch.items()}
                 
-                try:
-                    # Move batch to device
-                    inputs = {k: v.to(config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
-                            for k, v in batch.items()}
-                    
-                    # Forward pass with mixed precision
-                    with autocast(device_type='cuda', dtype=torch.float16, enabled=config.fp16):
-                        outputs = model(**{k: v for k, v in inputs.items() 
-                                         if k in ['input_ids', 'attention_mask', 'labels']})
-                        batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
-                        
-                        # Ensure proper broadcasting for per-sample weighting
-                        if outputs.loss.dim() == 2:
-                            weighted_loss = outputs.loss * batch_weights
-                        else:
-                            weighted_loss = outputs.loss.view(-1, 1) * batch_weights
-                        
-                        loss = weighted_loss.sum() / (weighted_loss.size(0) * config.grad_accum_steps)
-                    
-                    # Backward pass with gradient scaling
-                    scaler.scale(loss).backward()
-                    
-                    # Gradient clipping and normalization
-                    if (batch_idx + 1) % config.grad_accum_steps == 0:
-                        scaler.unscale_(optimizer)
-                        
-                        # Calculate gradient norm
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), 
-                            max_norm=max_grad_norm
-                        )
-                        
-                        # Track gradient norms for adaptive clipping
-                        if not torch.isnan(grad_norm):
-                            grad_norms.append(grad_norm.item())
-                            
-                            # Update max_grad_norm based on recent history
-                            if len(grad_norms) > 100:
-                                max_grad_norm = np.percentile(grad_norms[-100:], grad_clip_percentile)
-                        
-                        # Skip step if gradients exploded
-                        if grad_norm > max_grad_norm * 2:
-                            print(f"\nGradient spike detected: {grad_norm:.2f}. Skipping update.")
-                            optimizer.zero_grad()
-                            continue
-                        
-                        scaler.step(optimizer)
-                        scaler.update()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                    
-                    running_loss += loss.item() * config.grad_accum_steps
-                    total_loss += loss.item() * config.grad_accum_steps
-                    num_batches += 1
-                    global_step += 1
-                    
-                    avg_loss = running_loss / config.grad_accum_steps
-                    running_loss = 0.0
-                    
-                    # Update metrics tracker
-                    metrics_tracker.update_train(avg_loss)
-                    
-                    # Log step-level metrics
-                    step_metrics = {
-                        'train/step_loss': avg_loss,
-                        'train/learning_rate': scheduler.get_last_lr()[0],
-                        'train/grad_norm': grad_norm.item(),
-                        'train/step': global_step,
-                    }
-                    
-                    try:
-                        wandb.log(step_metrics, step=global_step)
-                    except Exception as e:
-                        print(f"Warning: Failed to log step metrics to wandb: {str(e)}")
-                    
-                    if batch_idx % 50 == 0:
-                        progress = batch_idx / len(train_loader)
-                        batch_time = time.time() - epoch_start
-                        batch_eta = str(timedelta(seconds=int(
-                            (batch_time / (batch_idx + 1)) * (len(train_loader) - batch_idx)
-                        )))
-                        
-                        # Get GPU stats
-                        try:
-                            gpu_stats = get_gpu_stats() if torch.cuda.is_available() else None
-                        except Exception as e:
-                            print(f"Warning: Could not get GPU stats: {str(e)}")
-                            gpu_stats = None
-                        
-                        # Prepare detailed metrics dict for less frequent logging
-                        log_dict = {
-                            'train/progress': progress * 100,
-                            'train/epoch': epoch + progress,
-                            'train/batch_size': config.batch_size,
-                            'train/global_step': global_step,
-                            'time/batch_eta': batch_eta,
-                            'time/training_eta': eta,
-                            'time/epoch_elapsed': str(timedelta(seconds=int(batch_time))),
-                            'time/total_elapsed': str(timedelta(seconds=int(time.time() - train_start_time)))
-                        }
-                        
-                        # Add GPU metrics if available
-                        if gpu_stats:
-                            log_dict.update({
-                                'system/gpu_util': gpu_stats['utilization'],
-                                'system/gpu_mem': gpu_stats['memory'],
-                                'system/gpu_temp': gpu_stats['temperature']
-                            })
-                        
-                        # Add per-class losses
-                        for label in config.toxicity_labels:
-                            if class_counts[label] > 0:
-                                class_loss = class_losses[label] / class_counts[label]
-                                log_dict[f'train/loss_{label}'] = class_loss
-                        
-                        # Add validation metrics if available
-                        if metrics_tracker.val_losses:
-                            log_dict.update({
-                                'val/loss': metrics_tracker.val_losses[-1],
-                                'val/auc': metrics_tracker.val_aucs[-1],
-                                'val/best_auc': metrics_tracker.best_auc
-                            })
-                        
-                        # Log all metrics together
-                        try:
-                            wandb.log(log_dict, step=global_step)
-                        except Exception as e:
-                            print(f"Warning: Failed to log to wandb: {str(e)}")
-                        
-                        # Print progress
-                        print(
-                            f"\r[{batch_idx:>5}/{len(train_loader)}] "
-                            f"Loss: {avg_loss:.4f} | "
-                            f"LR: {scheduler.get_last_lr()[0]:.2e} | "
-                            f"GN: {grad_norm.item():.2f} | "
-                            f"BT: {batch_eta} | "
-                            f"ETA: {eta}",
-                            end="", flush=True
-                        )
+                # Forward pass
+                with autocast(enabled=config.fp16):
+                    outputs = model(**{k: v for k, v in inputs.items() 
+                                     if k in ['input_ids', 'attention_mask', 'labels']})
+                    loss = outputs.loss
                 
-                except Exception as e:
-                    print(f"\nError processing batch {batch_idx}: {str(e)}")
-                    continue
-            
-            # End of epoch updates
-            epoch_time = time.time() - epoch_start
-            metrics_tracker.update_time(epoch_time)
-            epoch_avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
-            
-            # Log epoch-level metrics
-            epoch_metrics = {
-                'train/epoch_avg_loss': epoch_avg_loss,
-                'train/epoch': epoch + 1,
-                'time/epoch_minutes': epoch_time / 60
-            }
-            
-            try:
-                wandb.log(epoch_metrics, step=global_step)
-            except Exception as e:
-                print(f"Warning: Failed to log epoch metrics to wandb: {str(e)}")
+                # Backward pass
+                scaler.scale(loss).backward()
+                
+                # Simple gradient clipping
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                
+                # Optimizer step
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
+                
+                # Logging
+                running_loss += loss.item()
+                total_loss += loss.item()
+                num_batches += 1
+                
+                if batch_idx % 50 == 0:
+                    avg_loss = running_loss / (batch_idx + 1)
+                    print(
+                        f"\r[{batch_idx:>5}/{len(train_loader)}] "
+                        f"Loss: {avg_loss:.4f} | "
+                        f"LR: {scheduler.get_last_lr()[0]:.2e}",
+                        end="", flush=True
+                    )
             
             # Validation
             print(f"\n\n{'='*40} Validation {'='*40}")
-            model.eval()
-            
-            # Check gradient flow before validation
-            grad_stats = check_class_wise_gradient_flow(model)
-            if grad_stats:
-                wandb.log({
-                    'grad_flow/mean': grad_stats['mean'].tolist(),
-                    'grad_flow/std': grad_stats['std'].tolist(),
-                    'grad_flow/norm': grad_stats['norm'].tolist(),
-                }, step=global_step)
-            
-            # Run validation with threshold optimization
             val_metrics = evaluate(model, val_loader, config)
-            threshold_optimizer.optimize(
-                val_preds=val_metrics['predictions'],
-                val_labels=val_metrics['labels'],
-                langs=val_metrics['langs']
-            )
-            
-            # Log threshold values
-            for lang in config.language_columns:
-                if lang in threshold_optimizer.thresholds:
-                    for i, label in enumerate(config.toxicity_labels):
-                        wandb.log({
-                            f'thresholds/{lang}/{label}': threshold_optimizer.thresholds[lang][i]
-                        }, step=global_step)
-            
-            # Update metrics and save if best
-            is_best = metrics_tracker.update_validation(val_metrics)
-            if is_best:
-                try:
-                    save_checkpoint(
-                        model=model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        scaler=scaler,
-                        epoch=epoch,
-                        metrics=val_metrics,
-                        config=config,
-                        is_best=True
-                    )
-                    print(f"\n🏆 New best model! AUC: {val_metrics['auc']:.4f}")
-                except Exception as e:
-                    print(f"Warning: Failed to save checkpoint: {str(e)}")
-            
-            # Check early stopping
-            if early_stopping(val_metrics['auc'], epoch):
-                stop_reason = early_stopping.get_stop_reason()
-                print(f"\nEarly stopping: {stop_reason}")
-                # Log early stopping to wandb
-                wandb.log({
-                    'early_stopping/stopped_epoch': early_stopping.stopped_epoch,
-                    'early_stopping/best_epoch': early_stopping.get_best_epoch(),
-                    'early_stopping/best_auc': early_stopping.best_value
-                }, step=global_step)
-                break
-            
-            # Log epoch metrics
-            epoch_metrics = {
-                'val/auc': val_metrics['auc'],
-                'val/loss': val_metrics['loss'],
-                'val/f1': val_metrics['f1'],
-                'train/epoch_loss': epoch_avg_loss,
-                'time/epoch_minutes': epoch_time / 60,
-                'epoch': epoch + 1
-            }
-            
-            # Add per-class validation metrics
-            for label, metrics in val_metrics['class_metrics'].items():
-                for metric_name, value in metrics.items():
-                    epoch_metrics[f'val/{label}/{metric_name}'] = value
-            
-            try:
-                wandb.log(epoch_metrics, step=global_step)
-            except Exception as e:
-                print(f"Warning: Failed to log validation metrics to wandb: {str(e)}")
             
             # Print epoch summary
+            epoch_avg_loss = total_loss / num_batches
             print(f"\nEpoch {epoch+1} Summary:")
             print(f"{'='*80}")
             print(f"Training Loss: {epoch_avg_loss:.4f}")
-            print(f"Validation - AUC: {val_metrics['auc']:.4f}, Loss: {val_metrics['loss']:.4f}, F1: {val_metrics['f1']:.4f}")
-            print(f"Time: {epoch_time/60:.2f}m ({str(timedelta(seconds=int(epoch_time)))})")
+            print(f"Validation - Loss: {val_metrics['loss']:.4f}, AUC: {val_metrics['auc']:.4f}")
             print(f"{'='*80}\n")
             
-            # Memory cleanup
-            torch.cuda.empty_cache()
-            gc.collect()
-    
+            # Save best model
+            if val_metrics['auc'] > best_auc:
+                best_auc = val_metrics['auc']
+                save_model(model, config, epoch, best_auc)
+                print(f"🏆 New best model! AUC: {best_auc:.4f}")
+            
     except Exception as e:
         print(f"\nTraining failed: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise
     finally:
         # Cleanup
