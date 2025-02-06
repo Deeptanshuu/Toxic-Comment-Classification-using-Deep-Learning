@@ -5,13 +5,6 @@ export CUDA_VISIBLE_DEVICES="0,1"
 export PYTHONWARNINGS="ignore"
 export PYTHONPATH="${PYTHONPATH}:${PWD}"  # Add current directory to Python path
 
-# Training parameters
-BATCH_SIZE=32
-GRAD_ACCUM=1
-NUM_EPOCHS=10
-LEARNING_RATE=2e-5
-NUM_WORKERS=2
-MIXED_PRECISION="no"
 
 # Create directories
 mkdir -p logs weights cache
@@ -35,17 +28,7 @@ echo "======================================"
 
 # Start training with nohup
 echo "Starting training in background..."
-nohup python -u model/train.py \
-    --batch_size $BATCH_SIZE \
-    --grad_accum_steps $GRAD_ACCUM \
-    --epochs $NUM_EPOCHS \
-    --lr $LEARNING_RATE \
-    --mixed_precision $MIXED_PRECISION \
-    --num_workers $NUM_WORKERS \
-    --model_name "xlm-roberta-large" \
-    --activation_checkpointing true \
-    --tensor_float_32 true \
-    --gc_frequency 100 > "$LOG_FILE" 2> "$ERROR_LOG" &
+nohup python model/train.py > "$LOG_FILE" 2> "$ERROR_LOG" &
 
 # Save process ID
 pid=$!
