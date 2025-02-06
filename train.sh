@@ -8,47 +8,6 @@ last_command=""
 set -eo pipefail  # Removed 'u' flag to allow unbound vars in traps
 IFS=$'\n\t'      # Stricter word splitting
 
-# Function to clean up on exit
-cleanup() {
-    local EXIT_CODE=$?
-    
-    # Only show error messages if there was an error
-    if [ $EXIT_CODE -ne 0 ]; then
-        echo "Training failed with exit code $EXIT_CODE"
-        echo "Check error log at: $ERROR_LOG"
-        
-        # Print GPU state safely
-        echo "GPU state at failure:"
-        nvidia-smi || echo "Could not get GPU state"
-        
-        # Print last few lines of error log if it exists
-        if [ -f "$ERROR_LOG" ]; then
-            echo "Last few lines of error log:"
-            tail -n 20 "$ERROR_LOG" || echo "Could not read error log"
-        fi
-    fi
-    
-    # Kill any remaining background processes
-    if [ -f "$PID_FILE" ]; then
-        local pid
-        pid=$(cat "$PID_FILE")
-        if [ -n "$pid" ] && ps -p "$pid" > /dev/null; then
-            echo "Stopping training process..."
-            kill "$pid" 2>/dev/null || true
-            sleep 2  # Give process time to cleanup
-            kill -9 "$pid" 2>/dev/null || true  # Force kill if still running
-        fi
-        rm -f "$PID_FILE"
-    fi
-    
-    # Clear GPU cache safely
-    python -c "import torch; torch.cuda.empty_cache()" &> /dev/null || true
-    
-    # Remove lock files if they exist
-    rm -f ./*.lock 2>/dev/null || true
-    
-    exit $EXIT_CODE
-}
 
 # Setup error handling
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG

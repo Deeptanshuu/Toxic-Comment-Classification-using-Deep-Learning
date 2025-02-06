@@ -1,13 +1,20 @@
 import torch
 import torch.nn as nn
 import logging
+import os
+import gc
+import time
+import wandb
+import argparse
+from datetime import datetime
+from torch.cuda.amp import autocast, GradScaler
+from transformers import get_linear_schedule_with_warmup
 
 logger = logging.getLogger(__name__)
 
 from transformers import (
     XLMRobertaForSequenceClassification, 
     XLMRobertaTokenizer,
-    get_linear_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, roc_curve, confusion_matrix
@@ -29,14 +36,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 from itertools import chain
-import gc
-from pathlib import Path
-from typing import Dict, Optional, Tuple
 import sys
 import signal
 import atexit
-
-from training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
+from pathlib import Path
+from model.training_config import TrainingConfig, DynamicClassWeights, MetricsTracker, EarlyStopping
+from model.data.sampler import MultilabelStratifiedSampler
+from model.evaluation.threshold_optimizer import ThresholdOptimizer
 
 # Set environment variables if not already set
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.environ.get('TF_CPP_MIN_LOG_LEVEL', '2')
@@ -378,14 +384,27 @@ def train(model, train_loader, val_loader, config):
                     total_loss += loss.item()
                     num_batches += 1
                     
+                    # Log to wandb every 50 batches
                     if batch_idx % 50 == 0:
                         avg_loss = running_loss / (batch_idx + 1)
+                        lr = scheduler.get_last_lr()[0]
+                        
+                        # Log to console
                         print(
                             f"\r[{batch_idx:>5}/{len(train_loader)}] "
                             f"Loss: {avg_loss:.4f} | "
-                            f"LR: {scheduler.get_last_lr()[0]:.2e}",
+                            f"LR: {lr:.2e}",
                             end="", flush=True
                         )
+                        
+                        # Log to wandb
+                        if wandb.run is not None:
+                            wandb.log({
+                                'train/batch_loss': avg_loss,
+                                'train/learning_rate': lr,
+                                'train/batch': batch_idx + epoch * len(train_loader),
+                                'train/epoch': epoch
+                            })
                         
                     # Garbage collection if needed
                     if batch_idx % config.gc_frequency == 0:
@@ -425,15 +444,37 @@ def train(model, train_loader, val_loader, config):
             epoch_time = time.time() - epoch_start
             metrics_tracker.update_time(epoch_time)
             
-            # Log metrics to wandb if available
+            # Log metrics to wandb
             if wandb.run is not None:
-                log_epoch_metrics(epoch, val_metrics, epoch_time, metrics_tracker.get_eta(epoch, config.epochs))
+                wandb.log({
+                    'train/epoch_loss': epoch_avg_loss,
+                    'val/loss': val_metrics['loss'],
+                    'val/auc': val_metrics['auc'],
+                    'val/precision': val_metrics['precision'],
+                    'val/recall': val_metrics['recall'],
+                    'val/f1': val_metrics['f1'],
+                    'train/epoch_time': epoch_time,
+                    'train/epoch': epoch,
+                    'train/best_auc': metrics_tracker.best_auc
+                })
+                
+                # Log per-class metrics
+                for class_name, metrics in val_metrics.get('class_metrics', {}).items():
+                    wandb.log({
+                        f'val/class/{class_name}/auc': metrics['auc'],
+                        f'val/class/{class_name}/f1': metrics['f1'],
+                        f'val/class/{class_name}/precision': metrics['precision'],
+                        f'val/class/{class_name}/recall': metrics['recall'],
+                        f'val/class/{class_name}/threshold': metrics['threshold']
+                    })
             
     except Exception as e:
         print(f"\nTraining failed: {str(e)}")
         raise
     finally:
         # Cleanup
+        if wandb.run is not None:
+            wandb.finish()
         torch.cuda.empty_cache()
         gc.collect()
 
@@ -1163,6 +1204,28 @@ def main():
     try:
         # Parse arguments
         args = parse_args()
+        
+        # Initialize wandb
+        try:
+            wandb.init(
+                project="toxic-comment-classification",
+                name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                config={
+                    "model_name": args.model_name,
+                    "batch_size": args.batch_size,
+                    "grad_accum_steps": args.grad_accum_steps,
+                    "epochs": args.epochs,
+                    "lr": args.lr,
+                    "mixed_precision": args.mixed_precision,
+                    "num_workers": args.num_workers,
+                    "activation_checkpointing": args.activation_checkpointing,
+                    "tensor_float_32": args.tensor_float_32,
+                    "gc_frequency": args.gc_frequency
+                }
+            )
+            print("Initialized wandb logging")
+        except Exception as e:
+            print(f"Warning: Could not initialize wandb: {str(e)}")
         
         # Initialize config with simplified parameters
         config = TrainingConfig(
