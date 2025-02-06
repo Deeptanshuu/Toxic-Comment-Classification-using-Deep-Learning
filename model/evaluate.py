@@ -410,7 +410,7 @@ def main():
                       help='Path to the trained model')
     parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser.add_argument('--batch_size', type=int, default=32,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                       help='Directory to save results')
