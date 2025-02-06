@@ -107,11 +107,13 @@ echo "Effective batch size: $((BATCH_SIZE * GRAD_ACCUM * $(nvidia-smi -L | wc -l
 echo "Learning rate: $LEARNING_RATE"
 echo "Mixed precision: $MIXED_PRECISION"
 echo "Number of workers per GPU: $NUM_WORKERS"
+echo "Activation checkpointing: true"
+echo "Tensor float 32: true"
 echo "======================================"
 
 # Start training
 echo "Starting training... Log file: $LOG_FILE"
-python -u model/train.py \
+nohup python -u model/train.py \
     --batch_size $BATCH_SIZE \
     --grad_accum_steps $GRAD_ACCUM \
     --epochs $NUM_EPOCHS \

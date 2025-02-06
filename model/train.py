@@ -147,6 +147,14 @@ def load_checkpoint(model, optimizer, scheduler, scaler, config):
 def train(model, train_loader, val_loader, config):
     """Training loop with optimized configuration"""
     
+    # Initialize wandb at the start of training
+    if not config.distributed or (config.distributed and dist.get_rank() == 0):
+        wandb.init(
+            project="toxic-comment-classification",
+            config=config.to_serializable_dict(),
+            reinit=True
+        )
+    
     # Initialize threshold optimizer
     threshold_optimizer = ThresholdOptimizer(
         num_classes=len(config.toxicity_labels),
@@ -246,31 +254,35 @@ def train(model, train_loader, val_loader, config):
                     torch.cuda.empty_cache()
                 
                 try:
-                    # Initialize grad_norm for this batch
-                    grad_norm = torch.tensor(0.0, device=config.device)
-                    param_norm = torch.tensor(0.0, device=config.device)
-                    
                     # Move batch to device
-                    inputs = {
-                        'input_ids': batch['input_ids'].to(config.device, non_blocking=True),
-                        'attention_mask': batch['attention_mask'].to(config.device, non_blocking=True),
-                        'labels': batch['labels'].to(config.device, non_blocking=True)
-                    }
+                    inputs = {k: v.to(config.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+                            for k, v in batch.items()}
                     
                     # Forward pass
                     with autocast('cuda', enabled=config.fp16):
-                        outputs = model(**inputs)
+                        outputs = model(**{k: v for k, v in inputs.items() 
+                                         if k in ['input_ids', 'attention_mask', 'labels']})
                         batch_weights = class_weights.get_weights_for_batch(batch['lang'], config.device)
                         
                         if outputs.loss.dim() == 2:
                             weighted_loss = outputs.loss * batch_weights
                         else:
-                            weighted_loss = outputs.loss * batch_weights.mean(dim=0)
-                            
+                            weighted_loss = outputs.loss.view(-1, 1) * batch_weights.mean(dim=1, keepdim=True)
+                        
                         loss = weighted_loss.mean() / config.grad_accum_steps
                     
                     # Calculate language-specific losses
-                    lang_losses = calculate_lang_specific_loss(batch, weighted_loss, config.device)
+                    if not config.distributed or (config.distributed and dist.get_rank() == 0):
+                        lang_losses = calculate_lang_specific_loss(batch, weighted_loss, config.device)
+                        
+                        # Log language-specific metrics if available and wandb is initialized
+                        if lang_losses and wandb.run is not None:
+                            for lang, losses in lang_losses.items():
+                                if losses:
+                                    wandb.log({
+                                        f'train/loss_{lang}': np.mean(losses),
+                                        f'train/samples_{lang}': len(losses)
+                                    }, step=global_step)
                     
                     # Track gradients with improved adaptive clipping
                     if (batch_idx + 1) % config.grad_accum_steps == 0:
@@ -316,15 +328,6 @@ def train(model, train_loader, val_loader, config):
                             for param_group in optimizer.param_groups:
                                 param_group['lr'] *= 0.7  # Reduced from 0.5 for smoother adjustment
                             continue
-                        
-                        # Log language-specific metrics if available
-                        if lang_losses:
-                            for lang, losses in lang_losses.items():
-                                if losses:
-                                    wandb.log({
-                                        f'train/loss_{lang}': np.mean(losses),
-                                        f'train/samples_{lang}': len(losses)
-                                    }, step=global_step)
                         
                         scaler.step(optimizer)
                         scaler.update()
@@ -1300,23 +1303,31 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
     """Helper function to calculate language-specific losses with proper error handling"""
     lang_losses = {}
     try:
+        # Get batch size and number of classes
+        batch_size = weighted_loss.size(0)
+        num_classes = weighted_loss.size(1) if weighted_loss.dim() > 1 else 1
+        
         for lang in set(batch['lang']):  # Use set for unique languages
             if lang not in lang_losses:
                 lang_losses[lang] = []
             
-            # Ensure proper array/tensor operations
-            lang_mask = np.array(batch['lang']) == lang
-            if not isinstance(lang_mask, np.ndarray):
-                lang_mask = np.array(lang_mask)
+            # Create mask with correct shape
+            lang_mask = torch.tensor([l == lang for l in batch['lang']], 
+                                   device=device, dtype=torch.bool)
             
-            if np.any(lang_mask):
-                # Convert mask to tensor and move to correct device
-                tensor_mask = torch.tensor(lang_mask, device=device, dtype=torch.bool)
-                if tensor_mask.any():
-                    masked_loss = weighted_loss[tensor_mask]
-                    if len(masked_loss) > 0:
-                        lang_loss = masked_loss.mean().item()
-                        lang_losses[lang].append(lang_loss)
+            # Ensure mask has correct shape for broadcasting
+            if lang_mask.sum() > 0:  # Only process if we have samples for this language
+                # Reshape mask to match weighted_loss dimensions
+                if weighted_loss.dim() > 1:
+                    # For 2D tensor [batch_size, num_classes]
+                    lang_mask = lang_mask.view(-1, 1).expand(-1, num_classes)
+                
+                # Apply mask and calculate mean loss
+                masked_loss = weighted_loss[lang_mask].view(-1, num_classes)
+                if len(masked_loss) > 0:
+                    lang_loss = masked_loss.mean().item()
+                    lang_losses[lang].append(lang_loss)
+    
     except Exception as e:
         print(f"Warning: Error in language-specific loss calculation: {str(e)}")
         # Return empty dict on error to allow training to continue
