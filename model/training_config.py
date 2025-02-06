@@ -363,15 +363,31 @@ class EarlyStopping:
 @dataclass
 class TrainingConfig:
     """Basic training configuration"""
+    # Model parameters
+    model_name: str = "xlm-roberta-large"
+    max_length: int = 128
+    num_labels: int = 6
+    
+    # Training parameters
     batch_size: int = 32
-    num_epochs: int = 10
-    learning_rate: float = 2e-5
+    grad_accum_steps: int = 1
+    epochs: int = 10
+    lr: float = 2e-5
     weight_decay: float = 0.01
+    
+    # System parameters
     num_workers: int = 2
+    fp16: bool = False
     mixed_precision: str = "no"
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = None
+    activation_checkpointing: bool = False
+    tensor_float_32: bool = True
+    gc_frequency: int = 100
+    distributed: bool = False
+    world_size: int = 1
     
     def __post_init__(self):
-        """Create necessary directories"""
+        """Initialize device and create directories"""
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         os.makedirs("weights", exist_ok=True)
         os.makedirs("logs", exist_ok=True) 

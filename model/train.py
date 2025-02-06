@@ -1129,7 +1129,7 @@ def main():
         # Parse arguments
         args = parse_args()
         
-        # Initialize config
+        # Initialize config with simplified parameters
         config = TrainingConfig(
             model_name=args.model_name,
             batch_size=args.batch_size,
@@ -1140,9 +1140,7 @@ def main():
             num_workers=args.num_workers,
             activation_checkpointing=args.activation_checkpointing,
             tensor_float_32=args.tensor_float_32,
-            gc_frequency=args.gc_frequency,
-            distributed=True,
-            world_size=torch.cuda.device_count()
+            gc_frequency=args.gc_frequency
         )
         
         # Load datasets with error handling
@@ -1163,21 +1161,28 @@ def main():
             print(f"Error creating datasets: {str(e)}")
             raise
         
-        if config.distributed:
-            # Launch distributed processes with error handling
-            try:
-                mp.spawn(
-                    train_worker,
-                    args=(config, train_dataset, val_dataset),
-                    nprocs=config.world_size,
-                    join=True
-                )
-            except Exception as e:
-                print(f"Error in distributed training: {str(e)}")
-                raise
-        else:
-            # Single GPU training
-            train_worker(0, config, train_dataset, val_dataset)
+        # Create dataloaders and train
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.batch_size,
+            shuffle=True,
+            num_workers=config.num_workers,
+            pin_memory=True
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=config.batch_size * 2,
+            shuffle=False,
+            num_workers=config.num_workers,
+            pin_memory=True
+        )
+        
+        # Initialize model
+        model = init_model(config)
+        
+        # Train model
+        train(model, train_loader, val_loader, config)
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
@@ -1193,7 +1198,6 @@ def main():
                 wandb.finish()
             except Exception as e:
                 print(f"Warning: Could not finish wandb run: {str(e)}")
-        cleanup_distributed()
         cleanup()
 
 if __name__ == "__main__":
