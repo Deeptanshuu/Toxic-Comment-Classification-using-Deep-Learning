@@ -268,8 +268,15 @@ def train(model, train_loader, val_loader, config):
                             
                         loss = weighted_loss.mean() / config.grad_accum_steps
                     
-                    # Backward pass
-                    scaler.scale(loss).backward()
+                    # Track per-language metrics
+                    lang_losses = {}
+                    for lang in batch['lang']:
+                        if lang not in lang_losses:
+                            lang_losses[lang] = []
+                        lang_mask = batch['lang'] == lang
+                        if lang_mask.any():
+                            lang_loss = weighted_loss[lang_mask].mean().item()
+                            lang_losses[lang].append(lang_loss)
                     
                     # Track gradients with improved adaptive clipping
                     if (batch_idx + 1) % config.grad_accum_steps == 0:
@@ -278,38 +285,59 @@ def train(model, train_loader, val_loader, config):
                         # Get adaptive max norm based on training progress
                         adaptive_max_norm = config.get_adaptive_max_norm(epoch, global_step)
                         
-                        # Apply gradient clipping
+                        # Apply gradient clipping with monitoring
                         grad_norm = torch.nn.utils.clip_grad_norm_(
                             model.parameters(), 
                             max_norm=adaptive_max_norm
                         )
                         
-                        # Check for exploding gradients
-                        if grad_norm > 1000:
-                            print(f"\nExploding gradients detected: {grad_norm:.2f}")
-                            print("Skipping batch and reducing learning rate")
-                            optimizer.zero_grad()
-                            # Reduce learning rate
-                            for param_group in optimizer.param_groups:
-                                param_group['lr'] *= 0.5
-                            continue
-                        
-                        param_norm = torch.norm(torch.stack([p.norm() for p in model.parameters()]))
-                        
-                        # Log gradient metrics with improved tracking
-                        wandb.log({
+                        # Enhanced gradient monitoring
+                        grad_stats = {
                             'grad/norm': grad_norm.item(),
-                            'grad/param_norm': param_norm.item(),
-                            'grad/ratio': grad_norm.item() / (param_norm.item() + 1e-6),
                             'grad/adaptive_max_norm': adaptive_max_norm,
                             'grad/norm_to_max_ratio': grad_norm.item() / adaptive_max_norm,
-                            'grad/is_exploding': float(grad_norm > 1000)
-                        }, step=global_step)
+                            'grad/is_exploding': float(grad_norm > 1000),
+                            'grad/accumulation_step': (batch_idx % config.grad_accum_steps) + 1
+                        }
+                        
+                        # Add per-parameter group gradient norms
+                        for i, group in enumerate(optimizer.param_groups):
+                            group_norm = torch.norm(
+                                torch.stack([torch.norm(p.grad) for p in group['params'] if p.grad is not None])
+                            ).item()
+                            grad_stats[f'grad/group_{i}_norm'] = group_norm
+                        
+                        # Log gradient statistics
+                        wandb.log(grad_stats, step=global_step)
+                        
+                        # Check for exploding gradients with enhanced monitoring
+                        if grad_norm > 1000 or grad_norm.isnan().any():
+                            print(f"\nExploding/Invalid gradients detected: {grad_norm:.2f}")
+                            print("Gradient statistics:")
+                            for k, v in grad_stats.items():
+                                print(f"  {k}: {v}")
+                            print("\nSkipping batch and reducing learning rate")
+                            optimizer.zero_grad()
+                            # Reduce learning rate more gradually
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] *= 0.7  # Reduced from 0.5 for smoother adjustment
+                            continue
+                        
+                        # Log per-language metrics
+                        for lang, losses in lang_losses.items():
+                            if losses:
+                                wandb.log({
+                                    f'train/loss_{lang}': np.mean(losses),
+                                    f'train/samples_{lang}': len(losses)
+                                }, step=global_step)
                         
                         scaler.step(optimizer)
                         scaler.update()
                         scheduler.step()
                         optimizer.zero_grad()
+                        
+                        # Clear accumulated metrics
+                        lang_losses.clear()
                     
                     running_loss += loss.item() * config.grad_accum_steps
                     total_loss += loss.item() * config.grad_accum_steps
@@ -1055,14 +1083,58 @@ class ThresholdOptimizer:
             batch_thresholds.append(self.thresholds.get(lang, self.thresholds['en']))
         return np.array(batch_thresholds)
 
-def create_dataloaders(train_dataset, val_dataset, config):
-    """Create optimized DataLoaders with stratified sampling"""
-    train_sampler = MultilabelStratifiedSampler(
-        labels=train_dataset.labels,
-        groups=train_dataset.langs,
-        batch_size=config.batch_size
-    )
+def setup_distributed(config, rank):
+    """Initialize distributed training"""
+    if config.distributed:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '23456'
+        
+        # Initialize process group
+        dist.init_process_group(
+            backend=config.dist_backend,
+            init_method=config.dist_url,
+            world_size=config.world_size,
+            rank=rank
+        )
+        
+        # Set device
+        torch.cuda.set_device(rank)
+        config._device = torch.device(f'cuda:{rank}')
+        
+        print(f"Initialized process group for rank {rank}")
+        return True
+    return False
+
+def cleanup_distributed():
+    """Cleanup distributed training"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+def create_dataloaders(train_dataset, val_dataset, config, rank=None):
+    """Create optimized DataLoaders with distributed support"""
+    # Create samplers
+    if config.distributed:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=config.world_size,
+            rank=rank,
+            shuffle=True
+        )
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=config.world_size,
+            rank=rank,
+            shuffle=False
+        )
+    else:
+        train_sampler = MultilabelStratifiedSampler(
+            labels=train_dataset.labels,
+            groups=train_dataset.langs,
+            batch_size=config.batch_size
+        )
+        val_sampler = None
     
+    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
@@ -1076,7 +1148,8 @@ def create_dataloaders(train_dataset, val_dataset, config):
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size * 2,
-        shuffle=False,
+        sampler=val_sampler,
+        shuffle=False if config.distributed else False,
         num_workers=config.num_workers,
         pin_memory=True,
         prefetch_factor=2,
@@ -1137,6 +1210,35 @@ def validate_distribution_shift(train_dataset, val_dataset):
     
     return shifts
 
+def train_worker(rank, config, train_dataset, val_dataset):
+    """Worker function for distributed training"""
+    # Setup distributed training
+    is_distributed = setup_distributed(config, rank)
+    
+    try:
+        # Create model
+        model = init_model(config)
+        if is_distributed:
+            model = DDP(model, device_ids=[rank])
+        
+        # Create dataloaders
+        train_loader, val_loader = create_dataloaders(
+            train_dataset, val_dataset, config, rank
+        )
+        
+        # Only initialize wandb on master process
+        if not is_distributed or rank == 0:
+            wandb.init(
+                project="toxic-comment-classification",
+                config=config.to_serializable_dict()
+            )
+        
+        # Train model
+        train(model, train_loader, val_loader, config)
+        
+    finally:
+        cleanup_distributed()
+
 def main():
     """Main training function"""
     try:
@@ -1154,41 +1256,32 @@ def main():
             num_workers=args.num_workers,
             activation_checkpointing=args.activation_checkpointing,
             tensor_float_32=args.tensor_float_32,
-            gc_frequency=args.gc_frequency
+            gc_frequency=args.gc_frequency,
+            distributed=True,
+            world_size=torch.cuda.device_count()
         )
         
-        if torch.cuda.is_available():
-            torch.cuda.set_device(0)
-            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-        
-        # Initialize wandb
-        wandb.init(
-            project="toxic-comment-classification",
-            config=config.to_serializable_dict()
-        )
-        print("Initialized wandb")
-        
-        # Load data
+        # Load datasets
         print("Loading datasets...")
         train_df = pd.read_csv("dataset/split/train.csv")
         val_df = pd.read_csv("dataset/split/val.csv")
-        print(f"Loaded {len(train_df)} training samples")
-        print(f"Loaded {len(val_df)} validation samples")
         
-        # Initialize model and tokenizer
-        print("Initializing model and tokenizer...")
+        # Create datasets
         tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
-        model = init_model(config)
-        
-        # Create datasets and dataloaders
         train_dataset = ToxicDataset(train_df, tokenizer, config)
         val_dataset = ToxicDataset(val_df, tokenizer, config)
-        train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
         
-        # Train
-        train(model, train_loader, val_loader, config)
-        
-        print("Training completed successfully")
+        if config.distributed:
+            # Launch distributed processes
+            mp.spawn(
+                train_worker,
+                args=(config, train_dataset, val_dataset),
+                nprocs=config.world_size,
+                join=True
+            )
+        else:
+            # Single GPU training
+            train_worker(0, config, train_dataset, val_dataset)
         
     except Exception as e:
         print(f"Error during training: {str(e)}")
@@ -1199,6 +1292,7 @@ def main():
     finally:
         if wandb.run is not None:
             wandb.finish()
+        cleanup_distributed()
         gc.collect()
         torch.cuda.empty_cache()
 

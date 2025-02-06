@@ -229,18 +229,24 @@ class TrainingConfig:
     num_labels: int = 6
     
     # Training parameters
-    batch_size: int = 64  # Increased from 48 for better XLM-R utilization
-    grad_accum_steps: int = 2  # Added accumulation for stability
+    batch_size: int = 64  # Per GPU batch size
+    grad_accum_steps: int = 2
     epochs: int = 10
-    lr: float = 1.4e-5  # Reduced by 30% from 2e-5 for stability
-    warmup_ratio: float = 0.15  # Increased warmup for better stability
+    lr: float = 1.4e-5
+    warmup_ratio: float = 0.15
     weight_decay: float = 0.01
     
+    # Multi-GPU parameters
+    distributed: bool = True  # Enable distributed training
+    world_size: int = 2      # Number of GPUs
+    dist_backend: str = 'nccl'
+    dist_url: str = 'tcp://localhost:23456'
+    
     # Gradient control parameters
-    initial_max_norm: float = 0.8  # Start more conservatively
-    final_max_norm: float = 4.0    # Reduced from 5.0 for stability
-    min_max_norm: float = 0.5      # Minimum bound
-    grad_norm_adjustment_steps: int = 200  # Increased for more gradual adjustment
+    initial_max_norm: float = 0.8
+    final_max_norm: float = 4.0
+    min_max_norm: float = 0.5
+    grad_norm_adjustment_steps: int = 200
     
     # Mixed precision parameters
     fp16: bool = True
@@ -257,6 +263,20 @@ class TrainingConfig:
     tensor_float_32: bool = True
     
     def __post_init__(self):
+        # Initialize distributed setup
+        if self.distributed and torch.cuda.is_available():
+            if torch.cuda.device_count() < self.world_size:
+                print(f"Warning: Requested {self.world_size} GPUs but only {torch.cuda.device_count()} available")
+                self.world_size = torch.cuda.device_count()
+            
+            # Adjust batch size and learning rate for multi-GPU
+            self.global_batch_size = self.batch_size * self.world_size
+            self.lr = self.lr * (self.global_batch_size / 64)  # Linear scaling rule
+        else:
+            self.distributed = False
+            self.world_size = 1
+            self.global_batch_size = self.batch_size
+        
         # Initialize device
         self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         

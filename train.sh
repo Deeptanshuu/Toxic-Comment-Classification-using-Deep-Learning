@@ -1,86 +1,101 @@
 #!/bin/bash
 
+# Setup error handling
+set -e  # Exit on error
+trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
+trap 'echo "\"${last_command}\" command failed with exit code $?."' EXIT
+
+# Configuration
+export CUDA_VISIBLE_DEVICES="0,1"  # Specify GPUs to use
+export NCCL_DEBUG=INFO  # Enable NCCL debugging
+export NCCL_SOCKET_IFNAME=^lo,docker0  # Avoid docker interfaces
+export TORCH_DISTRIBUTED_DEBUG=INFO  # Enable PyTorch distributed debugging
+
 # Create necessary directories
-mkdir -p weights
 mkdir -p logs
-mkdir -p .cuda_cache
+mkdir -p weights
+mkdir -p tokenized
 
-# Get the absolute path of the project directory
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Check if virtual environment exists
-if [ -d "myenv" ]; then
-    source myenv/bin/activate
-elif [ -d "venv" ]; then
-    source venv/bin/activate
-else
-    echo "Error: Virtual environment not found. Please create one first:"
-    echo "python -m venv myenv"
-    echo "source myenv/bin/activate"
-    echo "pip install -r requirements.txt"
-    exit 1
-fi
-
-# Verify CUDA is available
-if ! command -v nvidia-smi &> /dev/null; then
-    echo "Error: NVIDIA GPU/CUDA not found"
-    exit 1
-fi
-
-# Set CUDA device order
-export CUDA_DEVICE_ORDER=PCI_BUS_ID
-
-# Enable CUDA optimizations
-export CUDA_AUTO_TUNE=1
-export CUDA_CACHE_PATH=.cuda_cache
-
-# Set PyTorch configurations
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-
-# Add project directory to Python path
-export PYTHONPATH="${PROJECT_DIR}:${PYTHONPATH}"
-
-# Get timestamp for unique log files
+# Get timestamp for log files
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_FILE="logs/training_${TIMESTAMP}.log"
-ERROR_LOG="logs/error_${TIMESTAMP}.log"
+LOG_DIR="logs"
+LOG_FILE="${LOG_DIR}/train_${TIMESTAMP}.log"
+ERROR_LOG="${LOG_DIR}/error_${TIMESTAMP}.log"
 
-# Check if weights directory exists and has required files
-if [ ! -f "weights/language_class_weights.json" ]; then
-    echo "Error: weights/language_class_weights.json not found"
-    echo "Please run compute_class_weights.py first"
-    exit 1
-fi
+# Training configuration
+BATCH_SIZE=32  # Per-GPU batch size (64 effective with 2 GPUs)
+GRAD_ACCUM=2   # Gradient accumulation steps
+NUM_EPOCHS=10
+LEARNING_RATE=1.4e-5  # Base learning rate
+NUM_WORKERS=4  # Per-GPU workers
+MIXED_PRECISION="bf16"  # Use bfloat16 for better stability
 
-# Run training in background with nohup
-echo "Starting training..."
-cd "${PROJECT_DIR}"
-nohup python -u model/train.py > "${LOG_FILE}" 2> "${ERROR_LOG}" &
+echo "Starting training with configuration:"
+echo "======================================"
+echo "GPUs: $(nvidia-smi -L | wc -l)"
+echo "Batch size per GPU: $BATCH_SIZE"
+echo "Gradient accumulation steps: $GRAD_ACCUM"
+echo "Effective batch size: $((BATCH_SIZE * GRAD_ACCUM * $(nvidia-smi -L | wc -l)))"
+echo "Learning rate: $LEARNING_RATE"
+echo "Mixed precision: $MIXED_PRECISION"
+echo "Number of workers per GPU: $NUM_WORKERS"
+echo "======================================"
 
-# Save the process ID
-echo $! > logs/train.pid
+# Function to check GPU availability
+check_gpus() {
+    if ! command -v nvidia-smi &> /dev/null; then
+        echo "Error: nvidia-smi not found. Please ensure NVIDIA drivers are installed."
+        exit 1
+    fi
+    
+    NUM_GPUS=$(nvidia-smi -L | wc -l)
+    if [ "$NUM_GPUS" -lt 2 ]; then
+        echo "Warning: Less than 2 GPUs available. Falling back to single GPU training."
+    fi
+    
+    # Check GPU memory
+    FREE_MEM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | awk '{s+=$1} END {print s}')
+    if [ "$FREE_MEM" -lt 20000 ]; then
+        echo "Warning: Less than 20GB total free GPU memory. Training might be unstable."
+    fi
+}
 
-echo ""
-echo "Training has been started in the background with PID: $(cat logs/train.pid)"
-echo ""
-echo "To monitor the training:"
-echo "1. View logs: tail -f ${LOG_FILE}"
-echo "2. View errors: tail -f ${ERROR_LOG}"
-echo "3. Monitor GPU: nvidia-smi -l 1"
-echo "4. Check if running: ps -p $(cat logs/train.pid)"
-echo "5. Kill training if needed: kill $(cat logs/train.pid)"
-echo ""
-echo "The model will be saved in weights/ directory"
-echo "Training metrics are logged to W&B and ${LOG_FILE}"
+# Function to clean up on exit
+cleanup() {
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "Training failed with exit code $EXIT_CODE"
+        echo "Check error log at: $ERROR_LOG"
+    fi
+    
+    # Kill any remaining background processes
+    jobs -p | xargs -r kill
+    
+    # Clear GPU cache
+    python -c "import torch; torch.cuda.empty_cache()" &> /dev/null || true
+    
+    exit $EXIT_CODE
+}
+trap cleanup EXIT
 
-# Monitor for immediate startup errors
-sleep 5
-if ! ps -p $(cat logs/train.pid) > /dev/null; then
-    echo "Error: Training process failed to start. Check error log:"
-    cat "${ERROR_LOG}"
-    exit 1
-fi
+# Check GPU availability
+check_gpus
 
-# Print GPU information
-echo -e "\nGPU Information:"
-nvidia-smi 
+# Start training
+echo "Starting training... Log file: $LOG_FILE"
+python model/train.py \
+    --batch_size $BATCH_SIZE \
+    --grad_accum_steps $GRAD_ACCUM \
+    --epochs $NUM_EPOCHS \
+    --lr $LEARNING_RATE \
+    --mixed_precision $MIXED_PRECISION \
+    --num_workers $NUM_WORKERS \
+    --model_name "xlm-roberta-large" \
+    --activation_checkpointing true \
+    --tensor_float_32 true \
+    --gc_frequency 100 2>&1 | tee -a "$LOG_FILE" || {
+        echo "Training failed. Check error log for details."
+        exit 1
+    }
+
+echo "Training completed successfully!" 
