@@ -487,159 +487,49 @@ def train(model, train_loader, val_loader, config):
                 
                 # Forward pass with automatic mixed precision
                 device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-                with autocast(device_type=device_type, enabled=config.fp16):
+                with torch.autocast(device_type=device_type, dtype=torch.float16):
                     outputs = model(
                         input_ids=inputs['input_ids'],
                         attention_mask=inputs['attention_mask'],
-                        labels=inputs['labels']
+                        labels=inputs['labels'],
+                        lang_ids=inputs['lang'],
+                        mode='train'
+                    )
+                    loss = outputs['loss']
+                    loss = loss / config.grad_accum_steps  # Scale loss for gradient accumulation
+                
+                # Backward pass with gradient scaling
+                scaler.scale(loss).backward()
+                
+                # Gradient accumulation
+                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                    # Unscale gradients for gradient clipping
+                    scaler.unscale_(optimizer)
+                    
+                    # Calculate gradient norm for monitoring
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), 
+                        config.max_grad_norm
                     )
                     
-                    # Apply label smoothing
-                    if config.label_smoothing > 0:
-                        smooth_labels = inputs['labels'] * (1 - config.label_smoothing) + 0.5 * config.label_smoothing
-                        targets = smooth_labels
-                    else:
-                        targets = inputs['labels']
+                    # Optimizer step with gradient scaling
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
                     
-                    # Numerically stabilized BCEWithLogitsLoss
-                    logits = outputs['logits']
+                    # Update learning rate
+                    scheduler.step()
                     
-                    # Prevent overflow in exponentials
-                    max_val = torch.clamp(-logits, min=0)
-                    
-                    # Compute loss with numerical stability
-                    # loss = logits - logits * targets + max_val + log(exp(-max_val) + exp(-logits - max_val))
-                    loss = (logits - logits * targets + max_val + 
-                           torch.log(torch.exp(-max_val) + torch.exp(-logits - max_val)))
-                    
-                    # Apply class weights if available
-                    if hasattr(model, 'class_weights'):
-                        class_weights = model.class_weights.to(logits.device)
-                        loss = loss * class_weights
-                    
-                    # Take mean for final loss
-                    loss = loss.mean()
-                    
-                    # Store for logging
-                    outputs['loss'] = loss
-                
-                # Scale loss and backward pass
-                scaled_loss = loss / config.grad_accum_steps
-                scaler.scale(scaled_loss).backward()
-                
-                # Step if we've accumulated enough gradients or at end of epoch
-                if (batch_idx + 1) % config.grad_accum_steps == 0 or (batch_idx + 1 == len(train_loader)):
-                    try:
-                        # Unscale gradients for clipping
-                        scaler.unscale_(optimizer)
-                        
-                        # Get language-specific clip values
-                        lang_clip_values = {
-                            'en': 1.0,   # English has more diverse samples
-                            'ru': 0.9,   # Russian needs tighter clipping
-                            'tr': 0.95,  # Turkish is intermediate
-                            'fr': 0.95,  # French similar to Turkish
-                            'es': 0.95,  # Spanish similar to Turkish
-                            'it': 0.9,   # Italian needs tighter clipping like Russian
-                            'pt': 0.9    # Portuguese similar to Italian
-                        }
-                        
-                        # Get unique languages in batch
-                        batch_langs = set(inputs['lang'])
-                        
-                        # Calculate effective clip value as minimum of all languages in batch
-                        effective_clip = min(
-                            lang_clip_values.get(lang, 1.0) * config.max_grad_norm 
-                            for lang in batch_langs
-                        )
-                        
-                        # Clip and check gradients with language-specific value
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            [p for p in model.parameters() if p.requires_grad],
-                            max_norm=effective_clip,
-                            error_if_nonfinite=True  # Catch NaN gradients
-                        )
-                        
-                        # Log language-specific clipping
-                        if wandb.run is not None:
-                            wandb.log({
-                                'gradients/effective_clip_value': effective_clip,
-                                'gradients/pre_clip_norm': grad_norm,
-                                'gradients/languages_in_batch': list(batch_langs)
-                            })
-                        
-                        # Gradient sanity checks
-                        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                            logger.error(f"Invalid gradient norm detected: {grad_norm}, skipping update")
-                            optimizer.zero_grad()
-                            continue
-                            
-                        if grad_norm > config.max_grad_norm * 10:
-                            logger.warning(f"Unusually high gradient norm: {grad_norm:.2f}")
-                        
-                        # Get monitoring metrics before optimizer step
-                        memory_stats = get_memory_stats()
-                        class_grad_norms = get_class_grad_norm(model)
-                        layer_grad_norms = get_layer_grad_norms(model)
-                        
-                        # Optimizer and scheduler steps
-                        scaler.step(optimizer)
-                        scaler.update()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                        
-                        # Update peak memory tracking
-                        peak_memory = max(peak_memory, memory_stats['peak'])
-                        
-                        # Store gradient norms for analysis
-                        if class_grad_norms is not None:
-                            grad_norms_history.append(class_grad_norms)
-                            
-                        # Log gradient statistics
-                        if wandb.run is not None:
-                            monitoring_metrics = {
-                                # Training metrics
-                                'train/loss': loss.item(),
-                                'train/learning_rate': scheduler.get_last_lr()[0],
-                                'train/epoch': epoch,
-                                'train/grad_norm': grad_norm,
-                                'train/gate_values': outputs['gate_values'].mean().item(),
-                                
-                                # Memory metrics
-                                'memory/allocated_gb': memory_stats['allocated'],
-                                'memory/reserved_gb': memory_stats['reserved'],
-                                'memory/peak_gb': memory_stats['peak'],
-                                
-                                # Gradient metrics
-                                'gradients/total_norm': grad_norm
-                            }
-                            
-                            # Add class-specific gradient norms
-                            if class_grad_norms is not None:
-                                for i, norm in enumerate(class_grad_norms):
-                                    monitoring_metrics[f'gradients/class_{i}_norm'] = norm
-                            
-                            # Add layer-specific gradient norms
-                            for layer, norm in layer_grad_norms.items():
-                                monitoring_metrics[f'gradients/{layer}_norm'] = norm
-                            
-                            # Add optimizer state
-                            monitoring_metrics['optimizer/learning_rate'] = optimizer.param_groups[0]['lr']
-                            monitoring_metrics['optimizer/weight_decay'] = optimizer.param_groups[0]['weight_decay']
-                            
-                            # Log all metrics
-                            wandb.log(monitoring_metrics)
-                    
-                    except RuntimeError as e:
-                        if "node is NaN" in str(e):
-                            logger.error("NaN detected in gradients, skipping update")
-                            optimizer.zero_grad()
-                            continue
-                        else:
-                            raise
+                    # Log gradients and memory stats
+                    if wandb.run is not None:
+                        wandb.log({
+                            'train/grad_norm': grad_norm.item(),
+                            'train/lr': scheduler.get_last_lr()[0],
+                            'system/gpu_memory': torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                        })
                 
                 # Update metrics
-                total_loss += loss.item()
+                total_loss += loss.item() * config.grad_accum_steps
                 
                 # Log progress every 10 batches
                 if batch_idx % 10 == 0:
@@ -657,7 +547,7 @@ def train(model, train_loader, val_loader, config):
                         f"Loss: {avg_loss:.4f} "
                         f"LR: {lr:.2e} "
                         f"Grad Norm: {grad_norm:.2f} "
-                        f"Mem: {memory_stats['allocated']:.1f}GB "
+                        f"Mem: {get_memory_stats()['allocated']:.1f}GB "
                         f"ETA: {eta/60:.1f}min",
                         end=""
                     )
@@ -673,26 +563,13 @@ def train(model, train_loader, val_loader, config):
                             'train/gate_values': outputs['gate_values'].mean().item(),
                             
                             # Memory metrics
-                            'memory/allocated_gb': memory_stats['allocated'],
-                            'memory/reserved_gb': memory_stats['reserved'],
-                            'memory/peak_gb': memory_stats['peak'],
+                            'memory/allocated_gb': get_memory_stats()['allocated'],
+                            'memory/reserved_gb': get_memory_stats()['reserved'],
+                            'memory/peak_gb': get_memory_stats()['peak'],
                             
                             # Gradient metrics
                             'gradients/total_norm': grad_norm
                         }
-                        
-                        # Add class-specific gradient norms
-                        if class_grad_norms is not None:
-                            for i, norm in enumerate(class_grad_norms):
-                                monitoring_metrics[f'gradients/class_{i}_norm'] = norm
-                        
-                        # Add layer-specific gradient norms
-                        for layer, norm in layer_grad_norms.items():
-                            monitoring_metrics[f'gradients/{layer}_norm'] = norm
-                        
-                        # Add optimizer state
-                        monitoring_metrics['optimizer/learning_rate'] = optimizer.param_groups[0]['lr']
-                        monitoring_metrics['optimizer/weight_decay'] = optimizer.param_groups[0]['weight_decay']
                         
                         # Log all metrics
                         wandb.log(monitoring_metrics)

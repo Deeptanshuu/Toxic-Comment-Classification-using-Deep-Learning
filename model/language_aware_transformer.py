@@ -229,19 +229,23 @@ class LanguageAwareTransformer(nn.Module):
             metrics = {}
             for lang_id in unique_langs:
                 # Get mask for this language
-                lang_mask = lang_ids == lang_id
+                lang_mask = (lang_ids == lang_id).cpu().numpy()
                 if not lang_mask.any():
                     continue
                 
                 # Update sample count
-                self.lang_samples[mode][lang_id] += lang_mask.sum().item()
+                self.lang_samples[mode][lang_id] += lang_mask.sum()
                 
                 # Calculate metrics for this language
                 lang_metrics = {}
                 
                 # Loss if provided
-                if loss is not None:
-                    lang_loss = loss[lang_mask].mean().item()
+                if loss is not None and not isinstance(loss, float):
+                    # Handle per-sample loss
+                    if loss.dim() > 0:  # If loss is a tensor with dimensions
+                        lang_loss = loss.detach().cpu()[lang_mask].mean().item()
+                    else:  # If loss is a scalar tensor
+                        lang_loss = loss.detach().cpu().item()
                     lang_metrics['loss'] = lang_loss
                     self.lang_metrics[mode][lang_id]['loss'] = (
                         self.lang_metrics[mode][lang_id]['loss'] * 0.9 + 
@@ -261,19 +265,24 @@ class LanguageAwareTransformer(nn.Module):
                             self.lang_metrics[mode][lang_id]['auc'] * 0.9 + 
                             lang_auc * 0.1  # EMA update
                         )
-                    except ValueError:
+                    except ValueError as e:
+                        logger.warning(f"Could not calculate AUC for language {lang_id}: {str(e)}")
                         pass  # Skip if only one class present
                 
                 # Critical class metrics
                 for class_name, idx in self.critical_indices.items():
-                    # Get class-specific predictions and labels
-                    class_preds = (probs_np[lang_mask, idx] > 0.5).astype(int)
-                    class_labels = labels_np[lang_mask, idx]
-                    
-                    # Calculate metrics
                     try:
-                        precision = precision_score(class_labels, class_preds)
-                        recall = recall_score(class_labels, class_preds)
+                        # Get class-specific predictions and labels
+                        class_preds = (probs_np[lang_mask, idx] > 0.5).astype(int)
+                        class_labels = labels_np[lang_mask, idx]
+                        
+                        # Skip if no samples for this class
+                        if len(class_labels) == 0:
+                            continue
+                        
+                        # Calculate metrics
+                        precision = precision_score(class_labels, class_preds, zero_division=0)
+                        recall = recall_score(class_labels, class_preds, zero_division=0)
                         
                         # Store metrics
                         if class_name == 'threat':
@@ -288,8 +297,9 @@ class LanguageAwareTransformer(nn.Module):
                                 self.lang_metrics[mode][lang_id]['identity_precision'] * 0.9 + 
                                 precision * 0.1
                             )
-                    except:
-                        pass  # Skip if no positive samples
+                    except Exception as e:
+                        logger.warning(f"Could not calculate metrics for {class_name} in language {lang_id}: {str(e)}")
+                        continue
                 
                 metrics[str(lang_id)] = lang_metrics
             
