@@ -743,11 +743,32 @@ class ToxicDataset(Dataset):
         cache_path = os.path.join('cache', cache_key)
         
         if os.path.exists(cache_path):
-            # Load cached encodings
-            cached_data = torch.load(cache_path)
-            self.encodings = cached_data['encodings']
-            self.labels = cached_data.get('labels')
+            try:
+                # Import BatchEncoding for safe loading
+                from transformers.tokenization_utils_base import BatchEncoding
+                import torch.serialization
+                
+                # Add BatchEncoding to safe globals
+                torch.serialization.add_safe_globals([BatchEncoding])
+                
+                # Load cached encodings with proper error handling
+                try:
+                    cached_data = torch.load(cache_path, weights_only=False)
+                    self.encodings = cached_data['encodings']
+                    self.labels = cached_data.get('labels')
+                    logger.info(f"Successfully loaded cached data from {cache_path}")
+                except Exception as e:
+                    logger.warning(f"Could not load cached data, regenerating: {str(e)}")
+                    self._generate_and_cache_data(cache_path)
+            except Exception as e:
+                logger.warning(f"Error setting up cache loading: {str(e)}")
+                self._generate_and_cache_data(cache_path)
         else:
+            self._generate_and_cache_data(cache_path)
+    
+    def _generate_and_cache_data(self, cache_path):
+        """Generate and cache tokenized data"""
+        try:
             # Tokenize texts
             self.encodings = self.tokenizer(
                 self.df['comment_text'].fillna('').tolist(),
@@ -771,6 +792,12 @@ class ToxicDataset(Dataset):
                 'encodings': self.encodings,
                 'labels': self.labels
             }, cache_path)
+            
+            logger.info(f"Generated and cached new data at {cache_path}")
+            
+        except Exception as e:
+            logger.error(f"Error generating data: {str(e)}")
+            raise
     
     def __len__(self):
         return len(self.df)
