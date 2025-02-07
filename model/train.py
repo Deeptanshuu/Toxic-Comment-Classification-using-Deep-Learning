@@ -653,6 +653,7 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         self.mode = mode
+        self.toxicity_labels = config.toxicity_labels
         
         # Language ID mapping with strict validation
         self.lang_to_id = {
@@ -703,6 +704,42 @@ class ToxicDataset(Dataset):
         
         # Validate final data
         self._validate_dataset()
+    
+    def _process_and_cache_data(self):
+        """Process and cache the tokenized data with error handling"""
+        try:
+            # Tokenize all texts in batches
+            logger.info(f"Tokenizing {len(self.df):,} texts for {self.mode} set...")
+            
+            # Handle empty or invalid texts
+            self.df['comment_text'] = self.df['comment_text'].fillna('').astype(str)
+            
+            # Tokenize with proper padding and truncation
+            self.encodings = self.tokenizer(
+                self.df['comment_text'].tolist(),
+                max_length=self.config.max_length,
+                padding='max_length',
+                truncation=True,
+                return_tensors='pt'
+            )
+            
+            # Convert labels to tensor
+            self.labels = torch.tensor(
+                self.df[self.toxicity_labels].values,
+                dtype=torch.float32
+            )
+            
+            # Log tokenization stats
+            total_tokens = self.encodings['attention_mask'].sum().item()
+            avg_tokens = total_tokens / len(self.df)
+            logger.info(f"Average tokens per text: {avg_tokens:.1f}")
+            
+            # Memory management
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            logger.error(f"Error in data processing: {str(e)}")
+            raise RuntimeError(f"Failed to process and cache data: {str(e)}")
     
     def _validate_dataset(self):
         """Validate the dataset integrity"""
