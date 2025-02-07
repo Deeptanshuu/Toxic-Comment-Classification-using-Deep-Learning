@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class LanguageAwareClassifier(nn.Module):
     def __init__(self, hidden_size=1024, num_labels=6):
         super().__init__()
-        self.lang_embed = nn.Embedding(10, 64)  # 10 languages
+        self.lang_embed = nn.Embedding(7, 64)  # 7 languages
         
         # Language-specific dropout rates with numeric keys
         self.lang_dropout_rates = {

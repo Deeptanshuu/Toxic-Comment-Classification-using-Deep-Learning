@@ -10,11 +10,19 @@ import wandb
 from datetime import datetime, timedelta
 import time
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f'logs/train_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 from transformers import (
     XLMRobertaTokenizer,
-    get_cosine_schedule_with_warmup
+    get_linear_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score
@@ -403,6 +411,10 @@ def train(model, train_loader, val_loader, config):
         # Initialize metrics tracker
         metrics = MetricsTracker()
         
+        # Create save directory if it doesn't exist
+        save_dir = Path('weights/toxic_classifier_xlm-roberta-large')
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
         # Get parameter groups with language-specific learning rates
         param_groups = config.get_param_groups(model)
         
@@ -427,10 +439,10 @@ def train(model, train_loader, val_loader, config):
         total_steps = len(train_loader) * config.epochs // config.grad_accum_steps
         warmup_steps = int(total_steps * config.warmup_ratio)
         
-        scheduler = get_cosine_schedule_with_warmup(
+        scheduler = get_linear_schedule_with_warmup(
             optimizer, 
-            num_training_steps=total_steps,
-            num_warmup_steps=warmup_steps
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
         )
         
         # Initialize gradient scaler for mixed precision
@@ -604,13 +616,27 @@ def train(model, train_loader, val_loader, config):
                     is_best=True
                 )
         
+        # After training loop ends, save the model
+        try:
+            model_save_path = save_dir / 'pytorch_model.bin'
+            torch.save(model.state_dict(), model_save_path)
+            
+            # Save config
+            config_save_path = save_dir / 'config.json'
+            with open(config_save_path, 'w') as f:
+                json.dump(config.to_serializable_dict(), f, indent=2)
+                
+            logger.info(f"Model saved successfully to {save_dir}")
+        except Exception as save_error:
+            logger.error(f"Error saving model: {str(save_error)}")
+        
         return {
             'loss': epoch_loss,
             'best_auc': metrics.best_auc
         }
         
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
+        logger.error(f"Fatal error in training: {str(e)}")
         raise
 
 def get_grad_norm(model):
@@ -1741,7 +1767,6 @@ TRAINING_CONFIG = {
 }
 
 def main():
-    """Main training function with enhanced error handling"""
     try:
         # Initialize wandb
         try:
@@ -1754,6 +1779,12 @@ def main():
         except Exception as e:
             print(f"Warning: Could not initialize wandb: {str(e)}")
         
+        # Initialize global variables
+        global _model, _optimizer, _scheduler
+        _model = None
+        _optimizer = None
+        _scheduler = None
+        
         # Initialize config with parameters from TRAINING_CONFIG
         config = TrainingConfig(**TRAINING_CONFIG)
         
@@ -1762,6 +1793,7 @@ def main():
         try:
             train_df = pd.read_csv("dataset/split/train.csv")
             val_df = pd.read_csv("dataset/split/val.csv")
+            print(f"Loaded train ({len(train_df)} samples) and val ({len(val_df)} samples) datasets")
         except Exception as e:
             print(f"Error loading datasets: {str(e)}")
             raise
