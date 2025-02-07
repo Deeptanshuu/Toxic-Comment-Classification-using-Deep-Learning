@@ -361,12 +361,14 @@ class LanguageAwareTransformer(nn.Module):
             # Clamp language IDs to valid range [0, 9]
             lang_ids = torch.clamp(lang_ids, min=0, max=9)
             
+            # Ensure attention_mask is 2D [batch_size, seq_len]
+            if attention_mask.dim() == 4:  # If shape is [batch_size, 1, seq_len, seq_len]
+                attention_mask = attention_mask.squeeze(1).squeeze(1)
+            elif attention_mask.dim() == 3:  # If shape is [batch_size, 1, seq_len]
+                attention_mask = attention_mask.squeeze(1)
+            
             # Convert attention mask to float and create causal mask for attention
             attention_mask = attention_mask.to(dtype=torch.float32)
-            
-            # Create attention mask with proper broadcasting shape [batch_size, 1, seq_len, seq_len]
-            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
-            attention_mask = attention_mask.expand(-1, -1, attention_mask.size(-1), -1)
             
             # Use automatic mixed precision
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -390,12 +392,16 @@ class LanguageAwareTransformer(nn.Module):
                 # Combine features
                 combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)
                 
+                # Create attention mask for scaled dot product attention
+                # Shape: [batch_size, seq_len, seq_len]
+                extended_attention_mask = attention_mask.unsqueeze(1).expand(-1, attention_mask.size(1), -1)
+                
                 # Memory-efficient attention with proper mask type
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
                     combined_features,  # query [batch_size, seq_len, hidden_size]
                     combined_features,  # key
                     combined_features,  # value
-                    attn_mask=attention_mask,
+                    attn_mask=extended_attention_mask,
                     dropout_p=self.dropout.p if self.training else 0.0,
                     is_causal=False
                 )
