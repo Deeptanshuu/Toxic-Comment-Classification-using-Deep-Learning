@@ -492,7 +492,7 @@ def train(model, train_loader, val_loader, config):
                         input_ids=inputs['input_ids'],
                         attention_mask=inputs['attention_mask'],
                         labels=inputs['labels'],
-                        lang_ids=inputs['lang'],
+                        lang_ids=inputs['lang_ids'],
                         mode='train'
                     )
                     loss = outputs['loss']
@@ -766,7 +766,7 @@ class ToxicDataset(Dataset):
         item = {
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
-            'lang_ids': self.lang_ids[idx]  # Return numeric language ID
+            'lang_ids': self.lang_ids[idx].clone()  # Return cloned tensor to avoid memory issues
         }
         
         if self.labels is not None:
@@ -1069,14 +1069,16 @@ def evaluate(model, loader, config):
                 outputs = model(
                     input_ids=inputs['input_ids'],
                     attention_mask=inputs['attention_mask'],
-                    labels=inputs['labels']
+                    labels=inputs['labels'],
+                    lang_ids=inputs['lang_ids'],
+                    mode='val'
                 )
                 
                 # Accumulate results
                 total_loss += outputs['loss'].item() if outputs['loss'] is not None else 0
                 all_labels.append(inputs['labels'].cpu().numpy())
                 all_probs.append(outputs['probabilities'].cpu().numpy())
-                all_langs.extend(inputs['lang'])
+                all_langs.extend(inputs['lang_ids'].cpu().tolist())
         
         # Concatenate results
         try:

@@ -336,17 +336,18 @@ class LanguageAwareTransformer(nn.Module):
         try:
             # Input validation and device setup
             device = input_ids.device
+            batch_size = input_ids.size(0)
             
             # Handle language IDs with proper error handling
             if lang_ids is None:
                 logger.warning("No language IDs provided, defaulting to English (0)")
-                lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
+                lang_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
             elif not isinstance(lang_ids, torch.Tensor):
                 try:
                     lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
                 except Exception as e:
                     logger.error(f"Failed to convert lang_ids to tensor: {str(e)}")
-                    lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
+                    lang_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
             elif lang_ids.dtype != torch.long:
                 lang_ids = lang_ids.long()
             
@@ -360,9 +361,12 @@ class LanguageAwareTransformer(nn.Module):
             # Clamp language IDs to valid range [0, 9]
             lang_ids = torch.clamp(lang_ids, min=0, max=9)
             
-            # Convert attention mask to float and create attention mask for scaled dot product
+            # Convert attention mask to float and create causal mask for attention
             attention_mask = attention_mask.to(dtype=torch.float32)
-            attention_mask_expanded = attention_mask.unsqueeze(1).unsqueeze(2)
+            
+            # Create attention mask with proper broadcasting shape [batch_size, 1, seq_len, seq_len]
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = attention_mask.expand(-1, -1, attention_mask.size(-1), -1)
             
             # Use automatic mixed precision
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -388,10 +392,10 @@ class LanguageAwareTransformer(nn.Module):
                 
                 # Memory-efficient attention with proper mask type
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    combined_features,  # query
+                    combined_features,  # query [batch_size, seq_len, hidden_size]
                     combined_features,  # key
                     combined_features,  # value
-                    attn_mask=attention_mask_expanded.to(dtype=combined_features.dtype),
+                    attn_mask=attention_mask,
                     dropout_p=self.dropout.p if self.training else 0.0,
                     is_causal=False
                 )
