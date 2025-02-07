@@ -216,12 +216,12 @@ class LanguageAwareTransformer(nn.Module):
     ) -> dict:
         """Calculate detailed per-language metrics"""
         try:
-            # Get probabilities
+            # Get probabilities and convert to float32
             probs = torch.sigmoid(logits)
             
-            # Convert to numpy for metric calculation
-            probs_np = probs.detach().cpu().numpy()
-            labels_np = labels.detach().cpu().numpy()
+            # Convert to numpy with float32 for metric calculation
+            probs_np = probs.detach().cpu().to(torch.float32).numpy()
+            labels_np = labels.detach().cpu().to(torch.float32).numpy()
             
             # Get unique languages in batch
             unique_langs = torch.unique(lang_ids).cpu().tolist()
