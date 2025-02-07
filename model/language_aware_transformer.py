@@ -332,6 +332,12 @@ class LanguageAwareTransformer(nn.Module):
             # Default lang_ids to English (0) if not provided
             if lang_ids is None:
                 lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+            elif not isinstance(lang_ids, torch.Tensor):
+                # Convert lang_ids to tensor if it's not already
+                lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=input_ids.device)
+            
+            # Ensure lang_ids is on the correct device
+            lang_ids = lang_ids.to(input_ids.device)
             
             # Use automatic mixed precision for better memory efficiency
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'

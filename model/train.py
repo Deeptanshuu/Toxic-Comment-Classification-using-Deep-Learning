@@ -748,6 +748,22 @@ class ToxicDataset(Dataset):
         if torch.cuda.is_available():
             self.labels = self.labels.pin_memory()
         
+        # Create language ID mapping
+        self.lang_to_id = {
+            'en': 0, 'ru': 1, 'tr': 2, 'es': 3, 
+            'fr': 4, 'it': 5, 'pt': 6, 'default': 0
+        }
+        
+        # Convert language codes to tensor IDs
+        self.lang_ids = torch.tensor([
+            self.lang_to_id.get(lang, self.lang_to_id['default']) 
+            for lang in df['lang'].fillna('en')
+        ], dtype=torch.long)
+        
+        if torch.cuda.is_available():
+            self.lang_ids = self.lang_ids.pin_memory()
+        
+        # Store original language codes for reference
         self.langs = df['lang'].fillna('en').values
         
         # Calculate and store feature statistics for distribution shift monitoring
@@ -803,7 +819,8 @@ class ToxicDataset(Dataset):
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
             'labels': self.labels[idx],
-            'lang': self.langs[idx]
+            'lang_ids': self.lang_ids[idx],  # Return tensor language ID
+            'lang': self.langs[idx]  # Keep original language code for reference
         }
         return item
 
