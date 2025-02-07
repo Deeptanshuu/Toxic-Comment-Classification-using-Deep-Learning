@@ -688,88 +688,73 @@ def log_epoch_metrics(epoch, metrics, epoch_time, eta):
 
 # Custom Dataset
 class ToxicDataset(Dataset):
-    def __init__(self, df, tokenizer, config):
-        self.df = df
-        self.tokenizer = tokenizer
+    def __init__(self, df, tokenizer, config, mode='train'):
         self.config = config
+        self.tokenizer = tokenizer
+        self.mode = mode
+        self.df = df.copy()  # Make a copy to avoid modifying original
         
-        # Create language ID mapping
+        # Language ID mapping with fallback to English
         self.lang_to_id = {
-            'en': 0,
-            'ru': 1, 
-            'tr': 2,
-            'es': 3,
-            'fr': 4,
-            'it': 5,
-            'pt': 6,
-            'default': 0  # Default to English
+            'en': 0, 'ru': 1, 'tr': 2, 'es': 3, 
+            'fr': 4, 'it': 5, 'pt': 6, 'default': 0
         }
         
-        # Convert language codes to numeric IDs with proper string handling
-        self.lang_ids = torch.tensor([
-            self.lang_to_id.get(str(lang).lower().strip(), self.lang_to_id['default'])
-            for lang in df['lang'].fillna('en').astype(str)
-        ], dtype=torch.long)
+        # Clean and convert language codes
+        self.df['lang'] = self.df['lang'].fillna('en')
+        self.df['lang'] = self.df['lang'].astype(str).str.strip().str.lower()
         
-        # Process and cache tokenized data
+        # Convert language codes to numeric IDs with error handling
+        try:
+            self.lang_ids = torch.tensor([
+                self.lang_to_id.get(lang, self.lang_to_id['default']) 
+                for lang in self.df['lang']
+            ], dtype=torch.long)
+        except Exception as e:
+            logger.error(f"Error converting language codes to IDs: {str(e)}")
+            self.lang_ids = torch.zeros(len(self.df), dtype=torch.long)
+        
+        # Process and cache the tokenized data
         self._process_and_cache_data()
-        
-        # Convert labels to tensor
-        self.labels = torch.tensor(
-            df[config.toxicity_labels].fillna(0).values,
-            dtype=torch.float32
-        )
         
         # Pin memory if using CUDA
         if torch.cuda.is_available():
             self.lang_ids = self.lang_ids.pin_memory()
-            self.labels = self.labels.pin_memory()
     
     def _process_and_cache_data(self):
-        """Process and cache tokenized data"""
-        # Create cache directory
-        Path('cache').mkdir(exist_ok=True)
+        # Create cache directory if it doesn't exist
+        os.makedirs('cache', exist_ok=True)
         
-        # Generate cache key
-        cache_key = f"tokenized_{len(self.df)}_{self.config.max_length}_{self.tokenizer.name_or_path.replace('/', '_')}"
-        self.cache_file = Path('cache') / f"{cache_key}.pt"
+        # Generate cache key based on data and config
+        cache_key = f"toxic_data_{self.mode}_{len(self.df)}_{self.config.max_length}.pt"
+        cache_path = os.path.join('cache', cache_key)
         
-        if self.cache_file.exists():
-            print(f"Loading cached tokenized data from {self.cache_file}")
-            cached_data = torch.load(self.cache_file, map_location='cpu')
-            self.encodings = {
-                k: cached_data[k].pin_memory() if torch.cuda.is_available() else cached_data[k]
-                for k in ['input_ids', 'attention_mask']
-            }
+        if os.path.exists(cache_path):
+            # Load cached encodings
+            cached_data = torch.load(cache_path)
+            self.encodings = cached_data['encodings']
+            self.labels = cached_data.get('labels')
         else:
-            print("Pre-tokenizing texts...")
-            # Process in batches to manage memory
-            batch_size = 1000
-            self.encodings = {'input_ids': [], 'attention_mask': []}
+            # Tokenize texts
+            self.encodings = self.tokenizer(
+                self.df['comment_text'].tolist(),
+                truncation=True,
+                padding=True,
+                max_length=self.config.max_length,
+                return_tensors='pt'
+            )
             
-            for i in range(0, len(self.df), batch_size):
-                batch_texts = self.df['comment_text'].fillna('').iloc[i:i+batch_size].tolist()
-                batch_encodings = self.tokenizer(
-                    batch_texts,
-                    max_length=self.config.max_length,
-                    padding='max_length',
-                    truncation=True,
-                    return_tensors='pt'
-                )
-                self.encodings['input_ids'].append(batch_encodings['input_ids'])
-                self.encodings['attention_mask'].append(batch_encodings['attention_mask'])
-                
-                if i % 10000 == 0:
-                    print(f"Processed {i}/{len(self.df)} texts")
+            # Convert labels if present
+            if 'toxic' in self.df.columns:
+                self.labels = torch.tensor(self.df['toxic'].values, dtype=torch.float)
+            else:
+                self.labels = None
             
-            # Concatenate all batches
-            self.encodings = {
-                k: torch.cat(v).pin_memory() if torch.cuda.is_available() else torch.cat(v)
-                for k, v in self.encodings.items()
-            }
-            
-            # Save to cache
-            torch.save(self.encodings, self.cache_file)
+            # Cache the processed data
+            torch.save({
+                'encodings': self.encodings,
+                'labels': self.labels
+            }, cache_path)
     
     def __len__(self):
         return len(self.df)
@@ -778,9 +763,12 @@ class ToxicDataset(Dataset):
         item = {
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
-            'labels': self.labels[idx],
             'lang_ids': self.lang_ids[idx]  # Return numeric language ID
         }
+        
+        if self.labels is not None:
+            item['labels'] = self.labels[idx]
+        
         return item
 
 class LanguageAwareWeights:
