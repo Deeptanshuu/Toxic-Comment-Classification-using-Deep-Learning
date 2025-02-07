@@ -737,16 +737,19 @@ class ToxicDataset(Dataset):
         else:
             # Tokenize texts
             self.encodings = self.tokenizer(
-                self.df['comment_text'].tolist(),
+                self.df['comment_text'].fillna('').tolist(),
                 truncation=True,
-                padding=True,
+                padding='max_length',
                 max_length=self.config.max_length,
                 return_tensors='pt'
             )
             
             # Convert labels if present
-            if 'toxic' in self.df.columns:
-                self.labels = torch.tensor(self.df['toxic'].values, dtype=torch.float)
+            if all(col in self.df.columns for col in self.config.toxicity_labels):
+                self.labels = torch.tensor(
+                    self.df[self.config.toxicity_labels].fillna(0).values,
+                    dtype=torch.float32
+                )
             else:
                 self.labels = None
             

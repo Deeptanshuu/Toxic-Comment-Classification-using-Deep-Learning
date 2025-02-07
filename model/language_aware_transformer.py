@@ -362,7 +362,7 @@ class LanguageAwareTransformer(nn.Module):
             
             # Convert attention mask to float and create attention mask for scaled dot product
             attention_mask = attention_mask.to(dtype=torch.float32)
-            attention_mask_expanded = attention_mask.unsqueeze(1)
+            attention_mask_expanded = attention_mask.unsqueeze(1).unsqueeze(2)
             
             # Use automatic mixed precision
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -373,18 +373,18 @@ class LanguageAwareTransformer(nn.Module):
                     attention_mask=attention_mask
                 )
                 
-                hidden_states = base_output.last_hidden_state
+                hidden_states = base_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
                 
                 # Get language embeddings and combine with hidden states
                 lang_embeddings = self.output.lang_embed(lang_ids)  # [batch_size, embed_dim]
                 lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
                 
+                # Project hidden states if needed
+                if self.needs_projection:
+                    hidden_states = self.dim_projection(hidden_states)
+                
                 # Combine features
                 combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)
-                
-                # Project if needed
-                if self.needs_projection:
-                    combined_features = self.dim_projection(combined_features)
                 
                 # Memory-efficient attention with proper mask type
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
@@ -407,7 +407,7 @@ class LanguageAwareTransformer(nn.Module):
                 # Combine gated features
                 features = combined_features * gate + attended_features * (1 - gate)
                 
-                # Final classification
+                # Final classification using [CLS] token
                 pooled = features[:, 0]  # Use [CLS] token
                 logits = self.output(pooled, lang_ids)
                 
