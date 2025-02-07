@@ -381,16 +381,24 @@ class LanguageAwareTransformer(nn.Module):
                 
                 hidden_states = base_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
                 
-                # Get language embeddings and combine with hidden states
+                # Get language embeddings
                 lang_embeddings = self.output.lang_embed(lang_ids)  # [batch_size, embed_dim]
-                lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
                 
                 # Project hidden states if needed
                 if self.needs_projection:
                     hidden_states = self.dim_projection(hidden_states)
                 
-                # Combine features
+                # Reshape language embeddings to match sequence length
+                lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
+                
+                # Combine features - concatenate along feature dimension
                 combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)
+                
+                # Project combined features to match attention dimensions
+                if self.needs_projection:
+                    projected_features = self.feature_projection(combined_features)
+                else:
+                    projected_features = combined_features
                 
                 # Create attention mask for scaled dot product attention
                 # Shape: [batch_size, seq_len, seq_len]
@@ -398,24 +406,24 @@ class LanguageAwareTransformer(nn.Module):
                 
                 # Memory-efficient attention with proper mask type
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    combined_features,  # query [batch_size, seq_len, hidden_size]
-                    combined_features,  # key
-                    combined_features,  # value
+                    projected_features,  # query [batch_size, seq_len, hidden_size]
+                    projected_features,  # key
+                    projected_features,  # value
                     attn_mask=extended_attention_mask,
                     dropout_p=self.dropout.p if self.training else 0.0,
                     is_causal=False
                 )
                 
-                # Feature Processing
-                attended_features = torch.nn.functional.gelu(attn_output)
+                # Feature Processing with correct dimensions
+                attended_features = self.gelu(attn_output)
                 attended_features = self.feature_projection(attended_features)
                 
-                # Gating Mechanism
-                gate_input = torch.cat([combined_features, attended_features], dim=-1)
+                # Ensure dimensions match for gating
+                gate_input = torch.cat([projected_features, attended_features], dim=-1)
                 gate = torch.sigmoid(self.gate_layer(gate_input))
                 
-                # Combine gated features
-                features = combined_features * gate + attended_features * (1 - gate)
+                # Combine gated features with matching dimensions
+                features = projected_features * gate + attended_features * (1 - gate)
                 
                 # Final classification using [CLS] token
                 pooled = features[:, 0]  # Use [CLS] token
