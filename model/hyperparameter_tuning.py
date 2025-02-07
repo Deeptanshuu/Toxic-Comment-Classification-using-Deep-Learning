@@ -7,6 +7,7 @@ from model.train import train, init_model, create_dataloaders, ToxicDataset
 from model.training_config import TrainingConfig
 from transformers import XLMRobertaTokenizer
 import json
+import torch
 
 def load_dataset(file_path: str):
     """Load and prepare dataset"""
@@ -33,19 +34,22 @@ class HyperparameterTuner:
         )
 
     def objective(self, trial):
-        """Objective function for Optuna optimization"""
-        # Define hyperparameter search space
+        """Objective function for Optuna optimization with optimal ranges"""
+        # Define hyperparameter search space with optimal ranges
         config_params = {
-            "model_name": "xlm-roberta-large",  # Fixed architecture
-            "batch_size": trial.suggest_int("batch_size", 32, 64, step=16),
-            "grad_accum_steps": trial.suggest_int("grad_accum_steps", 1, 4),
-            "lr": trial.suggest_float("lr", 1e-6, 5e-5, log=True),
-            "weight_decay": trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True),
-            "hidden_size": trial.suggest_categorical("hidden_size", [768, 1024]),
-            "num_attention_heads": trial.suggest_categorical("num_attention_heads", [12, 16]),
-            "model_dropout": trial.suggest_float("model_dropout", 0.1, 0.5),
+            # Fixed architecture parameters
+            "model_name": "xlm-roberta-large",
+            "hidden_size": 1024,  # Fixed to original
+            "num_attention_heads": 16,  # Fixed to original
             
-            # Fixed parameters
+            # Optimized ranges based on trials
+            "lr": trial.suggest_float("lr", 1e-5, 5e-5, log=True),  # Best range from trial-8/4
+            "batch_size": trial.suggest_categorical("batch_size", [32, 64]),  # Top performers
+            "model_dropout": trial.suggest_float("model_dropout", 0.3, 0.45),  # Trial-8's 0.445 effective
+            "weight_decay": trial.suggest_float("weight_decay", 0.01, 0.03),  # Best regularization
+            "grad_accum_steps": trial.suggest_int("grad_accum_steps", 1, 4),  # Keep for throughput optimization
+            
+            # Fixed training parameters
             "epochs": 2,
             "mixed_precision": "bf16",
             "max_length": 128,
@@ -61,12 +65,18 @@ class HyperparameterTuner:
         # Create config
         config = TrainingConfig(**config_params)
 
-        # Initialize wandb for this trial
+        # Initialize wandb for this trial with better metadata
         wandb.init(
             project="toxic-classification-hparam-tuning",
             name=f"trial-{trial.number}",
-            config=config_params,
-            reinit=True
+            config={
+                **config_params,
+                'trial_number': trial.number,
+                'pruner': str(trial.study.pruner),
+                'sampler': str(trial.study.sampler)
+            },
+            reinit=True,
+            tags=['hyperparameter-optimization', f'trial-{trial.number}']
         )
 
         try:
@@ -81,25 +91,52 @@ class HyperparameterTuner:
             # Train and get metrics
             metrics = train(model, train_loader, val_loader, config)
             
+            # Log detailed metrics
+            wandb.log({
+                'final_val_auc': metrics['val/auc'],
+                'final_val_loss': metrics['val/loss'],
+                'final_train_loss': metrics['train/loss'],
+                'peak_gpu_memory': torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                'trial_completed': True
+            })
+            
             # Report intermediate values for pruning
             trial.report(metrics['val/auc'], step=config.epochs)
             
             # Handle pruning
             if trial.should_prune():
+                wandb.log({'pruned': True})
                 raise optuna.TrialPruned()
 
             return metrics['val/auc']
 
         except Exception as e:
+            wandb.log({
+                'error': str(e),
+                'trial_failed': True
+            })
             print(f"Trial failed: {str(e)}")
             raise optuna.TrialPruned()
 
         finally:
+            # Cleanup
+            if 'model' in locals():
+                del model
+            torch.cuda.empty_cache()
             wandb.finish()
 
     def run_optimization(self):
         """Run the hyperparameter optimization"""
         print("Starting hyperparameter optimization...")
+        print("Search space:")
+        print("  - Learning rate: 1e-5 to 5e-5")
+        print("  - Batch size: [32, 64]")
+        print("  - Dropout: 0.3 to 0.45")
+        print("  - Weight decay: 0.01 to 0.03")
+        print("  - Gradient accumulation steps: 1 to 4")
+        print("\nFixed parameters:")
+        print("  - Hidden size: 1024 (original)")
+        print("  - Attention heads: 16 (original)")
         
         try:
             self.study.optimize(
@@ -117,42 +154,92 @@ class HyperparameterTuner:
             for key, value in best_trial.params.items():
                 print(f"    {key}: {value}")
 
-            # Save study results
+            # Save study results with more details
             self._save_study_results()
 
         except KeyboardInterrupt:
             print("\nOptimization interrupted by user.")
+            self._save_study_results()  # Save results even if interrupted
         except Exception as e:
             print(f"Optimization failed: {str(e)}")
             raise
 
     def _log_trial(self, study, trial):
-        """Callback to log trial results"""
+        """Callback to log trial results with enhanced metrics"""
         if trial.value is not None:
-            wandb.log({
+            metrics = {
                 "best_auc": study.best_value,
                 "trial_auc": trial.value,
+                "trial_number": trial.number,
                 **trial.params
-            })
+            }
+            
+            # Add optimization progress metrics
+            if len(study.trials) > 1:
+                metrics.update({
+                    "optimization_progress": {
+                        "trials_completed": len(study.trials),
+                        "improvement_rate": (study.best_value - study.trials[0].value) / len(study.trials),
+                        "best_trial_number": study.best_trial.number
+                    }
+                })
+            
+            wandb.log(metrics)
 
     def _save_study_results(self):
-        """Save optimization results"""
+        """Save optimization results with enhanced metadata"""
         import joblib
         from pathlib import Path
+        from datetime import datetime
         
         # Create directory if it doesn't exist
-        Path("optimization_results").mkdir(exist_ok=True)
+        results_dir = Path("optimization_results")
+        results_dir.mkdir(exist_ok=True)
         
         # Save study object
-        joblib.dump(
-            self.study,
-            "optimization_results/hparam_optimization_study.pkl"
-        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_path = results_dir / f"hparam_optimization_study_{timestamp}.pkl"
+        joblib.dump(self.study, study_path)
         
-        # Save best parameters
-        best_params = self.study.best_params
-        with open("optimization_results/best_params.json", "w") as f:
-            json.dump(best_params, f, indent=4)
+        # Save comprehensive results
+        results = {
+            "best_trial": {
+                "number": self.study.best_trial.number,
+                "value": self.study.best_value,
+                "params": self.study.best_trial.params
+            },
+            "study_statistics": {
+                "n_trials": len(self.study.trials),
+                "n_completed": len([t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE]),
+                "n_pruned": len([t for t in self.study.trials if t.state == optuna.trial.TrialState.PRUNED]),
+                "datetime_start": self.study.trials[0].datetime_start.isoformat(),
+                "datetime_complete": datetime.now().isoformat()
+            },
+            "search_space": {
+                "lr": {"low": 1e-5, "high": 5e-5},
+                "batch_size": [32, 64],
+                "model_dropout": {"low": 0.3, "high": 0.45},
+                "weight_decay": {"low": 0.01, "high": 0.03},
+                "grad_accum_steps": {"low": 1, "high": 4}
+            },
+            "trial_history": [
+                {
+                    "number": t.number,
+                    "value": t.value,
+                    "state": str(t.state),
+                    "params": t.params if hasattr(t, 'params') else None
+                }
+                for t in self.study.trials
+            ]
+        }
+        
+        results_path = results_dir / f"optimization_results_{timestamp}.json"
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=4)
+        
+        print(f"\nResults saved to:")
+        print(f"  - Study: {study_path}")
+        print(f"  - Results: {results_path}")
 
 def main():
     """Main function to run hyperparameter optimization"""

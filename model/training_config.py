@@ -1,3 +1,4 @@
+# training_config.py
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import json
@@ -363,10 +364,11 @@ class TrainingConfig:
     """Basic training configuration"""
     # Model parameters
     model_name: str = "xlm-roberta-large"
-    max_length: int = 128
+    max_length: int = 512
     hidden_size: int = 1024
     num_attention_heads: int = 16
     model_dropout: float = 0.1
+    freeze_layers: int = 8  # Number of base model layers to freeze
     
     # Training parameters
     batch_size: int = 32
@@ -375,6 +377,8 @@ class TrainingConfig:
     lr: float = 2e-5
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
+    warmup_ratio: float = 0.1
+    label_smoothing: float = 0.05
     
     # System parameters
     num_workers: int = 12
@@ -404,14 +408,16 @@ class TrainingConfig:
             raise ValueError(f"Invalid num_workers: {self.num_workers}")
         if self.gc_frequency <= 0:
             raise ValueError(f"Invalid gc_frequency: {self.gc_frequency}")
-        if self.hidden_size <= 0:
-            raise ValueError(f"Invalid hidden_size: {self.hidden_size}")
-        if self.num_attention_heads <= 0:
-            raise ValueError(f"Invalid num_attention_heads: {self.num_attention_heads}")
         if not 0 <= self.model_dropout < 1:
             raise ValueError(f"Invalid model_dropout: {self.model_dropout}")
         if self.max_grad_norm <= 0:
             raise ValueError(f"Invalid max_grad_norm: {self.max_grad_norm}")
+        if not 0 <= self.warmup_ratio < 1:
+            raise ValueError(f"Invalid warmup_ratio: {self.warmup_ratio}")
+        if not 0 <= self.label_smoothing < 1:
+            raise ValueError(f"Invalid label_smoothing: {self.label_smoothing}")
+        if self.freeze_layers < 0:
+            raise ValueError(f"Invalid freeze_layers: {self.freeze_layers}")
         
         # Set device with error handling
         try:
@@ -479,7 +485,10 @@ class TrainingConfig:
                 'hidden_size': self.hidden_size,
                 'num_attention_heads': self.num_attention_heads,
                 'model_dropout': self.model_dropout,
-                'max_grad_norm': self.max_grad_norm
+                'max_grad_norm': self.max_grad_norm,
+                'warmup_ratio': self.warmup_ratio,
+                'label_smoothing': self.label_smoothing,
+                'freeze_layers': self.freeze_layers
             }
             
             # Validate all values are JSON serializable

@@ -1,17 +1,19 @@
+# train.py
+from collections import defaultdict
 import torch
 import torch.nn as nn
 import logging
 import os
 import gc
 import wandb
-from datetime import datetime
+from datetime import datetime, timedelta
 from torch.cuda.amp import autocast, GradScaler
-from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts
 
 logger = logging.getLogger(__name__)
 
 from transformers import (
     XLMRobertaTokenizer,
+    get_cosine_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
@@ -122,6 +124,7 @@ class Config:
     activation_checkpointing: bool = False
     tensor_float_32: bool = True
     gc_frequency: int = 100
+    freeze_layers: int = 0
     
     def __post_init__(self):
         try:
@@ -346,37 +349,117 @@ def train(model, train_loader, val_loader, config):
     print(f"Steps per epoch: {len(train_loader)}")
     print("="*50 + "\n")
     
-    # Calculate training steps
-    num_training_steps = len(train_loader) * config.epochs
-    steps_per_epoch = len(train_loader)
+    # Initialize monitoring metrics
+    peak_memory = 0
+    grad_norms_history = []
+    
+    def get_memory_stats():
+        """Get current GPU memory statistics"""
+        if not torch.cuda.is_available():
+            return {'allocated': 0, 'reserved': 0, 'peak': 0}
+        
+        try:
+            return {
+                'allocated': torch.cuda.memory_allocated() / 1e9,  # Convert to GB
+                'reserved': torch.cuda.memory_reserved() / 1e9,
+                'peak': torch.cuda.max_memory_allocated() / 1e9
+            }
+        except Exception as e:
+            print(f"Warning: Could not get memory stats: {str(e)}")
+            return {'allocated': 0, 'reserved': 0, 'peak': 0}
+    
+    def get_class_grad_norm(model):
+        """Calculate gradient norm for each class head"""
+        try:
+            classifier = model.module.output if hasattr(model, 'module') else model.output
+            if not hasattr(classifier, 'weight') or classifier.weight.grad is None:
+                return None
+            
+            # Shape: [num_classes, hidden_dim]
+            class_grads = classifier.weight.grad
+            
+            # Calculate norm for each class
+            class_norms = torch.norm(class_grads, dim=1)
+            return class_norms.detach().cpu().numpy()
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate class gradient norms: {str(e)}")
+            return None
+    
+    def get_layer_grad_norms(model):
+        """Calculate detailed gradient statistics for different layer groups"""
+        try:
+            grad_stats = {}
+            
+            # Get all parameter gradients
+            grad_flow = [(name, param.grad.abs().mean().item()) 
+                        for name, param in model.named_parameters() 
+                        if param.grad is not None]
+            
+            # Check for problematic gradients
+            for name, grad in grad_flow:
+                if grad < 1e-7:
+                    logger.warning(f"Vanishing gradient in {name}: {grad:.2e}")
+                elif grad > 1e2:
+                    logger.error(f"Exploding gradient in {name}: {grad:.2e}")
+                
+                # Store gradient stats by layer type
+                layer_type = name.split('.')[0]
+                if layer_type not in grad_stats:
+                    grad_stats[layer_type] = []
+                grad_stats[layer_type].append(grad)
+            
+            # Calculate aggregate statistics per layer type
+            layer_norms = {}
+            for layer_type, grads in grad_stats.items():
+                layer_norms[layer_type] = {
+                    'mean': np.mean(grads),
+                    'std': np.std(grads),
+                    'min': np.min(grads),
+                    'max': np.max(grads)
+                }
+                
+                # Log severe gradient issues
+                if layer_norms[layer_type]['mean'] < 1e-7:
+                    logger.error(f"Severe vanishing gradients in {layer_type} layer")
+                elif layer_norms[layer_type]['mean'] > 1e2:
+                    logger.error(f"Severe gradient explosion in {layer_type} layer")
+            
+            return layer_norms
+            
+        except Exception as e:
+            logger.error(f"Error in gradient flow monitoring: {str(e)}")
+            return {}
+    
+    # Freeze base model layers if specified
+    if config.freeze_layers > 0:
+        print(f"Freezing first {config.freeze_layers} layers of base model")
+        for param in model.base_model.embeddings.parameters():
+            param.requires_grad = False
+        for i, layer in enumerate(model.base_model.encoder.layer[:config.freeze_layers]):
+            for param in layer.parameters():
+                param.requires_grad = False
+    
+    # Calculate total training steps
+    total_steps = len(train_loader) * config.epochs
+    warmup_steps = int(total_steps * config.warmup_ratio)
+    
+    print(f"Total training steps: {total_steps:,}")
+    print(f"Warmup steps: {warmup_steps:,}")
     
     # Initialize optimizer with automatic gradient accumulation
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [p for p in model.parameters() if p.requires_grad],
         lr=config.lr,
         weight_decay=config.weight_decay,
         eps=1e-8
     )
     
-    # Initialize OneCycle scheduler for the first half of training
-    onecycle_scheduler = OneCycleLR(
+    # Initialize cosine scheduler with warmup
+    scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        max_lr=config.lr,
-        epochs=config.epochs // 2,
-        steps_per_epoch=steps_per_epoch,
-        pct_start=0.1,  # 10% warmup
-        anneal_strategy='cos',
-        cycle_momentum=True,
-        div_factor=25.0,
-        final_div_factor=1e4
-    )
-    
-    # Initialize Cosine Annealing with Warm Restarts for the second half
-    cosine_scheduler = CosineAnnealingWarmRestarts(
-        optimizer,
-        T_0=steps_per_epoch * 2,  # Restart every 2 epochs
-        T_mult=2,  # Double the restart interval after each restart
-        eta_min=config.lr / 100  # Minimum learning rate
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
     )
     
     scaler = GradScaler(enabled=config.fp16)
@@ -394,9 +477,6 @@ def train(model, train_loader, val_loader, config):
         print(f"\nEpoch {epoch+1}/{config.epochs}")
         print("-"*20)
         
-        # Use appropriate scheduler based on training phase
-        scheduler = onecycle_scheduler if epoch < config.epochs // 2 else cosine_scheduler
-        
         for batch_idx, batch in enumerate(train_loader):
             try:
                 # Move batch to device
@@ -413,21 +493,150 @@ def train(model, train_loader, val_loader, config):
                         attention_mask=inputs['attention_mask'],
                         labels=inputs['labels']
                     )
-                    loss = outputs['loss']
+                    
+                    # Apply label smoothing
+                    if config.label_smoothing > 0:
+                        smooth_labels = inputs['labels'] * (1 - config.label_smoothing) + 0.5 * config.label_smoothing
+                        targets = smooth_labels
+                    else:
+                        targets = inputs['labels']
+                    
+                    # Numerically stabilized BCEWithLogitsLoss
+                    logits = outputs['logits']
+                    
+                    # Prevent overflow in exponentials
+                    max_val = torch.clamp(-logits, min=0)
+                    
+                    # Compute loss with numerical stability
+                    # loss = logits - logits * targets + max_val + log(exp(-max_val) + exp(-logits - max_val))
+                    loss = (logits - logits * targets + max_val + 
+                           torch.log(torch.exp(-max_val) + torch.exp(-logits - max_val)))
+                    
+                    # Apply class weights if available
+                    if hasattr(model, 'class_weights'):
+                        class_weights = model.class_weights.to(logits.device)
+                        loss = loss * class_weights
+                    
+                    # Take mean for final loss
+                    loss = loss.mean()
+                    
+                    # Store for logging
+                    outputs['loss'] = loss
                 
                 # Scale loss and backward pass
                 scaled_loss = loss / config.grad_accum_steps
                 scaler.scale(scaled_loss).backward()
                 
-                # Step if we've accumulated enough gradients
-                if (batch_idx + 1) % config.grad_accum_steps == 0:
-                    scaler.unscale_(optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                # Step if we've accumulated enough gradients or at end of epoch
+                if (batch_idx + 1) % config.grad_accum_steps == 0 or (batch_idx + 1 == len(train_loader)):
+                    try:
+                        # Unscale gradients for clipping
+                        scaler.unscale_(optimizer)
+                        
+                        # Get language-specific clip values
+                        lang_clip_values = {
+                            'en': 1.0,   # English has more diverse samples
+                            'ru': 0.9,   # Russian needs tighter clipping
+                            'tr': 0.95,  # Turkish is intermediate
+                            'fr': 0.95,  # French similar to Turkish
+                            'es': 0.95,  # Spanish similar to Turkish
+                            'it': 0.9,   # Italian needs tighter clipping like Russian
+                            'pt': 0.9    # Portuguese similar to Italian
+                        }
+                        
+                        # Get unique languages in batch
+                        batch_langs = set(inputs['lang'])
+                        
+                        # Calculate effective clip value as minimum of all languages in batch
+                        effective_clip = min(
+                            lang_clip_values.get(lang, 1.0) * config.max_grad_norm 
+                            for lang in batch_langs
+                        )
+                        
+                        # Clip and check gradients with language-specific value
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            [p for p in model.parameters() if p.requires_grad],
+                            max_norm=effective_clip,
+                            error_if_nonfinite=True  # Catch NaN gradients
+                        )
+                        
+                        # Log language-specific clipping
+                        if wandb.run is not None:
+                            wandb.log({
+                                'gradients/effective_clip_value': effective_clip,
+                                'gradients/pre_clip_norm': grad_norm,
+                                'gradients/languages_in_batch': list(batch_langs)
+                            })
+                        
+                        # Gradient sanity checks
+                        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                            logger.error(f"Invalid gradient norm detected: {grad_norm}, skipping update")
+                            optimizer.zero_grad()
+                            continue
+                            
+                        if grad_norm > config.max_grad_norm * 10:
+                            logger.warning(f"Unusually high gradient norm: {grad_norm:.2f}")
+                        
+                        # Get monitoring metrics before optimizer step
+                        memory_stats = get_memory_stats()
+                        class_grad_norms = get_class_grad_norm(model)
+                        layer_grad_norms = get_layer_grad_norms(model)
+                        
+                        # Optimizer and scheduler steps
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        
+                        # Update peak memory tracking
+                        peak_memory = max(peak_memory, memory_stats['peak'])
+                        
+                        # Store gradient norms for analysis
+                        if class_grad_norms is not None:
+                            grad_norms_history.append(class_grad_norms)
+                            
+                        # Log gradient statistics
+                        if wandb.run is not None:
+                            monitoring_metrics = {
+                                # Training metrics
+                                'train/loss': loss.item(),
+                                'train/learning_rate': scheduler.get_last_lr()[0],
+                                'train/epoch': epoch,
+                                'train/grad_norm': grad_norm,
+                                'train/gate_values': outputs['gate_values'].mean().item(),
+                                
+                                # Memory metrics
+                                'memory/allocated_gb': memory_stats['allocated'],
+                                'memory/reserved_gb': memory_stats['reserved'],
+                                'memory/peak_gb': memory_stats['peak'],
+                                
+                                # Gradient metrics
+                                'gradients/total_norm': grad_norm
+                            }
+                            
+                            # Add class-specific gradient norms
+                            if class_grad_norms is not None:
+                                for i, norm in enumerate(class_grad_norms):
+                                    monitoring_metrics[f'gradients/class_{i}_norm'] = norm
+                            
+                            # Add layer-specific gradient norms
+                            for layer, norm in layer_grad_norms.items():
+                                monitoring_metrics[f'gradients/{layer}_norm'] = norm
+                            
+                            # Add optimizer state
+                            monitoring_metrics['optimizer/learning_rate'] = optimizer.param_groups[0]['lr']
+                            monitoring_metrics['optimizer/weight_decay'] = optimizer.param_groups[0]['weight_decay']
+                            
+                            # Log all metrics
+                            wandb.log(monitoring_metrics)
                     
-                    scaler.step(optimizer)
-                    scaler.update()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                    except RuntimeError as e:
+                        if "node is NaN" in str(e):
+                            logger.error("NaN detected in gradients, skipping update")
+                            optimizer.zero_grad()
+                            continue
+                        else:
+                            raise
                 
                 # Update metrics
                 total_loss += loss.item()
@@ -448,20 +657,45 @@ def train(model, train_loader, val_loader, config):
                         f"Loss: {avg_loss:.4f} "
                         f"LR: {lr:.2e} "
                         f"Grad Norm: {grad_norm:.2f} "
+                        f"Mem: {memory_stats['allocated']:.1f}GB "
                         f"ETA: {eta/60:.1f}min",
                         end=""
                     )
                     
-                    # Log to wandb
+                    # Log to wandb with enhanced monitoring
                     if wandb.run is not None:
-                        wandb.log({
+                        monitoring_metrics = {
+                            # Training metrics
                             'train/loss': avg_loss,
                             'train/learning_rate': lr,
                             'train/epoch': epoch,
                             'train/grad_norm': grad_norm,
                             'train/gate_values': outputs['gate_values'].mean().item(),
-                            'train/thresholds': outputs['thresholds'].detach().cpu().numpy()
-                        })
+                            
+                            # Memory metrics
+                            'memory/allocated_gb': memory_stats['allocated'],
+                            'memory/reserved_gb': memory_stats['reserved'],
+                            'memory/peak_gb': memory_stats['peak'],
+                            
+                            # Gradient metrics
+                            'gradients/total_norm': grad_norm
+                        }
+                        
+                        # Add class-specific gradient norms
+                        if class_grad_norms is not None:
+                            for i, norm in enumerate(class_grad_norms):
+                                monitoring_metrics[f'gradients/class_{i}_norm'] = norm
+                        
+                        # Add layer-specific gradient norms
+                        for layer, norm in layer_grad_norms.items():
+                            monitoring_metrics[f'gradients/{layer}_norm'] = norm
+                        
+                        # Add optimizer state
+                        monitoring_metrics['optimizer/learning_rate'] = optimizer.param_groups[0]['lr']
+                        monitoring_metrics['optimizer/weight_decay'] = optimizer.param_groups[0]['weight_decay']
+                        
+                        # Log all metrics
+                        wandb.log(monitoring_metrics)
                 
             except Exception as e:
                 print(f"\nError in training batch: {str(e)}")
@@ -696,59 +930,176 @@ class ToxicDataset(Dataset):
         }
         return item
 
-# Weighted Focal Loss
+class LanguageAwareWeights:
+    def __init__(self, lang_stats=None):
+        # Base weights from global statistics
+        self.base_weights = {
+            'toxic': 1.0,
+            'severe_toxic': 5.4,    # Global average
+            'obscene': 2.1,
+            'threat': 8.7,
+            'insult': 2.8,
+            'identity_hate': 6.2
+        }
+        
+        # Language-specific boosts based on prevalence analysis
+        self.lang_boost = {
+            'en': {'threat': 1.8, 'identity_hate': 1.5},    # EN has 2.59% threats vs 2.04% avg
+            'ru': {'identity_hate': 1.6},                   # RU: 5.34% vs 5.32% avg
+            'tr': {'threat': 1.4}                           # TR: 2.05% vs 2.04% avg
+        }
+        
+        # Update weights if statistics provided
+        if lang_stats:
+            self._update_weights_from_stats(lang_stats)
+    
+    def _update_weights_from_stats(self, lang_stats):
+        """Update weights based on provided language statistics"""
+        try:
+            # Calculate global averages
+            global_stats = defaultdict(list)
+            for lang_data in lang_stats.values():
+                for class_name, stats in lang_data.items():
+                    if 'positive_ratio' in stats:
+                        global_stats[class_name].append(stats['positive_ratio'])
+            
+            # Update base weights based on inverse frequency
+            for class_name, ratios in global_stats.items():
+                avg_ratio = np.mean(ratios)
+                if avg_ratio > 0:
+                    self.base_weights[class_name] = min(10.0, 1.0 / avg_ratio)
+            
+            # Update language boosts
+            for lang, lang_data in lang_stats.items():
+                for class_name, stats in lang_data.items():
+                    if 'positive_ratio' in stats:
+                        lang_ratio = stats['positive_ratio']
+                        global_ratio = np.mean(global_stats[class_name])
+                        if lang_ratio > global_ratio * 1.1:  # 10% higher than average
+                            boost = min(2.0, lang_ratio / global_ratio)
+                            if lang not in self.lang_boost:
+                                self.lang_boost[lang] = {}
+                            self.lang_boost[lang][class_name] = boost
+                            
+        except Exception as e:
+            logger.warning(f"Could not update weights from statistics: {str(e)}")
+    
+    def get_weights(self, lang, class_name):
+        """Get the weight for a specific language and class"""
+        try:
+            weight = self.base_weights[class_name]
+            boost = self.lang_boost.get(lang, {}).get(class_name, 1.0)
+            return weight * boost
+        except Exception as e:
+            logger.warning(f"Error getting weight for {lang}/{class_name}: {str(e)}")
+            return 1.0
+    
+    def get_weights_tensor(self, langs, class_names, device):
+        """Get weight tensor for a batch of samples"""
+        try:
+            weights = torch.zeros((len(langs), len(class_names)), device=device)
+            for i, lang in enumerate(langs):
+                for j, class_name in enumerate(class_names):
+                    weights[i, j] = self.get_weights(lang, class_name)
+            return weights
+        except Exception as e:
+            logger.warning(f"Error creating weight tensor: {str(e)}")
+            return torch.ones((len(langs), len(class_names)), device=device)
+
+# Update WeightedFocalLoss to use LanguageAwareWeights
 class WeightedFocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, label_smoothing=0.01):
         super().__init__()
-        self.alpha = alpha
         self.gamma = gamma
         self.label_smoothing = label_smoothing
-        self.class_weights = DynamicClassWeights()
+        
+        # Language-specific alpha values for each class
+        self.alpha = {
+            'en': [0.2, 0.8, 0.3, 0.9, 0.4, 0.85],  # [toxic, severe, obscene, threat, insult, hate]
+            'ru': [0.18, 0.82, 0.28, 0.88, 0.35, 0.83],  # Higher alpha for threat/hate
+            'tr': [0.19, 0.81, 0.29, 0.89, 0.36, 0.84],  # Similar pattern to RU
+            'default': [0.25] * 6  # Default balanced alpha
+        }
+        
+        # Low-resource language boost factors
+        self.lang_boost = {
+            'tr': 1.2,  # Turkish has fewer samples
+            'it': 1.3,  # Italian has even fewer
+            'pt': 1.3   # Portuguese similar to Italian
+        }
+    
+    def calculate_alpha_weights(self, langs, labels):
+        """Calculate language-specific alpha weights for each sample"""
+        try:
+            batch_size = labels.size(0)
+            num_classes = labels.size(1)
+            alpha_weights = torch.ones_like(labels, dtype=torch.float32)
+            
+            for i, (lang, label_vec) in enumerate(zip(langs, labels)):
+                # Get alpha values for this language
+                lang_alpha = torch.tensor(
+                    self.alpha.get(lang, self.alpha['default']),
+                    device=labels.device,
+                    dtype=torch.float32
+                )
+                
+                # Apply language-specific boost for low-resource languages
+                if lang in self.lang_boost:
+                    lang_alpha = lang_alpha * self.lang_boost[lang]
+                
+                alpha_weights[i] = lang_alpha
+            
+            return alpha_weights
+            
+        except Exception as e:
+            logger.warning(f"Error calculating alpha weights: {str(e)}")
+            return torch.ones_like(labels, dtype=torch.float32)
     
     def forward(self, preds, targets, langs=None):
-        # Apply label smoothing
-        targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
-        
-        # Ensure all inputs have correct dimensions [B, C]
-        if preds.dim() == 1:
-            preds = preds.unsqueeze(-1)
-        if targets.dim() == 1:
-            targets = targets.unsqueeze(-1)
-        
-        # Get weights with proper dimensions
-        if langs is None:
-            # Use default weights if no language information
-            weights = self.class_weights.default_weights.to(preds.device)
-            if weights.dim() == 1:
-                weights = weights.unsqueeze(0)  # [C] → [1, C]
-        else:
-            # Get language-specific weights
-            weights = self.class_weights.get_weights_for_batch(langs, preds.device)  # [B, C]
-        
-        # Ensure weights have correct shape through proper broadcasting
-        if weights.shape != preds.shape:
-            weights = weights.expand_as(preds)  # Match dimensions exactly [B, C]
-        
-        # Calculate BCE loss with proper reduction
-        bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)  # [B, C]
-        
-        # Calculate focal weights
-        pt = torch.exp(-bce_loss)
-        pt = torch.clamp(pt, min=1e-7, max=1.0)  # Numerical stability
-        focal_weights = (1 - pt) ** self.gamma
-        
-        # Apply focal weighting and class weights
-        loss = self.alpha * focal_weights * bce_loss  # [B, C]
-        weighted_loss = loss * weights  # [B, C]
-        
-        # First sum over classes to preserve per-sample weighting, then average over batch
-        return weighted_loss.sum(dim=-1).mean()
+        """Forward pass with language-specific focal loss"""
+        try:
+            # Apply label smoothing
+            targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+            
+            # Ensure all inputs have correct dimensions [B, C]
+            if preds.dim() == 1:
+                preds = preds.unsqueeze(-1)
+            if targets.dim() == 1:
+                targets = targets.unsqueeze(-1)
+            
+            # Calculate BCE loss with proper reduction
+            bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)  # [B, C]
+            
+            # Calculate probabilities with numerical stability
+            probs = torch.sigmoid(preds)
+            pt = torch.where(targets == 1, probs, 1 - probs)
+            pt = torch.clamp(pt, min=1e-7, max=1.0)  # Numerical stability
+            
+            # Calculate focal weights
+            focal_weights = (1 - pt) ** self.gamma
+            
+            # Get language-specific alpha weights
+            if langs is not None:
+                alpha_weights = self.calculate_alpha_weights(langs, targets)
+                alpha_weights = alpha_weights.to(preds.device)
+            else:
+                alpha_weights = torch.full_like(targets, 0.25)  # Default alpha
+            
+            # Apply focal weighting and alpha weights
+            loss = alpha_weights * focal_weights * bce_loss  # [B, C]
+            
+            # First sum over classes to preserve per-sample weighting, then average over batch
+            return loss.sum(dim=-1).mean()
+            
+        except Exception as e:
+            logger.error(f"Error in focal loss calculation: {str(e)}")
+            # Fallback to simple BCE loss
+            return nn.BCEWithLogitsLoss()(preds, targets)
 
 def calculate_metrics(labels, probs, thresholds, class_names):
-    """Calculate classification metrics using optimized thresholds"""
+    """Calculate classification metrics with robust handling of edge cases"""
     # Handle different threshold formats
     if isinstance(thresholds, dict):
-        # If thresholds is a dict (from ThresholdOptimizer), get default thresholds
         default_thresh = np.array([thresholds.get('en', {}).get(name, 0.5) for name in class_names])
     else:
         default_thresh = np.array(thresholds)
@@ -760,51 +1111,97 @@ def calculate_metrics(labels, probs, thresholds, class_names):
     # Make predictions
     binary_preds = (probs > default_thresh).astype(int)
     
-    # Calculate overall metrics
+    # Calculate AUC with error handling
     try:
         auc = roc_auc_score(labels, probs, average='macro')
     except Exception as e:
-        print(f"Warning: Could not calculate AUC: {str(e)}")
+        logger.warning(f"Could not calculate AUC: {str(e)}")
         auc = 0.0
     
-    try:
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            labels, binary_preds, average='macro', zero_division=0
-        )
-    except Exception as e:
-        print(f"Warning: Could not calculate PRF metrics: {str(e)}")
-        precision, recall, f1 = 0.0, 0.0, 0.0
-    
-    # Calculate per-class metrics
+    # Manual calculation of metrics with proper handling of edge cases
     class_metrics = {}
+    overall_metrics = {'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0}
+    
     for i, class_name in enumerate(class_names):
         try:
+            # Calculate confusion matrix elements
+            tp = np.sum((labels[:, i] == 1) & (binary_preds[:, i] == 1))
+            fp = np.sum((labels[:, i] == 0) & (binary_preds[:, i] == 1))
+            tn = np.sum((labels[:, i] == 0) & (binary_preds[:, i] == 0))
+            fn = np.sum((labels[:, i] == 1) & (binary_preds[:, i] == 0))
+            
+            # Update overall metrics
+            overall_metrics['tp'] += tp
+            overall_metrics['fp'] += fp
+            overall_metrics['tn'] += tn
+            overall_metrics['fn'] += fn
+            
+            # Calculate metrics with explicit handling of edge cases
+            with np.errstate(divide='ignore', invalid='ignore'):
+                precision = np.divide(tp, tp + fp) if (tp + fp) > 0 else 0.0
+                recall = np.divide(tp, tp + fn) if (tp + fn) > 0 else 0.0
+                f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+                specificity = np.divide(tn, tn + fp) if (tn + fp) > 0 else 0.0
+                npv = np.divide(tn, tn + fn) if (tn + fn) > 0 else 0.0
+            
+            # Calculate class-specific AUC
+            try:
+                class_auc = roc_auc_score(labels[:, i], probs[:, i])
+            except Exception:
+                class_auc = 0.0
+            
             class_metrics[class_name] = {
-                'auc': roc_auc_score(labels[:, i], probs[:, i]),
-                'precision': precision_recall_fscore_support(
-                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
-                )[0],
-                'recall': precision_recall_fscore_support(
-                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
-                )[1],
-                'f1': precision_recall_fscore_support(
-                    labels[:, i], binary_preds[:, i], average='binary', zero_division=0
-                )[2],
-                'threshold': default_thresh[0, i] if default_thresh.ndim > 1 else default_thresh[i]
+                'auc': float(class_auc),
+                'precision': float(precision),
+                'recall': float(recall),
+                'f1': float(f1),
+                'specificity': float(specificity),
+                'npv': float(npv),
+                'threshold': float(default_thresh[0, i]) if default_thresh.ndim > 1 else float(default_thresh[i]),
+                'support': {
+                    'total': int(tp + fp + tn + fn),
+                    'positive': int(tp + fn),
+                    'negative': int(tn + fp),
+                    'tp': int(tp),
+                    'fp': int(fp),
+                    'tn': int(tn),
+                    'fn': int(fn)
+                }
             }
+            
         except Exception as e:
-            print(f"Warning: Could not calculate metrics for {class_name}: {str(e)}")
+            logger.error(f"Error calculating metrics for {class_name}: {str(e)}")
             class_metrics[class_name] = {
                 'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0,
-                'threshold': default_thresh[0, i] if default_thresh.ndim > 1 else default_thresh[i]
+                'specificity': 0.0, 'npv': 0.0, 'threshold': 0.5,
+                'support': {'total': 0, 'positive': 0, 'negative': 0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0}
             }
     
+    # Calculate overall metrics
+    with np.errstate(divide='ignore', invalid='ignore'):
+        overall_precision = (
+            np.divide(overall_metrics['tp'], overall_metrics['tp'] + overall_metrics['fp'])
+            if (overall_metrics['tp'] + overall_metrics['fp']) > 0 else 0.0
+        )
+        overall_recall = (
+            np.divide(overall_metrics['tp'], overall_metrics['tp'] + overall_metrics['fn'])
+            if (overall_metrics['tp'] + overall_metrics['fn']) > 0 else 0.0
+        )
+        overall_f1 = (
+            2 * (overall_precision * overall_recall) / (overall_precision + overall_recall)
+            if (overall_precision + overall_recall) > 0 else 0.0
+        )
+    
     return {
-        'auc': auc,
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'class_metrics': class_metrics
+        'auc': float(auc),
+        'precision': float(overall_precision),
+        'recall': float(overall_recall),
+        'f1': float(overall_f1),
+        'class_metrics': class_metrics,
+        'support': {
+            'total': sum(m['support']['total'] for m in class_metrics.values()),
+            'by_class': {name: m['support'] for name, m in class_metrics.items()}
+        }
     }
 
 def evaluate(model, loader, config):
@@ -1042,25 +1439,54 @@ class MultilabelStratifiedSampler(torch.utils.data.Sampler):
         return len(self.labels)
 
 def setup_distributed(config, rank):
-    """Initialize distributed training"""
+    """Initialize distributed training with enhanced error handling"""
     if config.distributed:
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '23456'
-        
-        # Initialize process group
-        dist.init_process_group(
-            backend=config.dist_backend,
-            init_method=config.dist_url,
-            world_size=config.world_size,
-            rank=rank
-        )
-        
-        # Set device
-        torch.cuda.set_device(rank)
-        config._device = torch.device(f'cuda:{rank}')
-        
-        print(f"Initialized process group for rank {rank}")
-        return True
+        try:
+            # Set environment variables
+            os.environ['MASTER_ADDR'] = 'localhost'
+            os.environ['MASTER_PORT'] = '23456'
+            
+            # Configure NCCL parameters for better error handling
+            os.environ['NCCL_DEBUG'] = 'INFO'
+            os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'  # Network interface
+            os.environ['NCCL_IB_TIMEOUT'] = '23'  # IB timeout in seconds
+            os.environ['NCCL_DEBUG_SUBSYS'] = 'ALL'
+            
+            # Initialize process group with timeout and error handling
+            timeout = timedelta(seconds=30)  # 30 second timeout for initialization
+            
+            dist.init_process_group(
+                backend=config.dist_backend,
+                init_method=config.dist_url,
+                world_size=config.world_size,
+                rank=rank,
+                timeout=timeout
+            )
+            
+            # Set device with error handling
+            try:
+                torch.cuda.set_device(rank)
+                config._device = torch.device(f'cuda:{rank}')
+            except Exception as e:
+                logger.error(f"Failed to set CUDA device for rank {rank}: {str(e)}")
+                raise
+            
+            # Verify NCCL is working with barrier
+            try:
+                dist.barrier()  # Synchronize processes
+                logger.info(f"Process group initialized successfully for rank {rank}")
+            except Exception as e:
+                logger.error(f"NCCL barrier failed for rank {rank}: {str(e)}")
+                cleanup_distributed()
+                raise
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize distributed training for rank {rank}: {str(e)}")
+            cleanup_distributed()
+            raise
+            
     return False
 
 def cleanup_distributed():
@@ -1176,7 +1602,7 @@ def validate_distribution_shift(train_dataset, val_dataset):
     return shifts
 
 def train_worker(rank, config, train_dataset, val_dataset):
-    """Worker function for distributed training"""
+    """Worker function for distributed training with enhanced error handling"""
     # Setup distributed training
     is_distributed = setup_distributed(config, rank)
     
@@ -1184,14 +1610,27 @@ def train_worker(rank, config, train_dataset, val_dataset):
         # Create model
         model = init_model(config)
         if is_distributed:
-            model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+            try:
+                # Synchronize before DDP initialization
+                dist.barrier()
+                model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+                logger.info(f"DDP initialized successfully for rank {rank}")
+            except Exception as e:
+                logger.error(f"Failed to initialize DDP for rank {rank}: {str(e)}")
+                cleanup_distributed()
+                raise
         
         # Create dataloaders with proper error handling
-        train_loader, val_loader = create_dataloaders(
-            train_dataset, val_dataset, config, rank
-        )
+        try:
+            train_loader, val_loader = create_dataloaders(
+                train_dataset, val_dataset, config, rank
+            )
+        except Exception as e:
+            logger.error(f"Failed to create dataloaders for rank {rank}: {str(e)}")
+            cleanup_distributed()
+            raise
         
-        # Initialize wandb only on master process and ensure it's done before training
+        # Initialize wandb only on master process
         if not is_distributed or rank == 0:
             try:
                 wandb.init(
@@ -1200,17 +1639,50 @@ def train_worker(rank, config, train_dataset, val_dataset):
                     reinit=True
                 )
             except Exception as e:
-                print(f"Warning: Could not initialize wandb: {str(e)}")
+                logger.warning(f"Could not initialize wandb: {str(e)}")
         
-        # Train model
-        train(model, train_loader, val_loader, config)
+        # Synchronize before training starts
+        if is_distributed:
+            try:
+                dist.barrier()
+                logger.info(f"All processes synchronized before training for rank {rank}")
+            except Exception as e:
+                logger.error(f"Synchronization failed before training for rank {rank}: {str(e)}")
+                cleanup_distributed()
+                raise
+        
+        # Train model with error handling
+        try:
+            train(model, train_loader, val_loader, config)
+        except RuntimeError as e:
+            if "NCCL" in str(e):
+                logger.error(f"NCCL error during training for rank {rank}: {str(e)}")
+                # Try to recover by reinitializing process group
+                try:
+                    cleanup_distributed()
+                    is_distributed = setup_distributed(config, rank)
+                    if not is_distributed:
+                        raise RuntimeError("Failed to recover from NCCL error")
+                except Exception as recovery_error:
+                    logger.error(f"Failed to recover from NCCL error: {str(recovery_error)}")
+                    raise
+            else:
+                raise
         
     except Exception as e:
-        print(f"Error in worker {rank}: {str(e)}")
+        logger.error(f"Error in worker {rank}: {str(e)}")
         raise
     finally:
-        # Cleanup
-        cleanup_distributed()
+        # Ensure proper cleanup
+        if is_distributed:
+            try:
+                dist.barrier()  # Final sync before cleanup
+                logger.info(f"Final synchronization successful for rank {rank}")
+            except Exception as e:
+                logger.warning(f"Final synchronization failed for rank {rank}: {str(e)}")
+            
+            cleanup_distributed()
+        
         if model is not None:
             del model
         torch.cuda.empty_cache()
@@ -1236,7 +1708,10 @@ TRAINING_CONFIG = {
     # New architecture parameters
     "hidden_size": 1024,
     "num_attention_heads": 16,
-    "model_dropout": 0.1
+    "model_dropout": 0.1,
+    "freeze_layers": 2,
+    "warmup_ratio": 0.1,
+    "label_smoothing": 0.01
 }
 
 def main():
