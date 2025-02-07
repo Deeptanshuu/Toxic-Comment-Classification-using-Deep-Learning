@@ -487,25 +487,25 @@ class TrainingConfig:
         # Set device with error handling
         if torch.cuda.is_available():
             try:
-                torch.cuda.init()
-                self.device = torch.device('cuda')
-                
-                # Check if GPU supports BF16
-                if self.mixed_precision == "bf16":
-                    if not torch.cuda.is_bf16_supported():
-                        print("Warning: BF16 not supported on this GPU. Falling back to FP16")
-                        self.mixed_precision = "fp16"
-                        self.fp16 = True
-                
-                # Enable TF32 if requested and available
-                if self.tensor_float_32:
-                    if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
-                        torch.backends.cuda.matmul.allow_tf32 = True
-                        torch.backends.cudnn.allow_tf32 = True
+                    torch.cuda.init()
+                    self.device = torch.device('cuda')
+                    
+                    # Check if GPU supports BF16
+                    if self.mixed_precision == "bf16":
+                        if not torch.cuda.is_bf16_supported():
+                            print("Warning: BF16 not supported on this GPU. Falling back to FP16")
+                            self.mixed_precision = "fp16"
+                            self.fp16 = True
+                    
+                    # Enable TF32 if requested and available
+                    if self.tensor_float_32:
+                        if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
+                            torch.backends.cuda.matmul.allow_tf32 = True
+                            torch.backends.cudnn.allow_tf32 = True
                     else:
                         print("Warning: TF32 not supported on this GPU. Disabling.")
                         self.tensor_float_32 = False
-                
+                    
             except Exception as e:
                 print(f"Warning: CUDA initialization failed: {str(e)}")
                 self.device = torch.device('cpu')
@@ -516,7 +516,7 @@ class TrainingConfig:
             if self.mixed_precision != "no" or self.fp16:
                 print("Warning: Mixed precision not supported on CPU. Disabling.")
                 self.mixed_precision = "no"
-                self.fp16 = False
+            self.fp16 = False
         
         # Create directories with error handling
         try:
@@ -533,7 +533,7 @@ class TrainingConfig:
         # Initialize toxicity labels
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.num_labels = len(self.toxicity_labels)
-    
+        
     @property
     def dtype(self) -> torch.dtype:
         """Get the appropriate dtype based on mixed precision settings"""
