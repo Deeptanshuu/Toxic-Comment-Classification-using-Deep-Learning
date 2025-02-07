@@ -547,10 +547,20 @@ def train(model, train_loader, val_loader, config):
                         base_lr = optimizer.param_groups[0]['lr']
                         loss_val = loss.item()
                         
+                        # Calculate ETA
+                        steps_done = epoch * len(train_loader) + step
+                        total_steps = config.epochs * len(train_loader)
+                        time_elapsed = time.time() - epoch_start
+                        steps_per_sec = (step + 1) / time_elapsed if time_elapsed > 0 else 0
+                        remaining_steps = total_steps - steps_done
+                        eta_seconds = remaining_steps / steps_per_sec if steps_per_sec > 0 else 0
+                        eta = str(timedelta(seconds=int(eta_seconds)))
+                        
                         # Log to wandb
                         metrics_dict = {
                             'train/step_loss': loss_val,
-                            'train/learning_rate/base': base_lr
+                            'train/learning_rate/base': base_lr,
+                            'time/eta': eta
                         }
                         wandb.log(metrics_dict)
                         
@@ -559,7 +569,8 @@ def train(model, train_loader, val_loader, config):
                             f"Epoch [{epoch+1}/{config.epochs}] "
                             f"Step [{step}/{len(train_loader)}] "
                             f"Loss: {loss_val:.4f} "
-                            f"LR: {base_lr:.2e}"
+                            f"LR: {base_lr:.2e} "
+                            f"ETA: {eta}"
                         )
                         
                 except Exception as e:
