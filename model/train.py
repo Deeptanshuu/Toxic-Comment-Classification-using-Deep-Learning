@@ -693,16 +693,48 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
-        required_columns = ['comment_text'] + config.toxicity_labels + ['lang']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
+        # Create language ID mapping
+        self.lang_to_id = {
+            'en': 0,
+            'ru': 1, 
+            'tr': 2,
+            'es': 3,
+            'fr': 4,
+            'it': 5,
+            'pt': 6,
+            'default': 0  # Default to English
+        }
         
+        # Convert language codes to numeric IDs with proper string handling
+        self.lang_ids = torch.tensor([
+            self.lang_to_id.get(str(lang).lower().strip(), self.lang_to_id['default'])
+            for lang in df['lang'].fillna('en').astype(str)
+        ], dtype=torch.long)
+        
+        # Store original language codes for reference
+        self.langs = df['lang'].fillna('en').astype(str).values
+        
+        # Process and cache tokenized data
+        self._process_and_cache_data()
+        
+        # Convert labels to tensor
+        self.labels = torch.tensor(
+            df[config.toxicity_labels].fillna(0).values,
+            dtype=torch.float32
+        )
+        
+        # Pin memory if using CUDA
+        if torch.cuda.is_available():
+            self.lang_ids = self.lang_ids.pin_memory()
+            self.labels = self.labels.pin_memory()
+    
+    def _process_and_cache_data(self):
+        """Process and cache tokenized data"""
         # Create cache directory
         Path('cache').mkdir(exist_ok=True)
         
-        # Generate cache key based on data and config
-        cache_key = f"tokenized_{len(df)}_{config.max_length}_{tokenizer.name_or_path.replace('/', '_')}"
+        # Generate cache key
+        cache_key = f"tokenized_{len(self.df)}_{self.config.max_length}_{self.tokenizer.name_or_path.replace('/', '_')}"
         self.cache_file = Path('cache') / f"{cache_key}.pt"
         
         if self.cache_file.exists():
@@ -718,11 +750,11 @@ class ToxicDataset(Dataset):
             batch_size = 1000
             self.encodings = {'input_ids': [], 'attention_mask': []}
             
-            for i in range(0, len(df), batch_size):
-                batch_texts = df['comment_text'].fillna('').iloc[i:i+batch_size].tolist()
+            for i in range(0, len(self.df), batch_size):
+                batch_texts = self.df['comment_text'].fillna('').iloc[i:i+batch_size].tolist()
                 batch_encodings = self.tokenizer(
                     batch_texts,
-                    max_length=config.max_length,
+                    max_length=self.config.max_length,
                     padding='max_length',
                     truncation=True,
                     return_tensors='pt'
@@ -731,7 +763,7 @@ class ToxicDataset(Dataset):
                 self.encodings['attention_mask'].append(batch_encodings['attention_mask'])
                 
                 if i % 10000 == 0:
-                    print(f"Processed {i}/{len(df)} texts")
+                    print(f"Processed {i}/{len(self.df)} texts")
             
             # Concatenate all batches
             self.encodings = {
@@ -741,85 +773,16 @@ class ToxicDataset(Dataset):
             
             # Save to cache
             torch.save(self.encodings, self.cache_file)
-        
-        # Convert labels to tensor using recommended method
-        labels_tensor = torch.tensor(df[config.toxicity_labels].fillna(0).values, dtype=torch.float32)
-        self.labels = labels_tensor.clone().detach()
-        if torch.cuda.is_available():
-            self.labels = self.labels.pin_memory()
-        
-        # Create language ID mapping
-        self.lang_to_id = {
-            'en': 0, 'ru': 1, 'tr': 2, 'es': 3, 
-            'fr': 4, 'it': 5, 'pt': 6, 'default': 0
-        }
-        
-        # Convert language codes to tensor IDs
-        self.lang_ids = torch.tensor([
-            self.lang_to_id.get(lang, self.lang_to_id['default']) 
-            for lang in df['lang'].fillna('en')
-        ], dtype=torch.long)
-        
-        if torch.cuda.is_available():
-            self.lang_ids = self.lang_ids.pin_memory()
-        
-        # Store original language codes for reference
-        self.langs = df['lang'].fillna('en').values
-        
-        # Calculate and store feature statistics for distribution shift monitoring
-        self._calculate_feature_stats()
     
-    def _calculate_feature_stats(self):
-        """Calculate feature statistics for monitoring distribution shift"""
-        # Calculate mean token usage
-        self.token_usage = (self.encodings['attention_mask'] == 1).float().mean(dim=1)
-        
-        # Calculate class distribution per language
-        self.lang_class_dist = {}
-        for lang in np.unique(self.langs):
-            lang_mask = self.langs == lang
-            self.lang_class_dist[lang] = {
-                'mean': self.labels[lang_mask].mean(dim=0).numpy(),
-                'std': self.labels[lang_mask].std(dim=0).numpy()
-            }
-    
-    def check_distribution_shift(self, other_dataset):
-        """Check for distribution shift between this dataset and another"""
-        shifts = {}
-        
-        # Check token usage distribution
-        shifts['token_usage'] = {
-            'mean_diff': (self.token_usage.mean() - other_dataset.token_usage.mean()).item(),
-            'std_diff': (self.token_usage.std() - other_dataset.token_usage.std()).item()
-        }
-        
-        # Check class distribution shifts per language
-        for lang in self.lang_class_dist:
-            if lang in other_dataset.lang_class_dist:
-                mean_diff = np.abs(
-                    self.lang_class_dist[lang]['mean'] - 
-                    other_dataset.lang_class_dist[lang]['mean']
-                )
-                std_diff = np.abs(
-                    self.lang_class_dist[lang]['std'] - 
-                    other_dataset.lang_class_dist[lang]['std']
-                )
-                shifts[f'lang_{lang}'] = {
-                    'mean_diff': mean_diff.tolist(),
-                    'std_diff': std_diff.tolist()
-                }
-        
-        return shifts
-
     def __len__(self):
         return len(self.df)
-
+    
     def __getitem__(self, idx):
         item = {
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
             'labels': self.labels[idx],
-            'lang_ids': self.lang_ids[idx],  # Return tensor language ID
+            'lang_ids': self.lang_ids[idx],  # Return numeric language ID
             'lang': self.langs[idx]  # Keep original language code for reference
         }
         return item

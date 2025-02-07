@@ -16,10 +16,10 @@ class LanguageAwareClassifier(nn.Module):
         super().__init__()
         self.lang_embed = nn.Embedding(10, 64)  # 10 languages
         
-        # Language-specific dropout rates
+        # Language-specific dropout rates with numeric keys
         self.lang_dropout_rates = {
-            'ru': 0.45,
-            'tr': 0.45,
+            1: 0.45,  # Russian
+            2: 0.45,  # Turkish
             'default': 0.4
         }
         
@@ -47,6 +47,18 @@ class LanguageAwareClassifier(nn.Module):
                 nn.init.constant_(module.weight, 1.0)
     
     def forward(self, x, lang_ids):
+        # Ensure lang_ids is a tensor of integers
+        if not isinstance(lang_ids, torch.Tensor):
+            lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=x.device)
+        elif lang_ids.dtype != torch.long:
+            lang_ids = lang_ids.long()
+        
+        # Ensure lang_ids is on the correct device
+        lang_ids = lang_ids.to(x.device)
+        
+        # Clamp language IDs to valid range [0, 9]
+        lang_ids = torch.clamp(lang_ids, min=0, max=9)
+        
         # Get language embeddings
         lang_emb = self.lang_embed(lang_ids)
         
@@ -58,10 +70,13 @@ class LanguageAwareClassifier(nn.Module):
         x = self.classifier['activation'](x)
         x = self.classifier['norm'](x)
         
-        # Apply language-specific dropout
+        # Apply language-specific dropout during training
         if self.training:
             dropout_rates = torch.tensor([
-                self.lang_dropout_rates.get(str(lang_id.item()), self.lang_dropout_rates['default'])
+                self.lang_dropout_rates.get(
+                    int(lang_id.item()) if isinstance(lang_id.item(), (int, float)) else 'default',
+                    self.lang_dropout_rates['default']
+                )
                 for lang_id in lang_ids
             ], device=x.device)
             
