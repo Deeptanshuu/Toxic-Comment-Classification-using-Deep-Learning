@@ -1549,8 +1549,12 @@ def check_class_wise_gradient_flow(model):
         base_model = model.module if hasattr(model, 'module') else model
         
         # Get gradients for class-specific parameters
-        classifier_params = list(base_model.classifier.parameters())
-        if not classifier_params[-1].grad is None:  # Check if gradients exist
+        classifier_params = []
+        for name, param in base_model.named_parameters():
+            if 'classifier' in name and param.requires_grad and param.grad is not None:
+                classifier_params.append(param)
+        
+        if classifier_params:  # Check if we found any classifier parameters
             class_grads = classifier_params[-1].grad  # Shape might be [num_classes, hidden_dim]
             
             # Ensure class_grads has the right shape
@@ -1571,7 +1575,7 @@ def check_class_wise_gradient_flow(model):
                 grad_corr = torch.corrcoef(flat_grads)
                 grad_stats['correlation'] = grad_corr.cpu().numpy()
     except Exception as e:
-        print(f"Warning: Could not calculate gradient stats: {str(e)}")
+        logger.warning(f"Error calculating gradient stats: {str(e)}")
         return None
     
     return grad_stats
