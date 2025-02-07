@@ -777,11 +777,26 @@ class ToxicDataset(Dataset):
             item = {
                 'input_ids': self.encodings['input_ids'][idx],
                 'attention_mask': self.encodings['attention_mask'][idx],
-                'lang_ids': torch.tensor(lang_id, dtype=torch.long),
-                'labels': torch.FloatTensor(self.df.iloc[idx][self.toxicity_labels].values)
+                'lang_ids': torch.tensor(lang_id, dtype=torch.long)
             }
             
-            # Validate item
+            # Get labels and ensure they are numeric
+            label_values = []
+            for label in self.toxicity_labels:
+                try:
+                    # Convert to float and handle NaN/missing values
+                    val = float(self.df.iloc[idx][label])
+                    if np.isnan(val):
+                        val = 0.0
+                    # Ensure binary values
+                    val = 1.0 if val > 0.5 else 0.0
+                    label_values.append(val)
+                except (ValueError, TypeError):
+                    label_values.append(0.0)
+            
+            item['labels'] = torch.tensor(label_values, dtype=torch.float)
+            
+            # Validate tensors
             if not torch.is_tensor(item['input_ids']):
                 item['input_ids'] = torch.tensor(item['input_ids'])
             if not torch.is_tensor(item['attention_mask']):
