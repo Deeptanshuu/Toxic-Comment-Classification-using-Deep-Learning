@@ -570,3 +570,32 @@ def save_training_state(model, optimizer, epoch, step, metrics):
     except Exception as e:
         logger.error(f"Failed to save recovery state: {e}")
 
+def evaluate_single_class(model, val_loader, class_idx, threshold=0.5):
+    """Evaluate a single class with custom threshold"""
+    model.eval()
+    y_true, y_pred = [], []
+    
+    with torch.no_grad():
+        for batch in val_loader:
+            outputs = model(**{k: v.to(model.device) if isinstance(v, torch.Tensor) else v 
+                             for k, v in batch.items()})
+            probs = torch.sigmoid(outputs['logits'])[:, class_idx]
+            labels = batch['labels'][:, class_idx]
+            
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend((probs > threshold).cpu().numpy())
+    
+    return {
+        'precision': precision_score(y_true, y_pred, zero_division=0),
+        'recall': recall_score(y_true, y_pred, zero_division=0),
+        'support': len(y_true)
+    }
+
+def validate_critical_classes(model, val_loader, config):
+    critical_metrics = defaultdict(dict)
+    for cls_name, cls_idx in config.critical_indices.items():
+        metrics = evaluate_single_class(
+            model, val_loader, cls_idx,
+            threshold=config.thresholds[cls_name]
+        )
+        critical_metrics[cls_name] = metrics 
