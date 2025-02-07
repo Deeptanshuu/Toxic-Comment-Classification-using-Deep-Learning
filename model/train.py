@@ -705,6 +705,10 @@ class ToxicDataset(Dataset):
         # Validate final data
         self._validate_dataset()
     
+    def __len__(self):
+        """Return the number of samples in the dataset"""
+        return len(self.df)
+    
     def _process_and_cache_data(self):
         """Process and cache the tokenized data with error handling"""
         try:
