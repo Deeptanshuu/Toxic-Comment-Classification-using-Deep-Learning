@@ -711,9 +711,6 @@ class ToxicDataset(Dataset):
             for lang in df['lang'].fillna('en').astype(str)
         ], dtype=torch.long)
         
-        # Store original language codes for reference
-        self.langs = df['lang'].fillna('en').astype(str).values
-        
         # Process and cache tokenized data
         self._process_and_cache_data()
         
@@ -782,8 +779,7 @@ class ToxicDataset(Dataset):
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
             'labels': self.labels[idx],
-            'lang_ids': self.lang_ids[idx],  # Return numeric language ID
-            'lang': self.langs[idx]  # Keep original language code for reference
+            'lang_ids': self.lang_ids[idx]  # Return numeric language ID only
         }
         return item
 

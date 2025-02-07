@@ -330,151 +330,105 @@ class LanguageAwareTransformer(nn.Module):
         attention_mask: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
         lang_ids: Optional[torch.Tensor] = None,
-        mode: str = 'train'  # Add mode parameter
+        mode: str = 'train'
     ) -> dict:
         """Forward pass with language-specific metric tracking"""
         try:
-            # Input validation
-            if input_ids is None or attention_mask is None:
-                raise ValueError("input_ids and attention_mask must not be None")
-            if input_ids.dim() != 2 or attention_mask.dim() != 2:
-                raise ValueError(f"Expected 2D tensors, got input_ids: {input_ids.dim()}D, attention_mask: {attention_mask.dim()}D")
-            if input_ids.shape != attention_mask.shape:
-                raise ValueError(f"Shape mismatch: input_ids {input_ids.shape} != attention_mask {attention_mask.shape}")
-            if labels is not None and labels.shape[0] != input_ids.shape[0]:
-                raise ValueError(f"Batch size mismatch: labels {labels.shape[0]} != input_ids {input_ids.shape[0]}")
+            # Input validation and device setup
+            device = input_ids.device
             
-            # Default lang_ids to English (0) if not provided
+            # Handle language IDs
             if lang_ids is None:
-                lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+                lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
             elif not isinstance(lang_ids, torch.Tensor):
-                # Convert lang_ids to tensor if it's not already
-                lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=input_ids.device)
+                lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
+            elif lang_ids.dtype != torch.long:
+                lang_ids = lang_ids.long()
             
-            # Ensure lang_ids is on the correct device
-            lang_ids = lang_ids.to(input_ids.device)
+            # Ensure lang_ids is on correct device and shape
+            lang_ids = lang_ids.to(device)
+            if lang_ids.dim() > 1:
+                lang_ids = lang_ids.squeeze()
+            if lang_ids.dim() == 0:
+                lang_ids = lang_ids.unsqueeze(0)
             
-            # Use automatic mixed precision for better memory efficiency
+            # Clamp language IDs to valid range [0, 9]
+            lang_ids = torch.clamp(lang_ids, min=0, max=9)
+            
+            # Use automatic mixed precision
             device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-            dtype = torch.bfloat16 if device_type == 'cuda' else torch.float32
-            
-            with torch.autocast(device_type=device_type, dtype=dtype):
-                # Base Model with gradient checkpointing if enabled
-                if self.gradient_checkpointing and self.training:
-                    def create_custom_forward(module):
-                        def custom_forward(*inputs):
-                            return module(*inputs)
-                        return custom_forward
-                    
-                    base_output = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(self.base_model),
-                        input_ids,
-                        attention_mask,
-                        use_reentrant=False  # More memory efficient
-                    )
-                else:
-                    base_output = self.base_model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask
-                    )
+            with torch.autocast(device_type=device_type, dtype=torch.float16):
+                # Base model forward pass
+                base_output = self.base_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
                 
-                embeddings = base_output.last_hidden_state
+                hidden_states = base_output.last_hidden_state
                 
-                # Project dimensions if needed (inplace where possible)
+                # Get language embeddings and combine with hidden states
+                lang_embeddings = self.lang_embed(lang_ids)  # [batch_size, embed_dim]
+                lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
+                
+                # Combine features
+                combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)
+                
+                # Project if needed
                 if self.needs_projection:
-                    embeddings = self.dim_projection(embeddings)
-                    if isinstance(embeddings, tuple):
-                        embeddings = embeddings[0]
+                    combined_features = self.dim_projection(combined_features)
                 
-                # Memory-efficient attention using scaled dot product
-                attention_mask_expanded = ~attention_mask.bool()
-                if attention_mask_expanded.dim() == 2:
-                    attention_mask_expanded = attention_mask_expanded.unsqueeze(1)
-                
+                # Memory-efficient attention
+                attention_mask_expanded = attention_mask.unsqueeze(1)
                 attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    embeddings,  # query
-                    embeddings,  # key
-                    embeddings,  # value
+                    combined_features,  # query
+                    combined_features,  # key
+                    combined_features,  # value
                     attn_mask=attention_mask_expanded,
                     dropout_p=self.dropout.p if self.training else 0.0,
                     is_causal=False
                 )
                 
-                # Feature Processing with inplace operations
+                # Feature Processing
                 attended_features = torch.nn.functional.gelu(attn_output)
                 attended_features = self.feature_projection(attended_features)
                 
-                # Gating Mechanism with inplace operations
-                combined = torch.cat([embeddings, attended_features], dim=-1)
-                gate = torch.sigmoid_(self.gate_layer(combined)[0])  # Inplace sigmoid
+                # Gating Mechanism
+                gate_input = torch.cat([combined_features, attended_features], dim=-1)
+                gate = torch.sigmoid(self.gate_layer(gate_input))
                 
-                # Gated feature combination using efficient inplace ops
-                features = torch.addcmul(
-                    embeddings.mul_(gate),  # embeddings * gate (inplace)
-                    attended_features,
-                    1 - gate,  # Compute (1-gate) without new allocation
-                    value=1.0
-                )
+                # Combine gated features
+                features = combined_features * gate + attended_features * (1 - gate)
                 
-                # Apply layer norm and dropout (inplace where possible)
-                features = self.layer_norm(features)
-                if self.training:
-                    features = torch.nn.functional.dropout(
-                        features,
-                        p=self.dropout.p,
-                        training=True,
-                        inplace=True
-                    )
-                
-                # Pool sequence dimension (use [CLS] token)
-                pooled = features[:, 0]
-                
-                # Output projection with layer normalization and language-aware classification
-                pooled = self.pre_output(pooled)
-                logits = self.output(pooled, lang_ids)
-                
-                # Calculate probabilities (inplace)
-                probabilities = torch.sigmoid(logits)
+                # Final classification
+                pooled = features[:, 0]  # Use [CLS] token
+                logits = self.classifier(pooled)
                 
                 # Calculate loss if labels provided
                 loss = None
                 if labels is not None:
-                    loss_fct = nn.BCEWithLogitsLoss()
-                    loss = loss_fct(logits, labels)
-            
-            # Ensure all outputs are on the same device
-            device = pooled.device
-            outputs = {
-                'loss': loss,
-                'logits': logits,
-                'probabilities': probabilities,
-                'thresholds': self.thresholds.to(device),
-                'hidden_states': base_output.hidden_states,
-                'attention_weights': attn_output,
-                'gate_values': gate.mean(dim=1)  # For monitoring gate behavior
-            }
-            
-            # Clean up any unnecessary tensors
-            del base_output, embeddings, attn_output, attended_features, combined
-            torch.cuda.empty_cache()
-            
-            # Calculate language-specific metrics if labels provided
-            if labels is not None:
-                lang_metrics = self._calculate_language_metrics(
-                    logits,
-                    labels,
-                    lang_ids,
-                    loss,
-                    mode=mode
-                )
-                outputs['lang_metrics'] = lang_metrics
-            
-            return outputs
-            
+                    loss_fct = torch.nn.BCEWithLogitsLoss()
+                    loss = loss_fct(logits, labels.float())
+                
+                # Get probabilities
+                probs = torch.sigmoid(logits)
+                
+                # Calculate metrics if in eval mode
+                if mode != 'train' and labels is not None:
+                    self._calculate_language_metrics(probs, labels, lang_ids, loss, mode)
+                
+                return {
+                    'loss': loss,
+                    'logits': logits,
+                    'probabilities': probs,
+                    'hidden_states': hidden_states,
+                    'attention_weights': attn_output,
+                    'gate_values': gate.mean(dim=1)
+                }
+                
         except Exception as e:
-            logger.error(f"Error in forward pass: {str(e)}")
+            print(f"Error in forward pass: {str(e)}")
             raise
-    
+
     def get_attention_weights(self) -> torch.Tensor:
         """Get the attention weights for interpretation"""
         try:
