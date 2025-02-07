@@ -101,7 +101,7 @@ class LanguageAwareTransformer(nn.Module):
         
         # Add language metric tracking
         self.lang_metrics = {
-            'train': defaultdict(lambda: defaultdict(float)),  # {lang: {metric: value}}
+            'train': defaultdict(lambda: defaultdict(float)),
             'val': defaultdict(lambda: defaultdict(float))
         }
         
@@ -113,15 +113,9 @@ class LanguageAwareTransformer(nn.Module):
         
         # Critical class indices for specific metric tracking
         self.critical_indices = {
-            'threat': 3,      # Index of threat class
-            'identity_hate': 5 # Index of identity_hate class
+            'threat': 3,
+            'identity_hate': 5
         }
-        
-        # Validate input parameters
-        if num_labels <= 0:
-            raise ValueError(f"Invalid num_labels: {num_labels}")
-        if not 0 <= dropout < 1:
-            raise ValueError(f"Invalid dropout: {dropout}")
         
         # Load pretrained model with original config
         try:
@@ -145,44 +139,43 @@ class LanguageAwareTransformer(nn.Module):
                 nn.GELU()
             )
         
-        # Language-aware Attention with proper dimension handling
+        # Define working hidden size
+        self.working_hidden_size = hidden_size if self.needs_projection else self.original_hidden_size
+        
+        # Feature Processing Layers
+        self.pre_attention_projection = nn.Sequential(
+            nn.Linear(self.working_hidden_size + 64, self.working_hidden_size),
+            nn.LayerNorm(self.working_hidden_size),
+            nn.GELU()
+        )
+        
+        # Language-aware Attention with fixed dimensions
         self.lang_attention = nn.MultiheadAttention(
-            embed_dim=hidden_size if self.needs_projection else self.original_hidden_size,
+            embed_dim=self.working_hidden_size,
             num_heads=num_attention_heads,
             dropout=dropout,
             batch_first=True
         )
         
+        # Post-attention processing
+        self.post_attention = nn.Sequential(
+            nn.Linear(self.working_hidden_size, self.working_hidden_size),
+            nn.LayerNorm(self.working_hidden_size),
+            nn.GELU()
+        )
+        
         # Gating Mechanism with proper dimensions
-        gate_input_size = hidden_size if self.needs_projection else self.original_hidden_size
         self.gate_layer = nn.Sequential(
-            nn.Linear(gate_input_size * 2, gate_input_size),
-            nn.LayerNorm(gate_input_size)
+            nn.Linear(self.working_hidden_size * 2, self.working_hidden_size),
+            nn.LayerNorm(self.working_hidden_size),
+            nn.Dropout(dropout)
         )
         
-        # Feature Processing
-        self.feature_projection = nn.Linear(
-            hidden_size if self.needs_projection else self.original_hidden_size,
-            hidden_size if self.needs_projection else self.original_hidden_size
-        )
-        self.layer_norm = nn.LayerNorm(
-            hidden_size if self.needs_projection else self.original_hidden_size
-        )
-        
-        # Activation and Regularization
-        self.gelu = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-        
-        # Replace output layer with Language-Aware Classifier
-        final_hidden_size = hidden_size if self.needs_projection else self.original_hidden_size
-        self.pre_output = nn.LayerNorm(final_hidden_size)
+        # Output layer with correct dimensions
         self.output = LanguageAwareClassifier(
-            hidden_size=final_hidden_size,
+            hidden_size=self.working_hidden_size,
             num_labels=num_labels
         )
-        
-        # Language-specific thresholds (learnable)
-        self.thresholds = nn.Parameter(torch.ones(num_labels) * 0.5)
         
         # Initialize weights
         self._init_weights()
@@ -190,8 +183,15 @@ class LanguageAwareTransformer(nn.Module):
         # Gradient checkpointing flag
         self.gradient_checkpointing = False
         
-        logger.info(f"Model initialized with {'custom' if self.needs_projection else 'original'} hidden size: {final_hidden_size}")
-    
+        # Language-specific dropout rates
+        self.lang_dropout_rates = {
+            1: 0.45,  # Russian
+            2: 0.45,  # Turkish
+            'default': 0.4
+        }
+        
+        logger.info(f"Model initialized with working hidden size: {self.working_hidden_size}")
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory efficiency"""
         self.gradient_checkpointing = True
@@ -216,9 +216,8 @@ class LanguageAwareTransformer(nn.Module):
         
         # Apply to custom layers
         _init_layer(self.gate_layer[0])  # Linear layer in gate
-        _init_layer(self.feature_projection)
-        _init_layer(self.layer_norm)
-        _init_layer(self.pre_output)
+        _init_layer(self.pre_attention_projection)
+        _init_layer(self.post_attention)
         _init_layer(self.output)
 
     def _calculate_language_metrics(
@@ -338,119 +337,89 @@ class LanguageAwareTransformer(nn.Module):
             device = input_ids.device
             batch_size = input_ids.size(0)
             
-            # Handle language IDs with proper error handling
+            # Process attention mask - convert to bool for PyTorch 2.0+ efficiency
+            attention_mask = attention_mask.to(dtype=torch.bool)
+            if attention_mask.dim() > 2:
+                attention_mask = attention_mask.squeeze()
+            
+            # Handle language IDs
             if lang_ids is None:
                 logger.warning("No language IDs provided, defaulting to English (0)")
                 lang_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
             elif not isinstance(lang_ids, torch.Tensor):
-                try:
-                    lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
-                except Exception as e:
-                    logger.error(f"Failed to convert lang_ids to tensor: {str(e)}")
-                    lang_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
-            elif lang_ids.dtype != torch.long:
-                lang_ids = lang_ids.long()
+                lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
             
-            # Ensure lang_ids is on correct device and shape
-            lang_ids = lang_ids.to(device)
-            if lang_ids.dim() > 1:
-                lang_ids = lang_ids.squeeze()
-            if lang_ids.dim() == 0:
-                lang_ids = lang_ids.unsqueeze(0)
-            
-            # Clamp language IDs to valid range [0, 9]
+            lang_ids = lang_ids.to(device).long()
             lang_ids = torch.clamp(lang_ids, min=0, max=9)
             
-            # Ensure attention_mask is 2D [batch_size, seq_len]
-            if attention_mask.dim() == 4:  # If shape is [batch_size, 1, seq_len, seq_len]
-                attention_mask = attention_mask.squeeze(1).squeeze(1)
-            elif attention_mask.dim() == 3:  # If shape is [batch_size, 1, seq_len]
-                attention_mask = attention_mask.squeeze(1)
+            # Base model forward pass with proper attention mask
+            base_output = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            )
             
-            # Convert attention mask to float and create causal mask for attention
-            attention_mask = attention_mask.to(dtype=torch.float32)
+            hidden_states = base_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
             
-            # Use automatic mixed precision
-            device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-            with torch.autocast(device_type=device_type, dtype=torch.float16):
-                # Base model forward pass
-                base_output = self.base_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask
-                )
-                
-                hidden_states = base_output.last_hidden_state  # [batch_size, seq_len, hidden_size]
-                
-                # Get language embeddings
-                lang_embeddings = self.output.lang_embed(lang_ids)  # [batch_size, embed_dim]
-                
-                # Project hidden states if needed
-                if self.needs_projection:
-                    hidden_states = self.dim_projection(hidden_states)
-                
-                # Reshape language embeddings to match sequence length
-                lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
-                
-                # Combine features - concatenate along feature dimension
-                combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)
-                
-                # Project combined features to match attention dimensions
-                if self.needs_projection:
-                    projected_features = self.feature_projection(combined_features)
-                else:
-                    projected_features = combined_features
-                
-                # Create attention mask for scaled dot product attention
-                # Shape: [batch_size, seq_len, seq_len]
-                extended_attention_mask = attention_mask.unsqueeze(1).expand(-1, attention_mask.size(1), -1)
-                
-                # Memory-efficient attention with proper mask type
-                attn_output = torch.nn.functional.scaled_dot_product_attention(
-                    projected_features,  # query [batch_size, seq_len, hidden_size]
-                    projected_features,  # key
-                    projected_features,  # value
-                    attn_mask=extended_attention_mask,
-                    dropout_p=self.dropout.p if self.training else 0.0,
-                    is_causal=False
-                )
-                
-                # Feature Processing with correct dimensions
-                attended_features = self.gelu(attn_output)
-                attended_features = self.feature_projection(attended_features)
-                
-                # Ensure dimensions match for gating
-                gate_input = torch.cat([projected_features, attended_features], dim=-1)
-                gate = torch.sigmoid(self.gate_layer(gate_input))
-                
-                # Combine gated features with matching dimensions
-                features = projected_features * gate + attended_features * (1 - gate)
-                
-                # Final classification using [CLS] token
-                pooled = features[:, 0]  # Use [CLS] token
-                logits = self.output(pooled, lang_ids)
-                
-                # Calculate loss if labels provided
-                loss = None
-                if labels is not None:
-                    loss_fct = torch.nn.BCEWithLogitsLoss()
-                    loss = loss_fct(logits, labels.float())
-                
-                # Get probabilities
-                probs = torch.sigmoid(logits)
-                
-                # Calculate metrics if in eval mode
-                if mode != 'train' and labels is not None:
-                    self._calculate_language_metrics(probs, labels, lang_ids, loss, mode)
-                
-                return {
-                    'loss': loss,
-                    'logits': logits,
-                    'probabilities': probs,
-                    'hidden_states': hidden_states,
-                    'attention_weights': attn_output,
-                    'gate_values': gate.mean(dim=1)
-                }
-                
+            # Project if needed
+            if self.needs_projection:
+                hidden_states = self.dim_projection(hidden_states)
+            
+            # Get language embeddings and expand
+            lang_embeddings = self.output.lang_embed(lang_ids)  # [batch_size, 64]
+            lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
+            
+            # Combine and project features
+            combined_features = torch.cat([hidden_states, lang_embeddings], dim=-1)  # [batch_size, seq_len, hidden_size + 64]
+            projected_features = self.pre_attention_projection(combined_features)  # [batch_size, seq_len, working_hidden_size]
+            
+            # Prepare attention mask for MultiheadAttention - already bool from earlier conversion
+            key_padding_mask = ~attention_mask
+            
+            # Apply self-attention
+            attn_output, _ = self.lang_attention(
+                query=projected_features,
+                key=projected_features,
+                value=projected_features,
+                key_padding_mask=key_padding_mask,
+                need_weights=False
+            )  # [batch_size, seq_len, working_hidden_size]
+            
+            # Post-attention processing
+            processed_attention = self.post_attention(attn_output)
+            
+            # Gating mechanism
+            gate_input = torch.cat([projected_features, processed_attention], dim=-1)
+            gate = torch.sigmoid(self.gate_layer(gate_input))
+            
+            # Combine features
+            features = projected_features * gate + processed_attention * (1 - gate)
+            
+            # Classification using [CLS] token
+            pooled = features[:, 0]  # [batch_size, working_hidden_size]
+            logits = self.output(pooled, lang_ids)
+            
+            # Calculate loss if needed
+            loss = None
+            if labels is not None:
+                loss_fct = torch.nn.BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels.float())
+            
+            # Get probabilities
+            probs = torch.sigmoid(logits)
+            
+            # Calculate metrics in eval mode
+            if mode != 'train' and labels is not None:
+                self._calculate_language_metrics(probs, labels, lang_ids, loss, mode)
+            
+            return {
+                'loss': loss,
+                'logits': logits,
+                'probabilities': probs,
+                'hidden_states': hidden_states,
+                'attention_weights': attn_output,
+                'gate_values': gate.mean(dim=1)
+            }
+            
         except Exception as e:
             logger.error(f"Error in forward pass: {str(e)}")
             raise

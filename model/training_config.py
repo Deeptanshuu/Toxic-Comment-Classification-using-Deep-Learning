@@ -1,10 +1,13 @@
 # training_config.py
+from asyncio.log import logger
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import json
 import torch
 import numpy as np
 from pathlib import Path
+from contextlib import nullcontext
+from dataclasses import asdict
 
 @dataclass
 class DynamicClassWeights:
@@ -25,15 +28,26 @@ class DynamicClassWeights:
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
         
-        # Create default weights
+        # Create default weights with proper clamping
         self.weights = {}
         for lang in self.language_columns:
             self.weights[lang] = {}
             for label in self.toxicity_labels:
-                self.weights[lang][label] = {'0': 0.5, '1': 1.0}
+                self.weights[lang][label] = {
+                    '0': 0.5,  # Negative class weight
+                    '1': self._clamp_weight(1.0)  # Positive class weight
+                }
         
         # Set default weights (English)
         self.default_weights = torch.tensor([1.0] * len(self.toxicity_labels))
+    
+    def _clamp_weight(self, weight: float, min_val: float = 0.5, max_val: float = 15.0) -> float:
+        """Safely clamp weight values within valid range"""
+        try:
+            return float(max(min_val, min(max_val, weight)))
+        except (TypeError, ValueError) as e:
+            print(f"Warning: Invalid weight value {weight}, using default")
+            return 1.0
     
     def load_weights(self):
         """Load and adjust language-specific weights with error handling"""
@@ -51,18 +65,24 @@ class DynamicClassWeights:
         
         # Apply EN weight boosts for critical classes with validation
         try:
-            self.weights['en']['toxic']['1'] = min(15.0, max(0.5, 3.5))
-            self.weights['en']['threat']['1'] = min(15.0, max(0.5, 15.0))
-            self.weights['en']['identity_hate']['1'] = min(15.0, max(0.5, 5.0))
+            critical_weights = {
+                'toxic': 3.5,
+                'threat': 15.0,
+                'identity_hate': 5.0
+            }
+            
+            for cls, weight in critical_weights.items():
+                self.weights['en'][cls]['1'] = self._clamp_weight(weight)
+                
         except KeyError as e:
             print(f"Warning: Could not apply EN weight boosts: {str(e)}")
         
         # Default weights (English) with validation
         try:
             self.default_weights = torch.tensor([
-                float(self.weights['en'][label]['1']) 
+                self._clamp_weight(float(self.weights['en'][label]['1']))
                 for label in self.toxicity_labels
-            ]).clamp(0.1, 15.0)  # Ensure weights are in reasonable range
+            ])
         except Exception as e:
             print(f"Warning: Could not set default weights: {str(e)}")
             self.default_weights = torch.tensor([1.0] * len(self.toxicity_labels))
@@ -89,32 +109,41 @@ class DynamicClassWeights:
         
         try:
             for cls, params in critical_classes.items():
-                en_weight = float(self.weights['en'][cls]['1'])
-                max_other_weight = min(params['max_other_weight'], en_weight * params['ratio'])
+                # Get and validate English weight
+                en_weight = self._clamp_weight(float(self.weights['en'][cls]['1']))
+                self.weights['en'][cls]['1'] = str(en_weight)
+                
+                # Calculate maximum allowed weight for other languages
+                max_other_weight = min(
+                    params['max_other_weight'],
+                    en_weight * params['ratio']
+                )
                 
                 for lang in self.language_columns:
                     if lang != 'en':
                         try:
                             current_weight = float(self.weights[lang][cls]['1'])
+                            
                             # Ensure weight is both below EN ratio and above minimum
-                            if current_weight > max_other_weight or current_weight < params['min_weight']:
-                                new_weight = max(
-                                    params['min_weight'],
-                                    min(max_other_weight, current_weight)
-                                )
-                                self.weights[lang][cls]['1'] = str(new_weight)
-                                
-                                # Update calculation metadata
-                                if 'calculation_metadata' not in self.weights[lang][cls]:
-                                    self.weights[lang][cls]['calculation_metadata'] = {
-                                        'constraints_applied': []
-                                    }
-                                
-                                self.weights[lang][cls]['calculation_metadata']['constraints_applied'].extend([
-                                    f"language_priority_ratio={params['ratio']}",
-                                    f"max_other_weight={max_other_weight}",
-                                    f"adjusted_from={current_weight}_to={new_weight}"
-                                ])
+                            new_weight = self._clamp_weight(
+                                current_weight,
+                                min_val=params['min_weight'],
+                                max_val=max_other_weight
+                            )
+                            
+                            self.weights[lang][cls]['1'] = str(new_weight)
+                            
+                            # Update calculation metadata
+                            if 'calculation_metadata' not in self.weights[lang][cls]:
+                                self.weights[lang][cls]['calculation_metadata'] = {
+                                    'constraints_applied': []
+                                }
+                            
+                            self.weights[lang][cls]['calculation_metadata']['constraints_applied'].extend([
+                                f"language_priority_ratio={params['ratio']}",
+                                f"max_other_weight={max_other_weight}",
+                                f"adjusted_from={current_weight}_to={new_weight}"
+                            ])
                         except (KeyError, ValueError) as e:
                             print(f"Warning: Could not adjust weights for {lang}/{cls}: {str(e)}")
                             continue
@@ -140,7 +169,7 @@ class DynamicClassWeights:
             max_weight = 15.0 if toxicity_type == 'threat' else 10.0
             min_weight = 0.5
             
-            return float(max(min_weight, min(max_weight, raw_weight)))
+            return self._clamp_weight(raw_weight, min_weight, max_weight)
             
         except Exception as e:
             print(f"Warning: Weight calculation failed for {toxicity_type}: {str(e)}")
@@ -368,7 +397,7 @@ class TrainingConfig:
     hidden_size: int = 1024
     num_attention_heads: int = 16
     model_dropout: float = 0.1
-    freeze_layers: int = 8  # Number of base model layers to freeze
+    freeze_layers: int = 8
     
     # Training parameters
     batch_size: int = 32
@@ -380,19 +409,46 @@ class TrainingConfig:
     warmup_ratio: float = 0.1
     label_smoothing: float = 0.05
     
+    # Language-specific learning rate multipliers
+    lang_lr_multipliers: Dict[str, float] = None
+    
     # System parameters
     num_workers: int = 12
     fp16: bool = False
-    mixed_precision: str = "bf16"
+    mixed_precision: str = "bf16"  # Options: "no", "fp16", "bf16"
     device: str = None
     activation_checkpointing: bool = False
     tensor_float_32: bool = True
     gc_frequency: int = 100
+    
+    # Distributed training parameters
     distributed: bool = False
     world_size: int = 1
+    dist_backend: str = "nccl"
+    dist_url: str = "env://"
+    local_rank: int = -1
+    find_unused_parameters: bool = False
     
     def __post_init__(self):
-        """Initialize device, directories, and labels with validation"""
+        """Initialize and validate configuration"""
+        # Initialize language-specific learning rate multipliers with defaults
+        self.validate_lr_multipliers()
+        
+        # Validate learning rate multipliers
+        for lang, multiplier in self.lang_lr_multipliers.items():
+            if multiplier <= 0:
+                raise ValueError(f"Invalid learning rate multiplier for {lang}: {multiplier}")
+            if multiplier > 2.0:  # Reasonable upper bound
+                logger.warning(f"High learning rate multiplier for {lang}: {multiplier}")
+        
+        # Validate mixed precision settings
+        valid_precisions = ["no", "fp16", "bf16"]
+        if self.mixed_precision not in valid_precisions:
+            raise ValueError(f"Invalid mixed precision mode: {self.mixed_precision}. Must be one of {valid_precisions}")
+        
+        # Set use_mixed_precision flag
+        self.use_mixed_precision = self.mixed_precision != "no"
+        
         # Validate parameters
         if self.batch_size <= 0:
             raise ValueError(f"Invalid batch_size: {self.batch_size}")
@@ -419,26 +475,48 @@ class TrainingConfig:
         if self.freeze_layers < 0:
             raise ValueError(f"Invalid freeze_layers: {self.freeze_layers}")
         
+        # Validate distributed training parameters
+        if self.distributed:
+            if self.world_size <= 0:
+                raise ValueError(f"Invalid world_size for distributed training: {self.world_size}")
+            if self.local_rank < -1:
+                raise ValueError(f"Invalid local_rank: {self.local_rank}")
+            if self.dist_backend not in ["nccl", "gloo", "mpi"]:
+                raise ValueError(f"Invalid dist_backend: {self.dist_backend}")
+        
         # Set device with error handling
-        try:
-            if torch.cuda.is_available():
+        if torch.cuda.is_available():
+            try:
                 torch.cuda.init()
                 self.device = torch.device('cuda')
+                
+                # Check if GPU supports BF16
+                if self.mixed_precision == "bf16":
+                    if not torch.cuda.is_bf16_supported():
+                        print("Warning: BF16 not supported on this GPU. Falling back to FP16")
+                        self.mixed_precision = "fp16"
+                        self.fp16 = True
+                
                 # Enable TF32 if requested and available
-                if self.tensor_float_32 and torch.cuda.get_device_capability()[0] >= 8:
-                    torch.backends.cuda.matmul.allow_tf32 = True
-                    torch.backends.cudnn.allow_tf32 = True
-            else:
+                if self.tensor_float_32:
+                    if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
+                        torch.backends.cuda.matmul.allow_tf32 = True
+                        torch.backends.cudnn.allow_tf32 = True
+                    else:
+                        print("Warning: TF32 not supported on this GPU. Disabling.")
+                        self.tensor_float_32 = False
+                
+            except Exception as e:
+                print(f"Warning: CUDA initialization failed: {str(e)}")
                 self.device = torch.device('cpu')
-                if self.fp16:
-                    print("Warning: FP16 not supported on CPU, disabling")
-                    self.fp16 = False
-                    self.mixed_precision = "no"
-        except Exception as e:
-            print(f"Warning: Error setting up device: {str(e)}")
+                self.mixed_precision = "no"
+                self.fp16 = False
+        else:
             self.device = torch.device('cpu')
-            self.fp16 = False
-            self.mixed_precision = "no"
+            if self.mixed_precision != "no" or self.fp16:
+                print("Warning: Mixed precision not supported on CPU. Disabling.")
+                self.mixed_precision = "no"
+                self.fp16 = False
         
         # Create directories with error handling
         try:
@@ -455,52 +533,120 @@ class TrainingConfig:
         # Initialize toxicity labels
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.num_labels = len(self.toxicity_labels)
-        
-        # Validate distributed settings
-        if self.distributed and self.world_size <= 0:
-            raise ValueError(f"Invalid world_size for distributed training: {self.world_size}")
     
-    def to_serializable_dict(self) -> dict:
-        """Convert config to a JSON-serializable dictionary with validation"""
-        try:
-            config_dict = {
-                'model_name': self.model_name,
-                'max_length': self.max_length,
-                'batch_size': self.batch_size,
-                'grad_accum_steps': self.grad_accum_steps,
-                'epochs': self.epochs,
-                'lr': self.lr,
-                'weight_decay': self.weight_decay,
-                'num_workers': self.num_workers,
-                'fp16': self.fp16,
-                'mixed_precision': self.mixed_precision,
-                'device': str(self.device),
-                'activation_checkpointing': self.activation_checkpointing,
-                'tensor_float_32': self.tensor_float_32,
-                'gc_frequency': self.gc_frequency,
-                'distributed': self.distributed,
-                'world_size': self.world_size,
-                'num_labels': self.num_labels,
-                'toxicity_labels': self.toxicity_labels,
-                'hidden_size': self.hidden_size,
-                'num_attention_heads': self.num_attention_heads,
-                'model_dropout': self.model_dropout,
-                'max_grad_norm': self.max_grad_norm,
-                'warmup_ratio': self.warmup_ratio,
-                'label_smoothing': self.label_smoothing,
-                'freeze_layers': self.freeze_layers
-            }
+    @property
+    def dtype(self) -> torch.dtype:
+        """Get the appropriate dtype based on mixed precision settings"""
+        if self.mixed_precision == "bf16":
+            return torch.bfloat16
+        elif self.mixed_precision == "fp16":
+            return torch.float16
+        return torch.float32
+    
+    def get_autocast_context(self):
+        """Get the appropriate autocast context based on configuration."""
+        if not self.use_mixed_precision:
+            return nullcontext()
             
-            # Validate all values are JSON serializable
-            json.dumps(config_dict)
-            return config_dict
+        dtype = torch.bfloat16 if self.mixed_precision == "bf16" else torch.float16
+        return torch.autocast(device_type=self.device.type, dtype=dtype)
+    
+    def to_serializable_dict(self):
+        """Convert config to a dictionary for saving."""
+        config_dict = asdict(self)
+        # Add any non-serializable field handling here
+        return config_dict
+    
+    def validate_lr_multipliers(self):
+        """Validate language-specific learning rate multipliers"""
+        try:
+            # Initialize with defaults if not set
+            if self.lang_lr_multipliers is None:
+                self.lang_lr_multipliers = {
+                    'en': 1.2,  # Higher LR for English (most data)
+                    'ru': 0.9,  # Lower for Russian (different script)
+                    'tr': 0.95, # Slightly lower for Turkish
+                    'es': 1.0,  # Default for Spanish
+                    'fr': 1.0,  # Default for French
+                    'it': 0.95, # Slightly lower for Italian (less data)
+                    'pt': 0.95, # Slightly lower for Portuguese (less data)
+                    'default': 1.0  # Default multiplier for other languages
+                }
+            
+            # Ensure all required languages are present
+            required_langs = {'en', 'ru', 'tr', 'es', 'fr', 'it', 'pt', 'default'}
+            missing_langs = required_langs - set(self.lang_lr_multipliers.keys())
+            if missing_langs:
+                print(f"Warning: Missing language multipliers for {missing_langs}")
+                # Add missing languages with default multiplier
+                for lang in missing_langs:
+                    self.lang_lr_multipliers[lang] = 1.0
+            
+            # Validate multiplier values
+            for lang, multiplier in self.lang_lr_multipliers.items():
+                try:
+                    multiplier_float = float(multiplier)
+                    if multiplier_float <= 0:
+                        print(f"Warning: Invalid multiplier {multiplier} for {lang}, using 1.0")
+                        self.lang_lr_multipliers[lang] = 1.0
+                    elif multiplier_float > 2.0:
+                        print(f"Warning: High multiplier {multiplier} for {lang}")
+                except (TypeError, ValueError):
+                    print(f"Warning: Invalid multiplier format for {lang}, using 1.0")
+                    self.lang_lr_multipliers[lang] = 1.0
+            
+            # Ensure English has slightly higher learning rate
+            en_multiplier = self.lang_lr_multipliers['en']
+            if en_multiplier <= 1.0:
+                print("Warning: English learning rate should be higher, adjusting to 1.2")
+                self.lang_lr_multipliers['en'] = 1.2
+            
+            # Log final multipliers
+            print("Language-specific learning rate multipliers:")
+            for lang, multiplier in sorted(self.lang_lr_multipliers.items()):
+                print(f"  {lang}: {multiplier}")
+                
+        except Exception as e:
+            print(f"Error validating learning rate multipliers: {str(e)}")
+            # Reset to safe defaults
+            self.lang_lr_multipliers = {lang: 1.0 for lang in required_langs}
+            self.lang_lr_multipliers['en'] = 1.2  # Keep English higher
+    
+    def get_param_groups(self, model):
+        """Get parameter groups with language-specific learning rates"""
+        try:
+            param_groups = []
+            
+            # Track parameters to ensure no duplicates
+            seen_params = set()
+            
+            for name, param in model.named_parameters():
+                if not param.requires_grad or id(param) in seen_params:
+                    continue
+                
+                seen_params.add(id(param))
+                
+                # Base learning rate
+                lr = self.lr
+                
+                # Apply language-specific multiplier if applicable
+                for lang, multiplier in self.lang_lr_multipliers.items():
+                    if lang != 'default' and lang in name.lower():
+                        lr *= multiplier
+                        break
+                else:
+                    # Apply default multiplier if no specific language found
+                    lr *= self.lang_lr_multipliers['default']
+                
+                param_groups.append({
+                    'params': [param],
+                    'lr': lr,
+                    'weight_decay': self.weight_decay
+                })
+            
+            return param_groups
             
         except Exception as e:
-            print(f"Error serializing config: {str(e)}")
-            # Return minimal valid config
-            return {
-                'model_name': self.model_name,
-                'batch_size': self.batch_size,
-                'epochs': self.epochs,
-                'lr': self.lr
-            } 
+            print(f"Error creating parameter groups: {str(e)}")
+            # Fallback to simple parameter group
+            return [{'params': model.parameters(), 'lr': self.lr}] 

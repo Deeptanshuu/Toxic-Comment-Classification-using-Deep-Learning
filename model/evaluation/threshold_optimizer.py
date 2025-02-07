@@ -120,107 +120,120 @@ class ThresholdOptimizer:
                     is_critical = class_name in ['threat', 'identity_hate', 'severe_toxic']
                     MIN_TPR = 0.65 if is_critical else 0.0  # Minimum TPR for critical classes
                     
-                    # Get ROC curve points
-                    fpr, tpr, thresholds = roc_curve(
-                        lang_y_true[:, class_idx],
-                        lang_y_pred[:, class_idx]
-                    )
-                    
-                    # Filter thresholds within bounds
-                    valid_indices = (thresholds >= min_thresh) & (thresholds <= max_thresh)
-                    if not valid_indices.any():
-                        logger.warning(f"No thresholds within bounds for {lang}/{class_name}, using closest valid threshold")
-                        # Use closest valid threshold
-                        if thresholds[0] > max_thresh:
-                            valid_indices[0] = True
-                        elif thresholds[-1] < min_thresh:
-                            valid_indices[-1] = True
-                    
-                    fpr = fpr[valid_indices]
-                    tpr = tpr[valid_indices]
-                    thresholds = thresholds[valid_indices]
-                    
-                    # Calculate F1 scores for valid thresholds
-                    best_threshold = None
-                    best_score = -float('inf')
-                    best_metrics = None
-                    
-                    for threshold in thresholds:
-                        try:
-                            y_pred_binary = (lang_y_pred[:, class_idx] >= threshold).astype(int)
+                    try:
+                        # Get ROC curve points with renamed variables to avoid shadowing
+                        roc_fpr, roc_tpr, roc_thresholds = roc_curve(
+                            lang_y_true[:, class_idx],
+                            lang_y_pred[:, class_idx]
+                        )
+                        
+                        # Filter thresholds within bounds
+                        valid_indices = (roc_thresholds >= min_thresh) & (roc_thresholds <= max_thresh)
+                        
+                        # Handle case when no thresholds are within bounds
+                        if not valid_indices.any():
+                            logger.warning(f"No thresholds within bounds for {lang}/{class_name}")
+                            # Find closest valid threshold to 0.5 (balanced)
+                            closest_idx = np.argmin(np.abs(roc_thresholds - 0.5))
+                            best_threshold = np.clip(
+                                roc_thresholds[closest_idx],
+                                min_thresh,
+                                max_thresh
+                            )
+                            logger.info(f"Using closest valid threshold: {best_threshold:.3f}")
+                        else:
+                            # Use valid thresholds
+                            valid_fpr = roc_fpr[valid_indices]
+                            valid_tpr = roc_tpr[valid_indices]
+                            valid_thresholds = roc_thresholds[valid_indices]
                             
-                            # Calculate metrics
-                            tn, fp, fn, tp = confusion_matrix(
+                            # Calculate F1 scores for valid thresholds
+                            best_threshold = None
+                            best_score = -float('inf')
+                            best_metrics = None
+                            
+                            for threshold in valid_thresholds:
+                                try:
+                                    y_pred_binary = (lang_y_pred[:, class_idx] >= threshold).astype(int)
+                                    
+                                    # Calculate metrics
+                                    tn, fp, fn, tp = confusion_matrix(
+                                        lang_y_true[:, class_idx],
+                                        y_pred_binary,
+                                        labels=[0, 1]
+                                    ).ravel()
+                                    
+                                    # Calculate F1 and TPR with error handling
+                                    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
+                                    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                                    f1 = 2 * (precision * tpr) / (precision + tpr) if (precision + tpr) > 0 else 0
+                                    
+                                    # Boost score for critical classes
+                                    score = f1
+                                    if is_critical:
+                                        score += 0.1 * tpr  # TPR boost for critical classes
+                                    
+                                    if score > best_score:
+                                        best_score = score
+                                        best_threshold = threshold
+                                        best_metrics = {
+                                            'threshold': threshold,
+                                            'f1': f1,
+                                            'precision': precision,
+                                            'recall': tpr,
+                                            'tp': tp,
+                                            'fp': fp,
+                                            'tn': tn,
+                                            'fn': fn
+                                        }
+                                except Exception as e:
+                                    logger.warning(f"Error calculating metrics for threshold {threshold}: {str(e)}")
+                                    continue
+                        
+                        # Check if best metrics meet minimum TPR requirement
+                        if best_metrics and best_metrics['recall'] < MIN_TPR:
+                            logger.warning(f"Fallback to Youden's J for {lang} {class_name} - TPR too low: {best_metrics['recall']:.3f}")
+                            
+                            # Use Youden's J index as fallback
+                            j_scores = roc_tpr - roc_fpr
+                            best_idx = np.argmax(j_scores)
+                            best_threshold = np.clip(roc_thresholds[best_idx], min_thresh, max_thresh)
+                            
+                            # Calculate metrics for adjusted threshold
+                            y_pred_binary = (lang_y_pred[:, class_idx] >= best_threshold).astype(int)
+                            precision, recall, f1, _ = precision_recall_fscore_support(
                                 lang_y_true[:, class_idx],
                                 y_pred_binary,
-                                labels=[0, 1]
-                            ).ravel()
+                                average='binary',
+                                zero_division=0
+                            )
                             
-                            # Calculate F1 and TPR with error handling
-                            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0
-                            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-                            f1 = 2 * (precision * tpr) / (precision + tpr) if (precision + tpr) > 0 else 0
-                            
-                            # Boost score for critical classes
-                            score = f1
-                            if is_critical:
-                                score += 0.1 * tpr  # TPR boost for critical classes
-                            
-                            if score > best_score:
-                                best_score = score
-                                best_threshold = threshold
-                                best_metrics = {
-                                    'threshold': threshold,
-                                    'f1': f1,
-                                    'precision': precision,
-                                    'recall': tpr,
-                                    'tp': tp,
-                                    'fp': fp,
-                                    'tn': tn,
-                                    'fn': fn
-                                }
-                        except Exception as e:
-                            logger.warning(f"Error calculating metrics for threshold {threshold}: {str(e)}")
-                            continue
-                    
-                    # Check if best metrics meet minimum TPR requirement
-                    if best_metrics and best_metrics['recall'] < MIN_TPR:
-                        logger.warning(f"Fallback to Youden's J for {lang} {class_name} - TPR too low: {best_metrics['recall']:.3f}")
+                            best_metrics = {
+                                'threshold': best_threshold,
+                                'f1': f1,
+                                'precision': precision,
+                                'recall': recall,
+                                'tp': -1,  # Mark as fallback
+                                'fp': -1,
+                                'tn': -1,
+                                'fn': -1
+                            }
                         
-                        # Use Youden's J index as fallback
-                        j_scores = tpr - fpr
-                        best_idx = np.argmax(j_scores)
-                        best_threshold = np.clip(thresholds[best_idx], min_thresh, max_thresh)
+                        self.thresholds[lang][class_name] = best_threshold
+                        self.metrics[lang][class_name] = best_metrics
                         
-                        # Calculate metrics for adjusted threshold
-                        y_pred_binary = (lang_y_pred[:, class_idx] >= best_threshold).astype(int)
-                        precision, recall, f1, _ = precision_recall_fscore_support(
-                            lang_y_true[:, class_idx],
-                            y_pred_binary,
-                            average='binary',
-                            zero_division=0
-                        )
-                        
-                        best_metrics = {
-                            'threshold': best_threshold,
-                            'f1': f1,
-                            'precision': precision,
-                            'recall': recall,
-                            'tp': -1,  # Mark as fallback
-                            'fp': -1,
-                            'tn': -1,
-                            'fn': -1
-                        }
+                        # Log optimized thresholds for critical classes
+                        if is_critical:
+                            logger.info(
+                                f"{lang} {class_name} threshold: {best_threshold:.3f} "
+                                f"(F1: {best_metrics['f1']:.3f}, TPR: {best_metrics['recall']:.3f})"
+                            )
                     
-                    self.thresholds[lang][class_name] = best_threshold
-                    self.metrics[lang][class_name] = best_metrics
-                    
-                    # Log optimized thresholds for critical classes
-                    if is_critical:
-                        logger.info(
-                            f"{lang} {class_name} threshold: {best_threshold:.3f} "
-                            f"(F1: {best_metrics['f1']:.3f}, TPR: {best_metrics['recall']:.3f})"
-                        )
+                    except Exception as e:
+                        logger.error(f"Error optimizing threshold for {lang}/{class_name}: {str(e)}")
+                        # Use safe default threshold
+                        self.thresholds[lang][class_name] = 0.5
+                        continue
             
             return self.thresholds
             

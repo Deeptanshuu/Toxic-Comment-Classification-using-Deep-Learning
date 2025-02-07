@@ -5,9 +5,10 @@ import torch.nn as nn
 import logging
 import os
 import gc
+import tqdm
 import wandb
 from datetime import datetime, timedelta
-from torch.cuda.amp import autocast, GradScaler
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ from dataclasses import dataclass, asdict
 import os
 import warnings
 from torch.amp import autocast, GradScaler
-import time
 from datetime import datetime
 import GPUtil
 import json
@@ -36,7 +36,7 @@ import sys
 import signal
 import atexit
 from pathlib import Path
-from model.training_config import TrainingConfig, EarlyStopping
+from model.training_config import MetricsTracker, TrainingConfig, EarlyStopping
 from model.data.sampler import MultilabelStratifiedSampler
 from model.evaluation.threshold_optimizer import ThresholdOptimizer
 from model.language_aware_transformer import LanguageAwareTransformer
@@ -183,6 +183,18 @@ def init_model(config):
             model_name=config.model_name,
             dropout=config.model_dropout
         )
+        
+        # Validate model configuration
+        assert config.hidden_size == 1024, "XLM-R hidden size must be 1024"
+        assert _model.base_model.config.num_attention_heads == 16, "Head count mismatch"
+        
+        # Freeze first 8 layers if specified
+        if config.freeze_layers > 0:
+            for param in list(_model.base_model.parameters())[:8]:
+                param.requires_grad = False
+        
+        # Verify layers are frozen
+        assert not any([p.requires_grad for p in _model.base_model.parameters()][:8]), "First 8 layers should be frozen"
         
         # Enable gradient checkpointing if requested
         if config.activation_checkpointing:
@@ -349,301 +361,236 @@ def calculate_lang_specific_loss(batch, weighted_loss, device):
     
     return lang_losses
 
-def train(model, train_loader, val_loader, config):
-    """Training loop with enhanced optimization and detailed logging"""
-    model.train()
-    print("\n" + "="*50)
-    print("Starting Training")
-    print("="*50)
-    print(f"Total epochs: {config.epochs}")
-    print(f"Training samples: {len(train_loader.dataset):,}")
-    print(f"Validation samples: {len(val_loader.dataset):,}")
-    print(f"Batch size: {config.batch_size}")
-    print(f"Steps per epoch: {len(train_loader)}")
-    print("="*50 + "\n")
-    
-    # Initialize monitoring metrics
-    peak_memory = 0
-    grad_norms_history = []
-    
-    def get_memory_stats():
-        """Get current GPU memory statistics"""
-        if not torch.cuda.is_available():
-            return {'allocated': 0, 'reserved': 0, 'peak': 0}
+def get_grad_stats(model):
+    """Calculate gradient statistics for monitoring"""
+    try:
+        grad_norms = []
+        grad_means = []
+        grad_maxs = []
+        grad_mins = []
+        param_names = []
         
-        try:
+        for name, param in model.parameters():
+            if param.grad is not None:
+                grad = param.grad
+                grad_norm = grad.norm().item()
+                grad_norms.append(grad_norm)
+                grad_means.append(grad.mean().item())
+                grad_maxs.append(grad.max().item())
+                grad_mins.append(grad.min().item())
+                param_names.append(name)
+        
+        if grad_norms:
             return {
-                'allocated': torch.cuda.memory_allocated() / 1e9,  # Convert to GB
-                'reserved': torch.cuda.memory_reserved() / 1e9,
-                'peak': torch.cuda.max_memory_allocated() / 1e9
+                'grad/max_norm': max(grad_norms),
+                'grad/min_norm': min(grad_norms),
+                'grad/mean_norm': sum(grad_norms) / len(grad_norms),
+                'grad/max_value': max(grad_maxs),
+                'grad/min_value': min(grad_mins),
+                'grad/mean_value': sum(grad_means) / len(grad_means),
+                'grad/largest_layer': param_names[grad_norms.index(max(grad_norms))],
+                'grad/smallest_layer': param_names[grad_norms.index(min(grad_norms))]
             }
-        except Exception as e:
-            print(f"Warning: Could not get memory stats: {str(e)}")
-            return {'allocated': 0, 'reserved': 0, 'peak': 0}
-    
-    def get_class_grad_norm(model):
-        """Calculate gradient norm for each class head"""
-        try:
-            classifier = model.module.output if hasattr(model, 'module') else model.output
-            if not hasattr(classifier, 'weight') or classifier.weight.grad is None:
-                return None
-            
-            # Shape: [num_classes, hidden_dim]
-            class_grads = classifier.weight.grad
-            
-            # Calculate norm for each class
-            class_norms = torch.norm(class_grads, dim=1)
-            return class_norms.detach().cpu().numpy()
-            
-        except Exception as e:
-            print(f"Warning: Could not calculate class gradient norms: {str(e)}")
-            return None
-    
-    def get_layer_grad_norms(model):
-        """Calculate detailed gradient statistics for different layer groups"""
-        try:
-            grad_stats = {}
-            
-            # Get all parameter gradients
-            grad_flow = [(name, param.grad.abs().mean().item()) 
-                        for name, param in model.named_parameters() 
-                        if param.grad is not None]
-            
-            # Check for problematic gradients
-            for name, grad in grad_flow:
-                if grad < 1e-7:
-                    logger.warning(f"Vanishing gradient in {name}: {grad:.2e}")
-                elif grad > 1e2:
-                    logger.error(f"Exploding gradient in {name}: {grad:.2e}")
-                
-                # Store gradient stats by layer type
-                layer_type = name.split('.')[0]
-                if layer_type not in grad_stats:
-                    grad_stats[layer_type] = []
-                grad_stats[layer_type].append(grad)
-            
-            # Calculate aggregate statistics per layer type
-            layer_norms = {}
-            for layer_type, grads in grad_stats.items():
-                layer_norms[layer_type] = {
-                    'mean': np.mean(grads),
-                    'std': np.std(grads),
-                    'min': np.min(grads),
-                    'max': np.max(grads)
-                }
-                
-                # Log severe gradient issues
-                if layer_norms[layer_type]['mean'] < 1e-7:
-                    logger.error(f"Severe vanishing gradients in {layer_type} layer")
-                elif layer_norms[layer_type]['mean'] > 1e2:
-                    logger.error(f"Severe gradient explosion in {layer_type} layer")
-            
-            return layer_norms
-            
-        except Exception as e:
-            logger.error(f"Error in gradient flow monitoring: {str(e)}")
-            return {}
-    
-    # Freeze base model layers if specified
-    if config.freeze_layers > 0:
-        print(f"Freezing first {config.freeze_layers} layers of base model")
-        for param in model.base_model.embeddings.parameters():
-            param.requires_grad = False
-        for i, layer in enumerate(model.base_model.encoder.layer[:config.freeze_layers]):
-            for param in layer.parameters():
-                param.requires_grad = False
-    
-    # Calculate total training steps
-    total_steps = len(train_loader) * config.epochs
-    warmup_steps = int(total_steps * config.warmup_ratio)
-    
-    print(f"Total training steps: {total_steps:,}")
-    print(f"Warmup steps: {warmup_steps:,}")
-    
-    # Initialize optimizer with automatic gradient accumulation
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=config.lr,
-        weight_decay=config.weight_decay,
-        eps=1e-8
-    )
-    
-    # Initialize cosine scheduler with warmup
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps
-    )
-    
-    scaler = GradScaler(enabled=config.fp16)
-    
-    # Initialize early stopping
-    early_stopping = EarlyStopping(patience=3, min_delta=1e-4)
-    best_auc = 0
-    
-    # Training loop
-    for epoch in range(config.epochs):
-        model.train()
-        total_loss = 0
-        epoch_start_time = time.time()
+        return {}
+    except Exception as e:
+        logger.warning(f"Error calculating gradient stats: {str(e)}")
+        return {}
+
+def train(model, train_loader, val_loader, config):
+    """Training loop with gradient monitoring and class-aware clipping"""
+    try:
+        # Initialize metrics tracker
+        metrics = MetricsTracker()
         
-        print(f"\nEpoch {epoch+1}/{config.epochs}")
-        print("-"*20)
+        # Get parameter groups with language-specific learning rates
+        param_groups = config.get_param_groups(model)
         
-        for batch_idx, batch in enumerate(train_loader):
-            try:
-                # Move batch to device
-                inputs = {
-                    k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
-                }
-                
-                # Forward pass with automatic mixed precision
-                device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
-                    outputs = model(
-                        input_ids=inputs['input_ids'],
-                        attention_mask=inputs['attention_mask'],
-                        labels=inputs['labels'],
-                        lang_ids=inputs['lang_ids'],
-                        mode='train'
-                    )
+        # Group parameters by component for class-aware clipping
+        classifier_params = []
+        base_params = []
+        
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            
+            # Separate classifier parameters for class-aware clipping
+            if 'classifier' in name or 'output' in name:
+                classifier_params.append(param)
+            else:
+                base_params.append(param)
+        
+        # Initialize optimizer with parameter groups
+        optimizer = torch.optim.AdamW(param_groups)
+        
+        # Get total training steps for scheduler
+        total_steps = len(train_loader) * config.epochs // config.grad_accum_steps
+        warmup_steps = int(total_steps * config.warmup_ratio)
+        
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, 
+            total_steps=total_steps,
+            warmup_steps=warmup_steps
+        )
+        
+        # Initialize gradient scaler for mixed precision
+        scaler = torch.cuda.amp.GradScaler(enabled=config.mixed_precision == "fp16")
+        
+        # Training loop
+        for epoch in range(config.epochs):
+            model.train()
+            epoch_loss = 0
+            epoch_start = time.time()
+            
+            # Training steps
+            for step, batch in enumerate(train_loader):
+                try:
+                    # Forward pass
+                    outputs = model(**batch)
                     loss = outputs['loss']
-                    loss = loss / config.grad_accum_steps  # Scale loss for gradient accumulation
-                
-                # Backward pass with gradient scaling
-                scaler.scale(loss).backward()
-                
-                # Gradient accumulation
-                if (batch_idx + 1) % config.grad_accum_steps == 0:
-                    # Unscale gradients for gradient clipping
-                    scaler.unscale_(optimizer)
                     
-                    # Calculate gradient norm for monitoring
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), 
-                        config.max_grad_norm
-                    )
+                    # Scale loss for gradient accumulation
+                    if config.grad_accum_steps > 1:
+                        loss = loss / config.grad_accum_steps
                     
-                    # Optimizer step with gradient scaling
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
+                    # Backward pass with gradient monitoring
+                    if config.use_mixed_precision:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
                     
-                    # Update learning rate
-                    scheduler.step()
+                    # Monitor gradient flow after backward
+                    if step % 10 == 0:  # Log every 10 steps to avoid overhead
+                        grad_stats = get_grad_stats(model)
+                        wandb.log(grad_stats)
                     
-                    # Log gradients and memory stats
-                    if wandb.run is not None:
-                        wandb.log({
-                            'train/grad_norm': grad_norm.item(),
-                            'train/lr': scheduler.get_last_lr()[0],
-                            'system/gpu_memory': torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-                        })
-                
-                # Update metrics
-                total_loss += loss.item() * config.grad_accum_steps
-                
-                # Log progress every 10 batches
-                if batch_idx % 10 == 0:
-                    lr = scheduler.get_last_lr()[0]
-                    avg_loss = total_loss / (batch_idx + 1)
-                    progress = (batch_idx + 1) / len(train_loader) * 100
-                    
-                    # Calculate ETA
-                    elapsed_time = time.time() - epoch_start_time
-                    batches_remaining = len(train_loader) - (batch_idx + 1)
-                    eta = (elapsed_time / (batch_idx + 1)) * batches_remaining
-                    
-                    print(
-                        f"\rProgress: [{batch_idx+1}/{len(train_loader)} ({progress:.1f}%)] "
-                        f"Loss: {avg_loss:.4f} "
-                        f"LR: {lr:.2e} "
-                        f"Grad Norm: {grad_norm:.2f} "
-                        f"Mem: {get_memory_stats()['allocated']:.1f}GB "
-                        f"ETA: {eta/60:.1f}min",
-                        end=""
-                    )
-                    
-                    # Log to wandb with enhanced monitoring
-                    if wandb.run is not None:
-                        monitoring_metrics = {
-                            # Training metrics
-                            'train/loss': avg_loss,
-                            'train/learning_rate': lr,
-                            'train/epoch': epoch,
-                            'train/grad_norm': grad_norm,
-                            'train/gate_values': outputs['gate_values'].mean().item(),
+                    # Gradient accumulation and optimization step
+                    if (step + 1) % config.grad_accum_steps == 0:
+                        if config.use_mixed_precision:
+                            scaler.unscale_(optimizer)
+                        
+                        # Class-aware gradient clipping
+                        try:
+                            # Validate classifier parameters
+                            if classifier_params:
+                                classifier_grad_norm = torch.nn.utils.clip_grad_norm_(
+                                    classifier_params, 
+                                    config.max_grad_norm * 0.5,  # More aggressive clipping for classifier
+                                    error_if_nonfinite=True
+                                )
+                            else:
+                                classifier_grad_norm = torch.tensor(0.0, device=config.device)
+                                logger.info("No classifier parameters found for gradient clipping")
                             
-                            # Memory metrics
-                            'memory/allocated_gb': get_memory_stats()['allocated'],
-                            'memory/reserved_gb': get_memory_stats()['reserved'],
-                            'memory/peak_gb': get_memory_stats()['peak'],
+                            # Validate base parameters
+                            if base_params:
+                                base_grad_norm = torch.nn.utils.clip_grad_norm_(
+                                    base_params,
+                                    config.max_grad_norm,
+                                    error_if_nonfinite=True
+                                )
+                            else:
+                                base_grad_norm = torch.tensor(0.0, device=config.device)
+                                logger.info("No base parameters found for gradient clipping")
                             
-                            # Gradient metrics
-                            'gradients/total_norm': grad_norm
+                            # Log gradient norms
+                            if step % 100 == 0:
+                                wandb.log({
+                                    'grad/classifier_norm': classifier_grad_norm.item(),
+                                    'grad/base_norm': base_grad_norm.item()
+                                })
+                        except RuntimeError as e:
+                            if "inf" in str(e).lower() or "nan" in str(e).lower():
+                                logger.error(f"Non-finite gradients detected: {str(e)}")
+                                # Skip this batch to prevent training instability
+                                optimizer.zero_grad()
+                                continue
+                            else:
+                                logger.warning(f"Gradient clipping failed: {str(e)}")
+                                # Fallback to global clipping with non-finite check
+                                try:
+                                    torch.nn.utils.clip_grad_norm_(
+                                        model.parameters(),
+                                        config.max_grad_norm,
+                                        error_if_nonfinite=True
+                                    )
+                                except RuntimeError as clip_error:
+                                    if "inf" in str(clip_error).lower() or "nan" in str(clip_error).lower():
+                                        logger.error(f"Non-finite gradients in fallback clipping: {str(clip_error)}")
+                                        optimizer.zero_grad()
+                                        continue
+                                    else:
+                                        raise
+                        
+                        # Optimization step
+                        if config.use_mixed_precision:
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
+                        
+                        optimizer.zero_grad()
+                        scheduler.step()
+                    
+                    # Update metrics
+                    epoch_loss += loss.item() * config.grad_accum_steps
+                    
+                    # Log step metrics
+                    if step % 100 == 0:
+                        # Get learning rates for each parameter group
+                        lrs = [group['lr'] for group in optimizer.param_groups]
+                        
+                        metrics_dict = {
+                            'train/step_loss': loss.item(),
+                            'train/learning_rate/base': lrs[0],
+                            'system/gpu_memory': get_gpu_stats(),
+                            'system/step': step
                         }
                         
-                        # Log all metrics
-                        wandb.log(monitoring_metrics)
-                
-            except Exception as e:
-                print(f"\nError in training batch: {str(e)}")
-                continue
-        
-        # End of epoch metrics
-        epoch_time = time.time() - epoch_start_time
-        print(f"\n\nEpoch {epoch+1} completed in {epoch_time/60:.1f} minutes")
-        print(f"Average training loss: {total_loss/len(train_loader):.4f}")
-        
-        # Validation
-        print("\nRunning validation...")
-        val_metrics = evaluate(model, val_loader, config)
-        print("\nValidation Metrics:")
-        print(f"Loss: {val_metrics['loss']:.4f}")
-        print(f"AUC: {val_metrics['auc']:.4f}")
-        print(f"F1: {val_metrics['f1']:.4f}")
-        print(f"Precision: {val_metrics['precision']:.4f}")
-        print(f"Recall: {val_metrics['recall']:.4f}")
-        
-        # Print per-class metrics
-        print("\nPer-class Metrics:")
-        for label, metrics in val_metrics['class_metrics'].items():
-            print(f"\n{label}:")
-            print(f"  AUC: {metrics['auc']:.4f}")
-            print(f"  F1: {metrics['f1']:.4f}")
-            print(f"  Threshold: {metrics['threshold']:.4f}")
-        
-        # Check early stopping
-        if early_stopping(val_metrics['auc'], epoch):
-            print(f"\nEarly stopping triggered. Best AUC: {best_auc:.4f}")
-            break
+                        # Log language-specific learning rates
+                        for i, lr in enumerate(lrs[1:], 1):
+                            metrics_dict[f'train/learning_rate/group_{i}'] = lr
+                        
+                        wandb.log(metrics_dict)
+                        
+                except Exception as e:
+                    logger.error(f"Error in training step: {str(e)}")
+                    continue
             
-        # Update best AUC and save model
-        if val_metrics['auc'] > best_auc:
-            best_auc = val_metrics['auc']
-            print(f"\nNew best AUC: {best_auc:.4f} - Saving model...")
-            save_model(model, config, epoch, best_auc)
-        
-        # Log validation metrics
-        if wandb.run is not None:
+            # Calculate epoch metrics
+            epoch_loss = epoch_loss / len(train_loader)
+            epoch_time = time.time() - epoch_start
+            
+            # Log epoch-level metrics
             wandb.log({
-                'val/loss': val_metrics['loss'],
-                'val/auc': val_metrics['auc'],
-                'val/epoch': epoch,
-                'val/best_auc': best_auc,
-                'time/epoch_minutes': epoch_time/60
+                'train/epoch_loss': epoch_loss,
+                'train/epoch': epoch,
+                'train/epoch_time': epoch_time
             })
             
-            # Log per-class metrics
-            for label, metrics in val_metrics['class_metrics'].items():
-                wandb.log({
-                    f'val/class/{label}/auc': metrics['auc'],
-                    f'val/class/{label}/f1': metrics['f1'],
-                    f'val/class/{label}/threshold': metrics['threshold']
-                })
+            # Validate and save checkpoint
+            val_metrics = evaluate(model, val_loader, config)
+            is_best = metrics.update_validation(val_metrics)
+            
+            if is_best:
+                save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    epoch=epoch,
+                    metrics=val_metrics,
+                    config=config,
+                    is_best=True
+                )
         
-        print("\n" + "="*50)
+        return {
+            'loss': epoch_loss,
+            'best_auc': metrics.best_auc
+        }
+        
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        raise
 
 def get_grad_norm(model):
     """Calculate gradient norm for monitoring"""
@@ -702,117 +649,114 @@ def log_epoch_metrics(epoch, metrics, epoch_time, eta):
 # Custom Dataset
 class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, config, mode='train'):
-        self.config = config
+        self.df = df.copy()
         self.tokenizer = tokenizer
+        self.config = config
         self.mode = mode
-        self.df = df.copy()  # Make a copy to avoid modifying original
         
-        # Language ID mapping with fallback to English
+        # Language ID mapping with strict validation
         self.lang_to_id = {
-            'en': 0, 'ru': 1, 'tr': 2, 'es': 3, 
-            'fr': 4, 'it': 5, 'pt': 6, 'default': 0
+            'en': 0,  # English
+            'ru': 1,  # Russian
+            'tr': 2,  # Turkish
+            'es': 3,  # Spanish
+            'fr': 4,  # French
+            'it': 5,  # Italian
+            'pt': 6   # Portuguese
         }
         
-        # Clean and convert language codes
-        self.df['lang'] = self.df['lang'].fillna('en')
-        self.df['lang'] = self.df['lang'].astype(str).str.strip().str.lower()
-        
-        # Convert language codes to numeric IDs with error handling
+        # Validate and clean language codes with error handling
         try:
-            self.lang_ids = torch.tensor([
-                self.lang_to_id.get(lang, self.lang_to_id['default']) 
-                for lang in self.df['lang']
-            ], dtype=torch.long)
+            # Convert with string key fallback
+            self.df['lang'] = (
+                self.df['lang']
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .apply(lambda x: x if x in self.lang_to_id else 'en')  # Use string key 'en' for fallback
+            )
+            
+            # Convert to numerical IDs with validation
+            self.lang_ids = torch.tensor(
+                [self.lang_to_id[lang] for lang in self.df['lang']],
+                dtype=torch.long
+            )
+            
+            # Numerical validation
+            if not self.lang_ids.ge(0).all() or self.lang_ids.ge(7).any():
+                raise ValueError("Invalid language IDs detected")
+            
+            # Log language distribution
+            lang_dist = self.df['lang'].value_counts()
+            logger.info(f"Language distribution in {mode} set:")
+            for lang, count in lang_dist.items():
+                logger.info(f"  {lang}: {count:,} samples")
+                
         except Exception as e:
-            logger.error(f"Error converting language codes to IDs: {str(e)}")
-            self.lang_ids = torch.zeros(len(self.df), dtype=torch.long)
+            logger.error(f"Error processing language IDs: {str(e)}")
+            logger.warning("Falling back to English ('en') for all samples")
+            self.df['lang'] = 'en'  # Use string key for fallback
+            self.lang_ids = torch.tensor([self.lang_to_id['en']] * len(df), dtype=torch.long)
         
         # Process and cache the tokenized data
         self._process_and_cache_data()
         
-        # Pin memory if using CUDA
-        if torch.cuda.is_available():
-            self.lang_ids = self.lang_ids.pin_memory()
+        # Validate final data
+        self._validate_dataset()
     
-    def _process_and_cache_data(self):
-        # Create cache directory if it doesn't exist
-        os.makedirs('cache', exist_ok=True)
-        
-        # Generate cache key based on data and config
-        cache_key = f"toxic_data_{self.mode}_{len(self.df)}_{self.config.max_length}.pt"
-        cache_path = os.path.join('cache', cache_key)
-        
-        if os.path.exists(cache_path):
-            try:
-                # Import BatchEncoding for safe loading
-                from transformers.tokenization_utils_base import BatchEncoding
-                import torch.serialization
-                
-                # Add BatchEncoding to safe globals
-                torch.serialization.add_safe_globals([BatchEncoding])
-                
-                # Load cached encodings with proper error handling
-                try:
-                    cached_data = torch.load(cache_path, weights_only=False)
-                    self.encodings = cached_data['encodings']
-                    self.labels = cached_data.get('labels')
-                    logger.info(f"Successfully loaded cached data from {cache_path}")
-                except Exception as e:
-                    logger.warning(f"Could not load cached data, regenerating: {str(e)}")
-                    self._generate_and_cache_data(cache_path)
-            except Exception as e:
-                logger.warning(f"Error setting up cache loading: {str(e)}")
-                self._generate_and_cache_data(cache_path)
-        else:
-            self._generate_and_cache_data(cache_path)
-    
-    def _generate_and_cache_data(self, cache_path):
-        """Generate and cache tokenized data"""
+    def _validate_dataset(self):
+        """Validate the dataset integrity"""
         try:
-            # Tokenize texts
-            self.encodings = self.tokenizer(
-                self.df['comment_text'].fillna('').tolist(),
-                truncation=True,
-                padding='max_length',
-                max_length=self.config.max_length,
-                return_tensors='pt'
-            )
-            
-            # Convert labels if present
-            if all(col in self.df.columns for col in self.config.toxicity_labels):
-                self.labels = torch.tensor(
-                    self.df[self.config.toxicity_labels].fillna(0).values,
-                    dtype=torch.float32
+            # Check lengths match
+            if len(self.lang_ids) != len(self.encodings['input_ids']):
+                raise ValueError(
+                    f"Length mismatch: lang_ids ({len(self.lang_ids)}) != "
+                    f"input_ids ({len(self.encodings['input_ids'])})"
                 )
-            else:
-                self.labels = None
             
-            # Cache the processed data
-            torch.save({
-                'encodings': self.encodings,
-                'labels': self.labels
-            }, cache_path)
+            # Validate language IDs are in correct range
+            if not torch.all((self.lang_ids >= 0) & (self.lang_ids < len(self.lang_to_id))):
+                invalid_ids = self.lang_ids[(self.lang_ids < 0) | (self.lang_ids >= len(self.lang_to_id))]
+                raise ValueError(f"Invalid language IDs found: {invalid_ids.tolist()}")
             
-            logger.info(f"Generated and cached new data at {cache_path}")
+            logger.info(f"Dataset validation passed for {self.mode} set")
             
         except Exception as e:
-            logger.error(f"Error generating data: {str(e)}")
+            logger.error(f"Dataset validation failed: {str(e)}")
             raise
     
-    def __len__(self):
-        return len(self.df)
-    
     def __getitem__(self, idx):
-        item = {
-            'input_ids': self.encodings['input_ids'][idx],
-            'attention_mask': self.encodings['attention_mask'][idx],
-            'lang_ids': self.lang_ids[idx].clone()  # Return cloned tensor to avoid memory issues
-        }
-        
-        if self.labels is not None:
-            item['labels'] = self.labels[idx]
-        
-        return item
+        """Get a single item with proper error handling"""
+        try:
+            # Get language ID with string fallback
+            lang = str(self.df.iloc[idx]['lang']).strip().lower()
+            lang_id = self.lang_to_id.get(lang, self.lang_to_id['en'])  # Use string key 'en' for fallback
+            
+            # Get base encodings
+            item = {
+                'input_ids': self.encodings['input_ids'][idx],
+                'attention_mask': self.encodings['attention_mask'][idx],
+                'lang_ids': torch.tensor(lang_id, dtype=torch.long),
+                'labels': torch.FloatTensor(self.df.iloc[idx][self.toxicity_labels].values)
+            }
+            
+            # Validate item
+            if not torch.is_tensor(item['input_ids']):
+                item['input_ids'] = torch.tensor(item['input_ids'])
+            if not torch.is_tensor(item['attention_mask']):
+                item['attention_mask'] = torch.tensor(item['attention_mask'])
+            
+            return item
+            
+        except Exception as e:
+            logger.error(f"Error getting item {idx}: {str(e)}")
+            # Return a safe fallback item using string key
+            return {
+                'input_ids': torch.zeros(self.config.max_length, dtype=torch.long),
+                'attention_mask': torch.zeros(self.config.max_length, dtype=torch.long),
+                'lang_ids': torch.tensor(self.lang_to_id['en'], dtype=torch.long),  # Use string key 'en'
+                'labels': torch.zeros(len(self.toxicity_labels), dtype=torch.float)
+            }
 
 class LanguageAwareWeights:
     def __init__(self, lang_stats=None):
@@ -1027,11 +971,11 @@ def calculate_metrics(labels, probs, thresholds, class_names):
                 f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
                 specificity = np.divide(tn, tn + fp) if (tn + fp) > 0 else 0.0
                 npv = np.divide(tn, tn + fn) if (tn + fn) > 0 else 0.0
-            
+                
             # Calculate class-specific AUC
             try:
                 class_auc = roc_auc_score(labels[:, i], probs[:, i])
-            except Exception:
+            except:
                 class_auc = 0.0
             
             class_metrics[class_name] = {
@@ -1041,24 +985,16 @@ def calculate_metrics(labels, probs, thresholds, class_names):
                 'f1': float(f1),
                 'specificity': float(specificity),
                 'npv': float(npv),
-                'threshold': float(default_thresh[0, i]) if default_thresh.ndim > 1 else float(default_thresh[i]),
-                'support': {
-                    'total': int(tp + fp + tn + fn),
-                    'positive': int(tp + fn),
-                    'negative': int(tn + fp),
-                    'tp': int(tp),
-                    'fp': int(fp),
-                    'tn': int(tn),
-                    'fn': int(fn)
-                }
+                'tp': int(tp),
+                'fp': int(fp),
+                'tn': int(tn),
+                'fn': int(fn)
             }
-            
         except Exception as e:
             logger.error(f"Error calculating metrics for {class_name}: {str(e)}")
             class_metrics[class_name] = {
                 'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0,
-                'specificity': 0.0, 'npv': 0.0, 'threshold': 0.5,
-                'support': {'total': 0, 'positive': 0, 'negative': 0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0}
+                'specificity': 0.0, 'npv': 0.0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0
             }
     
     # Calculate overall metrics
@@ -1089,7 +1025,7 @@ def calculate_metrics(labels, probs, thresholds, class_names):
     }
 
 def evaluate(model, loader, config):
-    """Evaluation function for language-aware model"""
+    """Evaluation function with enhanced error handling and metric calculation"""
     model.eval()
     total_loss = 0
     all_labels = []
@@ -1099,36 +1035,64 @@ def evaluate(model, loader, config):
     try:
         with torch.no_grad():
             for batch in loader:
-                # Move batch to device
-                inputs = {
-                    k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
-                }
-                
-                # Forward pass
-                outputs = model(
-                    input_ids=inputs['input_ids'],
-                    attention_mask=inputs['attention_mask'],
-                    labels=inputs['labels'],
-                    lang_ids=inputs['lang_ids'],
-                    mode='val'
-                )
-                
-                # Accumulate results
-                total_loss += outputs['loss'].item() if outputs['loss'] is not None else 0
-                all_labels.append(inputs['labels'].cpu().numpy())
-                all_probs.append(outputs['probabilities'].cpu().numpy())
-                all_langs.extend(inputs['lang_ids'].cpu().tolist())
+                try:
+                    # Move batch to device with error handling
+                    inputs = {
+                        k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                        for k, v in batch.items()
+                    }
+                    
+                    # Forward pass with error handling
+                    outputs = model(
+                        input_ids=inputs['input_ids'],
+                        attention_mask=inputs['attention_mask'],
+                        labels=inputs['labels'],
+                        lang_ids=inputs['lang_ids'],
+                        mode='val'
+                    )
+                    
+                    # Accumulate results with validation
+                    if outputs['loss'] is not None:
+                        if not torch.isnan(outputs['loss']) and not torch.isinf(outputs['loss']):
+                            total_loss += outputs['loss'].item()
+                    
+                    # Validate predictions before accumulating
+                    probs = outputs['probabilities'].cpu()
+                    if not torch.any(torch.isnan(probs)) and not torch.any(torch.isinf(probs)):
+                        all_probs.append(probs.numpy())
+                        all_labels.append(inputs['labels'].cpu().numpy())
+                        all_langs.extend(inputs['lang_ids'].cpu().tolist())
+                    else:
+                        logger.warning("Invalid probabilities detected in batch, skipping")
+                        
+                except Exception as batch_error:
+                    logger.error(f"Error processing batch: {str(batch_error)}")
+                    continue
         
-        # Concatenate results
+        # Validate accumulated results
+        if not all_labels or not all_probs:
+            raise ValueError("No valid predictions accumulated during evaluation")
+        
+        # Concatenate results with error handling
         try:
             labels = np.concatenate(all_labels)
             probs = np.concatenate(all_probs)
-        except Exception as e:
-            print(f"Error concatenating results: {str(e)}")
-            return {'loss': float('inf'), 'auc': 0.0, 'class_metrics': {}}
+            
+            # Validate shapes
+            if labels.shape != probs.shape:
+                raise ValueError(f"Shape mismatch: labels {labels.shape} != probs {probs.shape}")
+            
+            # Validate values
+            if np.any(np.isnan(labels)) or np.any(np.isnan(probs)):
+                raise ValueError("NaN values detected in concatenated arrays")
+            if np.any(np.isinf(labels)) or np.any(np.isinf(probs)):
+                raise ValueError("Inf values detected in concatenated arrays")
+                
+        except Exception as concat_error:
+            logger.error(f"Error concatenating results: {str(concat_error)}")
+            return _get_default_metrics(config.toxicity_labels)
         
-        # Optimize thresholds per language
+        # Optimize thresholds with error handling
         try:
             threshold_optimizer = ThresholdOptimizer(
                 min_samples=50,
@@ -1140,14 +1104,13 @@ def evaluate(model, loader, config):
                 languages=all_langs,
                 class_names=config.toxicity_labels
             )
-        except Exception as e:
-            print(f"Error in threshold optimization: {str(e)}")
+        except Exception as thresh_error:
+            logger.error(f"Error in threshold optimization: {str(thresh_error)}")
             # Fallback to default thresholds
-            thresholds = {
-                'en': {label: 0.5 for label in config.toxicity_labels}
-            }
+            thresholds = {lang: {label: 0.5 for label in config.toxicity_labels} 
+                         for lang in set(all_langs)}
         
-        # Calculate metrics
+        # Calculate metrics with comprehensive error handling
         try:
             metrics = calculate_metrics(
                 labels=labels,
@@ -1155,36 +1118,89 @@ def evaluate(model, loader, config):
                 thresholds=thresholds,
                 class_names=config.toxicity_labels
             )
+            
+            # Validate metric values
+            if not _validate_metrics(metrics):
+                raise ValueError("Invalid metric values detected")
+            
+            # Add loss to metrics
             metrics['loss'] = total_loss / len(loader)
-        except Exception as e:
-            print(f"Error calculating metrics: {str(e)}")
-            metrics = {
-                'loss': total_loss / len(loader),
-                'auc': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'f1': 0.0,
-                'class_metrics': {
-                    label: {'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'threshold': 0.5}
-                    for label in config.toxicity_labels
-                }
-            }
+            
+        except Exception as metric_error:
+            logger.error(f"Error calculating metrics: {str(metric_error)}")
+            metrics = _get_default_metrics(config.toxicity_labels)
+            metrics['loss'] = total_loss / len(loader)
         
         return metrics
         
     except Exception as e:
-        print(f"Fatal error in evaluation: {str(e)}")
-        return {
-            'loss': float('inf'),
-            'auc': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1': 0.0,
-            'class_metrics': {
-                label: {'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0, 'threshold': 0.5}
-                for label in config.toxicity_labels
+        logger.error(f"Fatal error in evaluation: {str(e)}")
+        return _get_default_metrics(config.toxicity_labels)
+
+def _get_default_metrics(class_names):
+    """Return safe default metrics when calculation fails"""
+    return {
+        'loss': float('inf'),
+        'auc': 0.0,
+        'precision': 0.0,
+        'recall': 0.0,
+        'f1': 0.0,
+        'class_metrics': {
+            label: {
+                'auc': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1': 0.0,
+                'specificity': 0.0,
+                'npv': 0.0,
+                'threshold': 0.5,
+                'support': {
+                    'total': 0,
+                    'positive': 0,
+                    'negative': 0,
+                    'tp': 0,
+                    'fp': 0,
+                    'tn': 0,
+                    'fn': 0
+                }
             }
+            for label in class_names
         }
+    }
+
+def _validate_metrics(metrics):
+    """Validate calculated metrics for sanity"""
+    try:
+        # Check for required keys
+        required_keys = ['auc', 'precision', 'recall', 'f1', 'class_metrics']
+        if not all(key in metrics for key in required_keys):
+            return False
+        
+        # Validate main metrics
+        main_metrics = [metrics['auc'], metrics['precision'], 
+                       metrics['recall'], metrics['f1']]
+        if not all(isinstance(m, (int, float)) for m in main_metrics):
+            return False
+        if not all(0 <= m <= 1 for m in main_metrics):
+            return False
+        
+        # Validate class metrics
+        for class_metrics in metrics['class_metrics'].values():
+            class_values = [
+                class_metrics['auc'], 
+                class_metrics['precision'],
+                class_metrics['recall'], 
+                class_metrics['f1']
+            ]
+            if not all(isinstance(m, (int, float)) for m in class_values):
+                return False
+            if not all(0 <= m <= 1 for m in class_values):
+                return False
+        
+        return True
+        
+    except Exception:
+        return False
 
 def predict_toxicity(text, model, tokenizer, config):
     """
@@ -1325,42 +1341,55 @@ class MultilabelStratifiedSampler(torch.utils.data.Sampler):
         return len(self.labels)
 
 def setup_distributed(config, rank):
-    """Initialize distributed training with enhanced error handling"""
+    """Initialize distributed training with enhanced error handling and device management"""
     if config.distributed:
         try:
-            # Set environment variables
-            os.environ['MASTER_ADDR'] = 'localhost'
-            os.environ['MASTER_PORT'] = '23456'
+            # Set environment variables with proper fallbacks
+            os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
+            os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
             
             # Configure NCCL parameters for better error handling
-            os.environ['NCCL_DEBUG'] = 'INFO'
-            os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'  # Network interface
-            os.environ['NCCL_IB_TIMEOUT'] = '23'  # IB timeout in seconds
-            os.environ['NCCL_DEBUG_SUBSYS'] = 'ALL'
+            os.environ['NCCL_DEBUG'] = os.environ.get('NCCL_DEBUG', 'INFO')
+            os.environ['NCCL_SOCKET_IFNAME'] = os.environ.get('NCCL_SOCKET_IFNAME', 'eth0')
+            os.environ['NCCL_IB_TIMEOUT'] = os.environ.get('NCCL_IB_TIMEOUT', '23')
+            os.environ['NCCL_DEBUG_SUBSYS'] = os.environ.get('NCCL_DEBUG_SUBSYS', 'ALL')
+            
+            # Proper device assignment based on available GPUs
+            local_rank = rank % torch.cuda.device_count()
+            torch.cuda.set_device(local_rank)
             
             # Initialize process group with timeout and error handling
-            timeout = timedelta(seconds=30)  # 30 second timeout for initialization
+            timeout = timedelta(seconds=30)
             
-            dist.init_process_group(
-                backend=config.dist_backend,
-                init_method=config.dist_url,
-                world_size=config.world_size,
-                rank=rank,
-                timeout=timeout
-            )
-            
-            # Set device with error handling
             try:
-                torch.cuda.set_device(rank)
-                config._device = torch.device(f'cuda:{rank}')
+                dist.init_process_group(
+                    backend=config.dist_backend,
+                    init_method=config.dist_url,
+                    world_size=config.world_size,
+                    rank=rank,
+                    timeout=timeout
+                )
             except Exception as e:
-                logger.error(f"Failed to set CUDA device for rank {rank}: {str(e)}")
+                logger.error(f"Failed to initialize process group: {str(e)}")
+                raise
+            
+            # Set device and verify CUDA availability
+            try:
+                device = torch.device(f'cuda:{local_rank}')
+                torch.cuda.set_device(device)
+                config.device = device
+                
+                # Verify CUDA is working
+                test_tensor = torch.zeros(1, device=device)
+                del test_tensor
+            except Exception as e:
+                logger.error(f"Failed to set up CUDA device for rank {rank}: {str(e)}")
                 raise
             
             # Verify NCCL is working with barrier
             try:
-                dist.barrier()  # Synchronize processes
-                logger.info(f"Process group initialized successfully for rank {rank}")
+                dist.barrier()
+                logger.info(f"Process group initialized successfully for rank {rank} on device cuda:{local_rank}")
             except Exception as e:
                 logger.error(f"NCCL barrier failed for rank {rank}: {str(e)}")
                 cleanup_distributed()
@@ -1376,9 +1405,24 @@ def setup_distributed(config, rank):
     return False
 
 def cleanup_distributed():
-    """Cleanup distributed training"""
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    """Cleanup distributed training with proper error handling"""
+    try:
+        if dist.is_initialized():
+            # Synchronize before cleanup
+            try:
+                dist.barrier()
+            except Exception as e:
+                logger.warning(f"Final barrier failed during cleanup: {str(e)}")
+            
+            # Destroy process group
+            dist.destroy_process_group()
+            
+            # Reset CUDA device
+            if torch.cuda.is_available():
+                torch.cuda.set_device('cuda:0')
+                torch.cuda.empty_cache()
+    except Exception as e:
+        logger.error(f"Error during distributed cleanup: {str(e)}")
 
 def create_dataloaders(train_dataset, val_dataset, config, rank=None):
     """Create optimized DataLoaders with distributed support"""
@@ -1499,7 +1543,16 @@ def train_worker(rank, config, train_dataset, val_dataset):
             try:
                 # Synchronize before DDP initialization
                 dist.barrier()
-                model = DDP(model, device_ids=[rank], find_unused_parameters=False)
+                
+                # Configure DDP with proper error handling
+                ddp_kwargs = {
+                    'device_ids': [rank % torch.cuda.device_count()],
+                    'output_device': rank % torch.cuda.device_count(),
+                    'find_unused_parameters': config.find_unused_parameters,
+                    'broadcast_buffers': True
+                }
+                
+                model = DDP(model, **ddp_kwargs)
                 logger.info(f"DDP initialized successfully for rank {rank}")
             except Exception as e:
                 logger.error(f"Failed to initialize DDP for rank {rank}: {str(e)}")
