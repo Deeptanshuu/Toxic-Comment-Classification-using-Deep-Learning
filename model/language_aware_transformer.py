@@ -337,11 +337,16 @@ class LanguageAwareTransformer(nn.Module):
             # Input validation and device setup
             device = input_ids.device
             
-            # Handle language IDs
+            # Handle language IDs with proper error handling
             if lang_ids is None:
+                logger.warning("No language IDs provided, defaulting to English (0)")
                 lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
             elif not isinstance(lang_ids, torch.Tensor):
-                lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
+                try:
+                    lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
+                except Exception as e:
+                    logger.error(f"Failed to convert lang_ids to tensor: {str(e)}")
+                    lang_ids = torch.zeros(input_ids.shape[0], dtype=torch.long, device=device)
             elif lang_ids.dtype != torch.long:
                 lang_ids = lang_ids.long()
             
@@ -367,7 +372,7 @@ class LanguageAwareTransformer(nn.Module):
                 hidden_states = base_output.last_hidden_state
                 
                 # Get language embeddings and combine with hidden states
-                lang_embeddings = self.lang_embed(lang_ids)  # [batch_size, embed_dim]
+                lang_embeddings = self.output.lang_embed(lang_ids)  # [batch_size, embed_dim]
                 lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
                 
                 # Combine features
@@ -401,7 +406,7 @@ class LanguageAwareTransformer(nn.Module):
                 
                 # Final classification
                 pooled = features[:, 0]  # Use [CLS] token
-                logits = self.classifier(pooled)
+                logits = self.output(pooled, lang_ids)
                 
                 # Calculate loss if labels provided
                 loss = None
@@ -426,7 +431,7 @@ class LanguageAwareTransformer(nn.Module):
                 }
                 
         except Exception as e:
-            print(f"Error in forward pass: {str(e)}")
+            logger.error(f"Error in forward pass: {str(e)}")
             raise
 
     def get_attention_weights(self) -> torch.Tensor:

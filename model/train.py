@@ -779,7 +779,7 @@ class ToxicDataset(Dataset):
             'input_ids': self.encodings['input_ids'][idx],
             'attention_mask': self.encodings['attention_mask'][idx],
             'labels': self.labels[idx],
-            'lang_ids': self.lang_ids[idx]  # Return numeric language ID only
+            'lang_ids': self.lang_ids[idx]  # Return numeric language ID
         }
         return item
 
