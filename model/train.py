@@ -428,8 +428,8 @@ def train(model, train_loader, val_loader, config):
         
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, 
-            total_steps=total_steps,
-            warmup_steps=warmup_steps
+            num_training_steps=total_steps,
+            num_warmup_steps=warmup_steps
         )
         
         # Initialize gradient scaler for mixed precision
