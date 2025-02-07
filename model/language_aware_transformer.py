@@ -1,6 +1,7 @@
 # language_aware_transformer.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import XLMRobertaModel, XLMRobertaConfig
 from typing import Tuple, Optional
 import logging
@@ -8,8 +9,20 @@ import os
 import json
 from collections import defaultdict
 from sklearn.metrics import roc_auc_score, precision_score, recall_score
+import gc
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_LANGUAGES = {
+    'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
+    'fr': 4, 'it': 5, 'pt': 6
+}
+
+def validate_lang_ids(lang_ids):
+    if not isinstance(lang_ids, torch.Tensor):
+        lang_ids = torch.tensor(lang_ids, dtype=torch.long)
+    # Use actual language count instead of hardcoded 9
+    return torch.clamp(lang_ids, min=0, max=len(SUPPORTED_LANGUAGES)-1)
 
 class LanguageAwareClassifier(nn.Module):
     def __init__(self, hidden_size=1024, num_labels=6):
@@ -87,6 +100,32 @@ class LanguageAwareClassifier(nn.Module):
             x = self.classifier['dropout'](x)
         
         return self.classifier['output'](x)
+
+class WeightedBCEWithLogitsLoss(nn.Module):
+    def __init__(self, reduction='mean'):
+        super().__init__()
+        self.reduction = reduction
+        
+    def forward(self, logits, targets, weights=None):
+        loss = F.binary_cross_entropy_with_logits(
+            logits, targets, reduction='none'
+        )
+        if weights is not None:
+            loss = loss * weights
+        if self.reduction == 'mean':
+            return loss.mean()
+        return loss
+
+class CriticalClassConfig:
+    def __init__(self, class_names):
+        self.critical_indices = {
+            name: idx for idx, name in enumerate(class_names)
+            if name in ['threat', 'identity_hate']
+        }
+        self.thresholds = {
+            'threat': 0.3,
+            'identity_hate': 0.35
+        }
 
 class LanguageAwareTransformer(nn.Module):
     def __init__(
@@ -401,7 +440,7 @@ class LanguageAwareTransformer(nn.Module):
             # Calculate loss if needed
             loss = None
             if labels is not None:
-                loss_fct = torch.nn.BCEWithLogitsLoss()
+                loss_fct = WeightedBCEWithLogitsLoss()
                 loss = loss_fct(logits, labels.float())
             
             # Get probabilities
@@ -490,4 +529,73 @@ class LanguageAwareTransformer(nn.Module):
             self.lang_metrics[mode].clear()
             self.lang_samples[mode].clear()
         except Exception as e:
-            logger.error(f"Error resetting language metrics: {str(e)}") 
+            logger.error(f"Error resetting language metrics: {str(e)}")
+
+    def cleanup_memory():
+        gc.collect()
+        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            # Force GPU memory cleanup
+            torch.cuda.synchronize()
+
+def enable_gradient_checkpointing(model):
+    try:
+        available_memory = torch.cuda.get_device_properties(0).total_memory
+        if available_memory < 8 * 1024 * 1024 * 1024:  # 8GB
+            model.gradient_checkpointing_enable()
+            return True
+    except Exception as e:
+        logger.warning(f"Gradient checkpointing failed: {e}")
+    return False
+
+def setup_mixed_precision(config):
+    if torch.cuda.is_available():
+        if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
+            return "bf16"
+        elif torch.cuda.is_bf16_supported():
+            return "bf16"
+        else:
+            return "fp16"
+    return "no"
+
+def save_training_state(model, optimizer, epoch, step, metrics):
+    try:
+        torch.save({
+            'epoch': epoch,
+            'step': step,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'metrics': metrics
+        }, 'checkpoints/recovery_checkpoint.pt')
+    except Exception as e:
+        logger.error(f"Failed to save recovery state: {e}")
+
+def evaluate_single_class(model, val_loader, class_idx, threshold=0.5):
+    """Evaluate a single class with custom threshold"""
+    model.eval()
+    y_true, y_pred = [], []
+    
+    with torch.no_grad():
+        for batch in val_loader:
+            outputs = model(**{k: v.to(model.device) if isinstance(v, torch.Tensor) else v 
+                             for k, v in batch.items()})
+            probs = torch.sigmoid(outputs['logits'])[:, class_idx]
+            labels = batch['labels'][:, class_idx]
+            
+            y_true.extend(labels.cpu().numpy())
+            y_pred.extend((probs > threshold).cpu().numpy())
+    
+    return {
+        'precision': precision_score(y_true, y_pred, zero_division=0),
+        'recall': recall_score(y_true, y_pred, zero_division=0),
+        'support': len(y_true)
+    }
+
+def validate_critical_classes(model, val_loader, config):
+    critical_metrics = defaultdict(dict)
+    for cls_name, cls_idx in config.critical_indices.items():
+        metrics = evaluate_single_class(
+            model, val_loader, cls_idx,
+            threshold=config.thresholds[cls_name]
+        )
+        critical_metrics[cls_name] = metrics 

@@ -44,7 +44,7 @@ import sys
 import signal
 import atexit
 from pathlib import Path
-from model.training_config import MetricsTracker, TrainingConfig, EarlyStopping
+from model.training_config import MetricsTracker, TrainingConfig
 from model.data.sampler import MultilabelStratifiedSampler
 from model.evaluation.threshold_optimizer import ThresholdOptimizer
 from model.language_aware_transformer import LanguageAwareTransformer
@@ -942,96 +942,6 @@ class LanguageAwareWeights:
         except Exception as e:
             logger.warning(f"Error creating weight tensor: {str(e)}")
             return torch.ones((len(langs), len(class_names)), device=device)
-
-# Update WeightedFocalLoss to use LanguageAwareWeights
-class WeightedFocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2, label_smoothing=0.01):
-        super().__init__()
-        self.gamma = gamma
-        self.label_smoothing = label_smoothing
-        
-        # Language-specific alpha values for each class
-        self.alpha = {
-            'en': [0.2, 0.8, 0.3, 0.9, 0.4, 0.85],  # [toxic, severe, obscene, threat, insult, hate]
-            'ru': [0.18, 0.82, 0.28, 0.88, 0.35, 0.83],  # Higher alpha for threat/hate
-            'tr': [0.19, 0.81, 0.29, 0.89, 0.36, 0.84],  # Similar pattern to RU
-            'default': [0.25] * 6  # Default balanced alpha
-        }
-        
-        # Low-resource language boost factors
-        self.lang_boost = {
-            'tr': 1.2,  # Turkish has fewer samples
-            'it': 1.3,  # Italian has even fewer
-            'pt': 1.3   # Portuguese similar to Italian
-        }
-    
-    def calculate_alpha_weights(self, langs, labels):
-        """Calculate language-specific alpha weights for each sample"""
-        try:
-            batch_size = labels.size(0)
-            num_classes = labels.size(1)
-            alpha_weights = torch.ones_like(labels, dtype=torch.float32)
-            
-            for i, (lang, label_vec) in enumerate(zip(langs, labels)):
-                # Get alpha values for this language
-                lang_alpha = torch.tensor(
-                    self.alpha.get(lang, self.alpha['default']),
-                    device=labels.device,
-                    dtype=torch.float32
-                )
-                
-                # Apply language-specific boost for low-resource languages
-                if lang in self.lang_boost:
-                    lang_alpha = lang_alpha * self.lang_boost[lang]
-                
-                alpha_weights[i] = lang_alpha
-            
-            return alpha_weights
-            
-        except Exception as e:
-            logger.warning(f"Error calculating alpha weights: {str(e)}")
-            return torch.ones_like(labels, dtype=torch.float32)
-    
-    def forward(self, preds, targets, langs=None):
-        """Forward pass with language-specific focal loss"""
-        try:
-            # Apply label smoothing
-            targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
-            
-            # Ensure all inputs have correct dimensions [B, C]
-            if preds.dim() == 1:
-                preds = preds.unsqueeze(-1)
-            if targets.dim() == 1:
-                targets = targets.unsqueeze(-1)
-            
-            # Calculate BCE loss with proper reduction
-            bce_loss = nn.BCEWithLogitsLoss(reduction='none')(preds, targets)  # [B, C]
-            
-            # Calculate probabilities with numerical stability
-            probs = torch.sigmoid(preds)
-            pt = torch.where(targets == 1, probs, 1 - probs)
-            pt = torch.clamp(pt, min=1e-7, max=1.0)  # Numerical stability
-            
-            # Calculate focal weights
-            focal_weights = (1 - pt) ** self.gamma
-            
-            # Get language-specific alpha weights
-            if langs is not None:
-                alpha_weights = self.calculate_alpha_weights(langs, targets)
-                alpha_weights = alpha_weights.to(preds.device)
-            else:
-                alpha_weights = torch.full_like(targets, 0.25)  # Default alpha
-            
-            # Apply focal weighting and alpha weights
-            loss = alpha_weights * focal_weights * bce_loss  # [B, C]
-            
-            # First sum over classes to preserve per-sample weighting, then average over batch
-            return loss.sum(dim=-1).mean()
-            
-        except Exception as e:
-            logger.error(f"Error in focal loss calculation: {str(e)}")
-            # Fallback to simple BCE loss
-            return nn.BCEWithLogitsLoss()(preds, targets)
 
 def calculate_metrics(labels, probs, thresholds, class_names):
     """Calculate classification metrics with robust handling of edge cases"""
