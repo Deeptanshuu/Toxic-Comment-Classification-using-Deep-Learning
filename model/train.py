@@ -370,7 +370,8 @@ def get_grad_stats(model):
         grad_mins = []
         param_names = []
         
-        for name, param in model.parameters():
+        # Use named_parameters() instead of parameters() to get both name and param
+        for name, param in model.named_parameters():
             if param.grad is not None:
                 grad = param.grad
                 grad_norm = grad.norm().item()
@@ -542,21 +543,24 @@ def train(model, train_loader, val_loader, config):
                     
                     # Log step metrics
                     if step % 100 == 0:
-                        # Get learning rates for each parameter group
-                        lrs = [group['lr'] for group in optimizer.param_groups]
+                        # Get base learning rate only
+                        base_lr = optimizer.param_groups[0]['lr']
+                        loss_val = loss.item()
                         
+                        # Log to wandb
                         metrics_dict = {
-                            'train/step_loss': loss.item(),
-                            'train/learning_rate/base': lrs[0],
-                            'system/gpu_memory': get_gpu_stats(),
-                            'system/step': step
+                            'train/step_loss': loss_val,
+                            'train/learning_rate/base': base_lr
                         }
-                        
-                        # Log language-specific learning rates
-                        for i, lr in enumerate(lrs[1:], 1):
-                            metrics_dict[f'train/learning_rate/group_{i}'] = lr
-                        
                         wandb.log(metrics_dict)
+                        
+                        # Log to file
+                        logger.info(
+                            f"Epoch [{epoch+1}/{config.epochs}] "
+                            f"Step [{step}/{len(train_loader)}] "
+                            f"Loss: {loss_val:.4f} "
+                            f"LR: {base_lr:.2e}"
+                        )
                         
                 except Exception as e:
                     logger.error(f"Error in training step: {str(e)}")
