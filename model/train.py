@@ -244,50 +244,63 @@ def save_checkpoint(model, optimizer, scheduler, scaler, epoch, metrics, config,
             print(f"Error: Could not save checkpoint even with fallback method: {str(e2)}")
 
 def load_checkpoint(model, optimizer, scheduler, scaler, config):
-    """Load training checkpoint with error handling"""
-    checkpoint_path = Path('weights') / 'latest_checkpoint.pt'
-    if not checkpoint_path.exists():
-        return 0, 0  # Start from epoch 0
-        
+    """Load checkpoint with proper error handling and security measures"""
     try:
-        print(f"Loading checkpoint from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=config.device)
+        checkpoint_path = os.path.join('weights', 'latest_checkpoint.pt')
+        if not os.path.exists(checkpoint_path):
+            logger.info("No checkpoint found. Starting from scratch.")
+            return 0, {}  # Return epoch 0 and empty metrics
+            
+        logger.info(f"Loading checkpoint from {checkpoint_path}")
         
-        # Load model state with error handling
+        # Import required class for safe loading
+        from transformers.tokenization_utils_base import BatchEncoding
+        import torch.serialization
+        
+        # Add BatchEncoding to safe globals
+        torch.serialization.add_safe_globals([BatchEncoding])
+        
+        # Load checkpoint with proper error handling
         try:
-            if config.ddp:
-                model.module.load_state_dict(checkpoint['model_state_dict'])
+            # First try loading with weights_only=True (safer)
+            checkpoint = torch.load(checkpoint_path, map_location=config.device)
+        except RuntimeError as e:
+            if "WeightsUnpickler error" in str(e):
+                logger.warning("Weights-only loading failed, falling back to full loading...")
+                # Fall back to full loading if weights_only fails
+                checkpoint = torch.load(
+                    checkpoint_path,
+                    map_location=config.device,
+                    weights_only=False  # Explicitly disable weights_only
+                )
             else:
-                model.load_state_dict(checkpoint['model_state_dict'])
-        except Exception as e:
-            print(f"Warning: Could not load model state: {str(e)}")
-            return 0, 0
+                raise
         
-        # Load optimizer state
-        try:
+        # Load model state
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load optimizer state if it exists
+        if optimizer is not None and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        except Exception as e:
-            print(f"Warning: Could not load optimizer state: {str(e)}")
         
         # Load scheduler state if it exists
-        if scheduler and checkpoint['scheduler_state_dict']:
-            try:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            except Exception as e:
-                print(f"Warning: Could not load scheduler state: {str(e)}")
+        if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         # Load scaler state if it exists
-        if scaler and checkpoint['scaler_state_dict']:
-            try:
-                scaler.load_state_dict(checkpoint['scaler_state_dict'])
-            except Exception as e:
-                print(f"Warning: Could not load scaler state: {str(e)}")
+        if scaler is not None and 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
         
-        return checkpoint['epoch'] + 1, checkpoint.get('metrics', {}).get('auc', 0)
+        epoch = checkpoint.get('epoch', 0)
+        metrics = checkpoint.get('metrics', {})
+        
+        logger.info(f"Loaded checkpoint from epoch {epoch}")
+        return epoch, metrics
         
     except Exception as e:
-        print(f"Error loading checkpoint: {str(e)}")
-        return 0, 0
+        logger.error(f"Error loading checkpoint: {str(e)}")
+        logger.warning("Starting from scratch due to checkpoint loading error")
+        return 0, {}
 
 def calculate_lang_specific_loss(batch, weighted_loss, device):
     """Helper function to calculate language-specific losses with proper error handling"""
