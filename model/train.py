@@ -444,6 +444,12 @@ def train(model, train_loader, val_loader, config):
             # Training steps
             for step, batch in enumerate(train_loader):
                 try:
+                    # Move all tensors in batch to the correct device
+                    batch = {
+                        k: v.to(config.device) if isinstance(v, torch.Tensor) else v
+                        for k, v in batch.items()
+                    }
+                    
                     # Forward pass
                     outputs = model(**batch)
                     loss = outputs['loss']
@@ -796,11 +802,17 @@ class ToxicDataset(Dataset):
             
             item['labels'] = torch.tensor(label_values, dtype=torch.float)
             
-            # Validate tensors
+            # Validate tensors and ensure they're on CPU initially
             if not torch.is_tensor(item['input_ids']):
                 item['input_ids'] = torch.tensor(item['input_ids'])
             if not torch.is_tensor(item['attention_mask']):
                 item['attention_mask'] = torch.tensor(item['attention_mask'])
+            
+            # Ensure all tensors are on CPU
+            item['input_ids'] = item['input_ids'].cpu()
+            item['attention_mask'] = item['attention_mask'].cpu()
+            item['lang_ids'] = item['lang_ids'].cpu()
+            item['labels'] = item['labels'].cpu()
             
             return item
             
@@ -810,7 +822,7 @@ class ToxicDataset(Dataset):
             return {
                 'input_ids': torch.zeros(self.config.max_length, dtype=torch.long),
                 'attention_mask': torch.zeros(self.config.max_length, dtype=torch.long),
-                'lang_ids': torch.tensor(self.lang_to_id['en'], dtype=torch.long),  # Use string key 'en'
+                'lang_ids': torch.tensor(self.lang_to_id['en'], dtype=torch.long),
                 'labels': torch.zeros(len(self.toxicity_labels), dtype=torch.float)
             }
 
@@ -1092,18 +1104,18 @@ def evaluate(model, loader, config):
         with torch.no_grad():
             for batch in loader:
                 try:
-                    # Move batch to device with error handling
-                    inputs = {
+                    # Move all tensors in batch to the correct device
+                    batch = {
                         k: v.to(config.device) if isinstance(v, torch.Tensor) else v
                         for k, v in batch.items()
                     }
                     
                     # Forward pass with error handling
                     outputs = model(
-                        input_ids=inputs['input_ids'],
-                        attention_mask=inputs['attention_mask'],
-                        labels=inputs['labels'],
-                        lang_ids=inputs['lang_ids'],
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
+                        labels=batch['labels'],
+                        lang_ids=batch['lang_ids'],
                         mode='val'
                     )
                     
@@ -1116,8 +1128,8 @@ def evaluate(model, loader, config):
                     probs = outputs['probabilities'].cpu()
                     if not torch.any(torch.isnan(probs)) and not torch.any(torch.isinf(probs)):
                         all_probs.append(probs.numpy())
-                        all_labels.append(inputs['labels'].cpu().numpy())
-                        all_langs.extend(inputs['lang_ids'].cpu().tolist())
+                        all_labels.append(batch['labels'].cpu().numpy())
+                        all_langs.extend(batch['lang_ids'].cpu().tolist())
                     else:
                         logger.warning("Invalid probabilities detected in batch, skipping")
                         
