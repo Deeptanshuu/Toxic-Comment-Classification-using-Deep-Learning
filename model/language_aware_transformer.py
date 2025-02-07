@@ -370,7 +370,7 @@ class LanguageAwareTransformer(nn.Module):
                 )
                 
                 # Feature Processing with inplace operations
-                attended_features = torch.nn.functional.gelu(attn_output, inplace=True)
+                attended_features = torch.nn.functional.gelu(attn_output)
                 attended_features = self.feature_projection(attended_features)
                 
                 # Gating Mechanism with inplace operations

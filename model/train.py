@@ -16,7 +16,7 @@ from transformers import (
     get_cosine_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
+from sklearn.metrics import roc_auc_score
 import numpy as np
 import pandas as pd
 import wandb
@@ -36,7 +36,7 @@ import sys
 import signal
 import atexit
 from pathlib import Path
-from model.training_config import TrainingConfig, DynamicClassWeights, EarlyStopping
+from model.training_config import TrainingConfig, EarlyStopping
 from model.data.sampler import MultilabelStratifiedSampler
 from model.evaluation.threshold_optimizer import ThresholdOptimizer
 from model.language_aware_transformer import LanguageAwareTransformer
