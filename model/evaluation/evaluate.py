@@ -3,7 +3,13 @@ from model.language_aware_transformer import LanguageAwareTransformer
 from transformers import XLMRobertaTokenizer
 import pandas as pd
 import numpy as np
-from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, confusion_matrix, roc_curve
+from sklearn.metrics import (
+    roc_auc_score, precision_recall_fscore_support, 
+    confusion_matrix, roc_curve, hamming_loss, 
+    accuracy_score
+)
+from sklearn.utils import resample
+from sklearn.utils.class_weight import compute_class_weight
 import seaborn as sns
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -325,64 +331,196 @@ def calculate_metrics(predictions, labels, langs):
     
     return results
 
+def bootstrap_sample(y_true, y_pred):
+    """Preserve label relationships during bootstrap sampling"""
+    idx = resample(np.arange(len(y_true)), stratify=y_true.sum(axis=1))
+    return y_true[idx], y_pred[idx]
+
+def calculate_class_weights(labels):
+    """Calculate balanced class weights for each label"""
+    class_weights = {}
+    for i in range(labels.shape[1]):
+        weights = compute_class_weight(
+            class_weight='balanced',
+            classes=np.unique(labels[:, i]),
+            y=labels[:, i]
+        )
+        class_weights[i] = dict(zip(np.unique(labels[:, i]), weights))
+    return class_weights
+
 def calculate_language_metrics(labels, predictions, binary_predictions):
-    """Calculate detailed metrics for a specific language"""
-    auc = roc_auc_score(labels, predictions, average='macro')
+    """Calculate detailed metrics for a specific language with class weights"""
+    # Calculate class weights for this language
+    class_weights = calculate_class_weights(labels)
+    
+    # Calculate weighted metrics
+    sample_weights = np.ones(len(labels))
+    for i in range(labels.shape[1]):
+        sample_weights *= np.array([class_weights[i][l] for l in labels[:, i]])
+    
+    auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
     precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='macro'
+        labels, binary_predictions, average='weighted', sample_weight=sample_weights
     )
     
-    # Calculate confidence intervals using bootstrap
+    # Add multi-label metrics
+    h_loss = hamming_loss(labels, binary_predictions, sample_weight=sample_weights)
+    exact_match = accuracy_score(labels, binary_predictions, sample_weight=sample_weights)
+    
+    # Calculate confidence intervals using stratified bootstrap
     n_bootstrap = 1000
     auc_scores = []
     f1_scores = []
+    hamming_scores = []
+    exact_match_scores = []
     
     for _ in range(n_bootstrap):
-        indices = np.random.randint(0, len(labels), len(labels))
         try:
-            auc_scores.append(roc_auc_score(labels[indices], predictions[indices], average='macro'))
+            # Use stratified bootstrap sampling
+            boot_labels, boot_preds = bootstrap_sample(labels, predictions)
+            boot_binary = (boot_preds > 0.5).astype(int)
+            
+            # Calculate class weights for bootstrap sample
+            boot_weights = calculate_class_weights(boot_labels)
+            boot_sample_weights = np.ones(len(boot_labels))
+            for i in range(boot_labels.shape[1]):
+                boot_sample_weights *= np.array([boot_weights[i][l] for l in boot_labels[:, i]])
+            
+            auc_scores.append(roc_auc_score(
+                boot_labels, boot_preds, average='weighted',
+                sample_weight=boot_sample_weights
+            ))
             _, _, f1, _ = precision_recall_fscore_support(
-                labels[indices], binary_predictions[indices], average='macro'
+                boot_labels, boot_binary, average='weighted',
+                sample_weight=boot_sample_weights
             )
             f1_scores.append(f1)
+            hamming_scores.append(hamming_loss(boot_labels, boot_binary, sample_weight=boot_sample_weights))
+            exact_match_scores.append(accuracy_score(boot_labels, boot_binary, sample_weight=boot_sample_weights))
         except:
             continue
     
+    # Calculate confidence intervals
+    ci_lower = 2.5
+    ci_upper = 97.5
+    
     return {
         'auc': auc,
-        'auc_ci': [np.percentile(auc_scores, 2.5), np.percentile(auc_scores, 97.5)],
+        'auc_ci': [np.percentile(auc_scores, ci_lower), np.percentile(auc_scores, ci_upper)],
         'precision': precision,
         'recall': recall,
         'f1': f1,
-        'f1_ci': [np.percentile(f1_scores, 2.5), np.percentile(f1_scores, 97.5)],
-        'sample_count': len(labels)
+        'f1_ci': [np.percentile(f1_scores, ci_lower), np.percentile(f1_scores, ci_upper)],
+        'hamming_loss': h_loss,
+        'hamming_loss_ci': [np.percentile(hamming_scores, ci_lower), np.percentile(hamming_scores, ci_upper)],
+        'exact_match': exact_match,
+        'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)],
+        'sample_count': len(labels),
+        'bootstrap_samples': len(auc_scores),
+        'class_weights': class_weights  # Store class weights for reference
     }
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
-    """Calculate detailed metrics for a specific class"""
-    auc = roc_auc_score(labels, predictions)
+    """Calculate detailed metrics for a specific class with class weights"""
+    # Calculate class weights
+    weights = compute_class_weight(
+        class_weight='balanced',
+        classes=np.unique(labels),
+        y=labels
+    )
+    sample_weights = np.array([weights[l] for l in labels])
+    
+    # Calculate weighted metrics
+    auc = roc_auc_score(labels, predictions, sample_weight=sample_weights)
     precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='binary'
+        labels, binary_predictions, average='binary',
+        sample_weight=sample_weights
     )
     
     # Calculate additional metrics
-    tn, fp, fn, tp = confusion_matrix(labels, binary_predictions).ravel()
+    tn, fp, fn, tp = confusion_matrix(
+        labels, binary_predictions, 
+        sample_weight=sample_weights
+    ).ravel()
     specificity = tn / (tn + fp)
     npv = tn / (tn + fn)
     
+    # Calculate confidence intervals using bootstrap
+    n_bootstrap = 1000
+    metrics_boot = {
+        'auc': [], 'precision': [], 'recall': [], 
+        'f1': [], 'specificity': [], 'npv': []
+    }
+    
+    for _ in range(n_bootstrap):
+        try:
+            # Use stratified bootstrap sampling for single class
+            boot_labels, boot_preds = bootstrap_sample(
+                labels.reshape(-1, 1), 
+                predictions.reshape(-1, 1)
+            )
+            boot_binary = (boot_preds > threshold).astype(int)
+            
+            # Calculate weights for bootstrap sample
+            boot_weights = compute_class_weight(
+                class_weight='balanced',
+                classes=np.unique(boot_labels),
+                y=boot_labels.ravel()
+            )
+            boot_sample_weights = np.array([boot_weights[l] for l in boot_labels.ravel()])
+            
+            # Calculate metrics for this bootstrap sample
+            metrics_boot['auc'].append(
+                roc_auc_score(boot_labels, boot_preds, sample_weight=boot_sample_weights)
+            )
+            p, r, f, _ = precision_recall_fscore_support(
+                boot_labels, boot_binary, average='binary',
+                sample_weight=boot_sample_weights
+            )
+            metrics_boot['precision'].append(p)
+            metrics_boot['recall'].append(r)
+            metrics_boot['f1'].append(f)
+            
+            tn, fp, fn, tp = confusion_matrix(
+                boot_labels, boot_binary,
+                sample_weight=boot_sample_weights
+            ).ravel()
+            metrics_boot['specificity'].append(tn / (tn + fp))
+            metrics_boot['npv'].append(tn / (tn + fn))
+        except:
+            continue
+    
+    # Calculate confidence intervals
+    ci_lower = 2.5
+    ci_upper = 97.5
+    
     return {
         'auc': auc,
+        'auc_ci': [np.percentile(metrics_boot['auc'], ci_lower), 
+                   np.percentile(metrics_boot['auc'], ci_upper)],
         'precision': precision,
+        'precision_ci': [np.percentile(metrics_boot['precision'], ci_lower),
+                        np.percentile(metrics_boot['precision'], ci_upper)],
         'recall': recall,
+        'recall_ci': [np.percentile(metrics_boot['recall'], ci_lower),
+                     np.percentile(metrics_boot['recall'], ci_upper)],
         'f1': f1,
+        'f1_ci': [np.percentile(metrics_boot['f1'], ci_lower),
+                  np.percentile(metrics_boot['f1'], ci_upper)],
         'specificity': specificity,
+        'specificity_ci': [np.percentile(metrics_boot['specificity'], ci_lower),
+                          np.percentile(metrics_boot['specificity'], ci_upper)],
         'npv': npv,
+        'npv_ci': [np.percentile(metrics_boot['npv'], ci_lower),
+                   np.percentile(metrics_boot['npv'], ci_upper)],
         'threshold': threshold,
         'positive_samples': int(labels.sum()),
         'true_positives': int(tp),
         'false_positives': int(fp),
         'true_negatives': int(tn),
-        'false_negatives': int(fn)
+        'false_negatives': int(fn),
+        'bootstrap_samples': len(metrics_boot['auc']),
+        'class_weights': dict(zip(np.unique(labels), weights))  # Store class weights for reference
     }
 
 def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=10):
@@ -527,6 +665,8 @@ def save_results(results, predictions, labels, langs, output_dir):
     print(f"Overall Metrics:")
     print(f"  AUC (macro): {results['overall']['auc']:.4f}")
     print(f"  F1 (macro): {results['overall']['f1']:.4f}")
+    print(f"  Hamming Loss: {results['overall'].get('hamming_loss', 'N/A'):.4f}")
+    print(f"  Exact Match: {results['overall'].get('exact_match', 'N/A'):.4f}")
     print(f"  Loss: {results['overall'].get('loss', 'N/A')}")
     
     print("\nPer-Language Performance:")
@@ -534,6 +674,8 @@ def save_results(results, predictions, labels, langs, output_dir):
         print(f"\n{lang} (n={metrics['sample_count']}):")
         print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
         print(f"  F1: {metrics['f1']:.4f} (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])")
+        print(f"  Hamming Loss: {metrics['hamming_loss']:.4f} (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])")
+        print(f"  Exact Match: {metrics['exact_match']:.4f} (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])")
     
     print("\nPer-Class Performance:")
     for class_name, metrics in results['per_class'].items():
