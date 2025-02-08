@@ -35,6 +35,9 @@ class ToxicDataset(Dataset):
             'fr': 4, 'it': 5, 'pt': 6
         }
         
+        # Add reverse mapping
+        self.id_to_lang = {v: k for k, v in self.lang_to_id.items()}
+        
         # Convert language strings to IDs, default to English (0) if language not found
         self.langs = np.array([self.lang_to_id.get(str(lang).lower(), 0) for lang in df['lang'].values])
         
@@ -687,6 +690,17 @@ def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
     
+    # Get language name mapping
+    id_to_lang = {
+        0: 'English (en)',
+        1: 'Russian (ru)',
+        2: 'Turkish (tr)',
+        3: 'Spanish (es)',
+        4: 'French (fr)',
+        5: 'Italian (it)',
+        6: 'Portuguese (pt)'
+    }
+    
     # Convert results to JSON serializable format
     serializable_results = convert_to_serializable(results)
     
@@ -722,9 +736,11 @@ def save_results(results, predictions, labels, langs, output_dir):
     print(f"  Loss: {loss if isinstance(loss, str) else f'{loss:.4f}'}")
     
     print("\nPer-Language Performance:")
-    for lang, metrics in results['per_language'].items():
-        print(f"\n{lang} (n={metrics['sample_count']}):")
-        print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
+    for lang_id, metrics in results['per_language'].items():
+        lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
+        print(f"\n{lang_name} (n={metrics['sample_count']}):")
+        if 'auc' in metrics and 'auc_ci' in metrics:
+            print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
         print(f"  F1: {metrics['f1']:.4f} (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])")
         
         # Handle metrics that might be missing or non-numeric
