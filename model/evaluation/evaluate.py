@@ -20,6 +20,8 @@ import argparse
 from torch.utils.data import Dataset, DataLoader
 import gc
 import multiprocessing
+import multiprocessing as mp
+from functools import partial
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -185,40 +187,29 @@ def evaluate_model(model, test_loader, device, output_dir):
                     lang_thresholds[class_name] = 0.5  # Default threshold
                     continue
                 
-                # Find optimal threshold using ROC curve
+                # Find optimal threshold using F1 score
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
-                optimal_idx = np.argmax(tpr - fpr)
-                lang_thresholds[class_name] = thresh[optimal_idx]
-                
-                # Calculate F1 scores for different thresholds
                 f1_scores = []
-                precisions = []
-                recalls = []
                 
+                # Calculate F1 score for each threshold
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
-                    precision, recall, f1, _ = precision_recall_fscore_support(
+                    _, _, f1, _ = precision_recall_fscore_support(
                         class_labels, 
                         binary_preds, 
                         average='binary',
                         zero_division=0
                     )
                     f1_scores.append(f1)
-                    precisions.append(precision)
-                    recalls.append(recall)
                 
-                # Use a combination of metrics to find the best threshold
-                scores = np.array(f1_scores) * 0.7 + np.array(recalls) * 0.3
-                best_idx = np.argmax(scores)
+                # Select threshold that maximizes F1 score
+                best_idx = np.argmax(f1_scores)
+                lang_thresholds[class_name] = thresh[best_idx]
                 
-                # Only use the new threshold if it's better and produces some positive predictions
-                test_preds = (class_preds > thresh[best_idx]).astype(int)
-                if scores[best_idx] > scores[optimal_idx] and test_preds.sum() > 0:
-                    lang_thresholds[class_name] = thresh[best_idx]
-                
-                # If threshold results in no positive predictions, try a lower one
+                # If threshold results in no positive predictions, use a lower threshold
                 test_preds = (class_preds > lang_thresholds[class_name]).astype(int)
                 if test_preds.sum() == 0:
+                    print(f"Warning: No positive predictions for {class_name} in {lang_name}, adjusting threshold")
                     percentile_threshold = np.percentile(class_preds, 95)
                     lang_thresholds[class_name] = min(percentile_threshold, 0.3)
                 
@@ -399,13 +390,114 @@ def calculate_class_weights(labels):
             
     return class_weights
 
+def parallel_bootstrap_metrics(args):
+    """Helper function for parallel bootstrap calculations"""
+    labels, predictions, binary_predictions, threshold = args
+    try:
+        # Use stratified bootstrap sampling
+        boot_labels, boot_preds = bootstrap_sample(labels, predictions)
+        boot_binary = (boot_preds > threshold).astype(int) if threshold else (boot_preds > 0.5).astype(int)
+        
+        # Calculate weights for bootstrap sample
+        if len(boot_labels.shape) > 1:
+            boot_weights = calculate_class_weights(boot_labels)
+            boot_sample_weights = np.ones(len(boot_labels))
+            for i in range(boot_labels.shape[1]):
+                boot_label_indices = boot_labels[:, i].astype(int)
+                valid_indices = np.isin(boot_label_indices, list(boot_weights[i].keys()))
+                if not valid_indices.all():
+                    continue
+                boot_sample_weights *= np.array([boot_weights[i].get(idx, 1.0) for idx in boot_label_indices])
+        else:
+            # Single class case
+            boot_weights = compute_class_weight(
+                class_weight='balanced',
+                classes=np.unique(boot_labels),
+                y=boot_labels.ravel()
+            )
+            boot_sample_weights = np.array([boot_weights[l] for l in boot_labels.ravel()])
+        
+        # Normalize and scale bootstrap weights
+        boot_sample_weights = np.clip(boot_sample_weights, 0.1, 10.0)
+        boot_sample_weights /= boot_sample_weights.sum()
+        boot_sample_weights *= len(boot_sample_weights)
+        
+        # Calculate metrics
+        metrics = {}
+        
+        # Calculate AUC if possible
+        try:
+            if len(np.unique(boot_labels)) > 1:
+                metrics['auc'] = roc_auc_score(
+                    boot_labels, boot_preds, average='weighted',
+                    sample_weight=boot_sample_weights
+                )
+        except:
+            metrics['auc'] = None
+        
+        # Calculate other metrics
+        try:
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                boot_labels, boot_binary, average='weighted' if len(boot_labels.shape) > 1 else 'binary',
+                sample_weight=boot_sample_weights, zero_division=0
+            )
+            metrics.update({
+                'precision': precision,
+                'recall': recall,
+                'f1': f1
+            })
+        except:
+            metrics.update({
+                'precision': None,
+                'recall': None,
+                'f1': None
+            })
+        
+        # Calculate additional metrics for multi-label case
+        if len(boot_labels.shape) > 1:
+            try:
+                metrics['hamming_loss'] = hamming_loss(
+                    boot_labels, boot_binary, 
+                    sample_weight=boot_sample_weights
+                )
+                metrics['exact_match'] = accuracy_score(
+                    boot_labels, boot_binary, 
+                    sample_weight=boot_sample_weights
+                )
+            except:
+                metrics.update({
+                    'hamming_loss': None,
+                    'exact_match': None
+                })
+        
+        # Calculate confusion matrix metrics for single-class case
+        else:
+            try:
+                tn, fp, fn, tp = confusion_matrix(
+                    boot_labels, boot_binary,
+                    sample_weight=boot_sample_weights
+                ).ravel()
+                metrics.update({
+                    'specificity': tn / (tn + fp),
+                    'npv': tn / (tn + fn)
+                })
+            except:
+                metrics.update({
+                    'specificity': None,
+                    'npv': None
+                })
+        
+        return metrics
+    except Exception as e:
+        print(f"Warning: Bootstrap iteration failed: {str(e)}")
+        return None
+
 def calculate_language_metrics(labels, predictions, binary_predictions):
-    """Calculate detailed metrics for a specific language with class weights"""
-    # Check if we have enough samples
+    """Calculate detailed metrics for a specific language with parallel processing"""
     if len(labels) == 0:
         raise ValueError("No samples available for metric calculation")
     
-    # Calculate class weights for this language
+    # Calculate initial metrics
     try:
         class_weights = calculate_class_weights(labels)
     except Exception as e:
@@ -415,7 +507,6 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     # Calculate weighted metrics
     sample_weights = np.ones(len(labels))
     for i in range(labels.shape[1]):
-        # Convert labels to integers for indexing and ensure they're valid
         label_indices = labels[:, i].astype(int)
         valid_indices = np.isin(label_indices, list(class_weights[i].keys()))
         if not valid_indices.all():
@@ -423,225 +514,153 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
             continue
         sample_weights *= np.array([class_weights[i].get(idx, 1.0) for idx in label_indices])
     
-    # Ensure sample weights are valid
-    sample_weights = np.clip(sample_weights, 0.1, 10.0)  # Clip to reasonable range
-    sample_weights /= sample_weights.sum()  # Normalize
-    sample_weights *= len(sample_weights)  # Scale back to original range
+    # Normalize weights
+    sample_weights = np.clip(sample_weights, 0.1, 10.0)
+    sample_weights /= sample_weights.sum()
+    sample_weights *= len(sample_weights)
     
-    # Calculate AUC only if we have both positive and negative samples
+    # Calculate base metrics
+    metrics = {}
     try:
-        unique_labels = np.unique(labels)
-        if len(unique_labels) > 1:
-            auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
-        else:
-            print("Warning: Only one class present, AUC cannot be calculated")
-            auc = None
-    except ValueError as e:
-        print(f"Warning: Could not calculate AUC: {str(e)}")
-        auc = None
+        if len(np.unique(labels)) > 1:
+            metrics['auc'] = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
+    except:
+        metrics['auc'] = None
     
-    # Calculate precision, recall, F1 with zero_division=0
     try:
         precision, recall, f1, _ = precision_recall_fscore_support(
-            labels, binary_predictions, average='weighted', 
+            labels, binary_predictions, average='weighted',
             sample_weight=sample_weights, zero_division=0
         )
-    except Exception as e:
-        print(f"Warning: Error calculating precision/recall metrics: {str(e)}")
-        precision = recall = f1 = 0.0
+        metrics.update({
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        })
+    except:
+        metrics.update({
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0
+        })
     
-    # Add multi-label metrics with error handling
     try:
-        h_loss = hamming_loss(labels, binary_predictions, sample_weight=sample_weights)
-    except Exception as e:
-        print(f"Warning: Error calculating Hamming loss: {str(e)}")
-        h_loss = 0.0
-        
-    try:
-        exact_match = accuracy_score(labels, binary_predictions, sample_weight=sample_weights)
-    except Exception as e:
-        print(f"Warning: Error calculating exact match score: {str(e)}")
-        exact_match = 0.0
+        metrics['hamming_loss'] = hamming_loss(labels, binary_predictions, sample_weight=sample_weights)
+        metrics['exact_match'] = accuracy_score(labels, binary_predictions, sample_weight=sample_weights)
+    except:
+        metrics.update({
+            'hamming_loss': 0.0,
+            'exact_match': 0.0
+        })
     
-    # Calculate confidence intervals using stratified bootstrap
+    # Parallel bootstrap calculations
     n_bootstrap = 1000
-    auc_scores = []
-    f1_scores = []
-    hamming_scores = []
-    exact_match_scores = []
+    n_processes = min(mp.cpu_count(), 8)  # Limit to 8 processes max
     
-    for _ in range(n_bootstrap):
-        try:
-            # Use stratified bootstrap sampling
-            boot_labels, boot_preds = bootstrap_sample(labels, predictions)
-            boot_binary = (boot_preds > 0.5).astype(int)
-            
-            # Calculate class weights for bootstrap sample
-            boot_weights = calculate_class_weights(boot_labels)
-            boot_sample_weights = np.ones(len(boot_labels))
-            for i in range(boot_labels.shape[1]):
-                boot_label_indices = boot_labels[:, i].astype(int)
-                valid_indices = np.isin(boot_label_indices, list(boot_weights[i].keys()))
-                if not valid_indices.all():
-                    continue
-                boot_sample_weights *= np.array([boot_weights[i].get(idx, 1.0) for idx in boot_label_indices])
-            
-            # Normalize and scale bootstrap weights
-            boot_sample_weights = np.clip(boot_sample_weights, 0.1, 10.0)
-            boot_sample_weights /= boot_sample_weights.sum()
-            boot_sample_weights *= len(boot_sample_weights)
-            
-            # Calculate metrics for bootstrap sample
-            if auc is not None and len(np.unique(boot_labels)) > 1:
-                auc_scores.append(roc_auc_score(
-                    boot_labels, boot_preds, average='weighted',
-                    sample_weight=boot_sample_weights
-                ))
-            
-            _, _, f1, _ = precision_recall_fscore_support(
-                boot_labels, boot_binary, average='weighted',
-                sample_weight=boot_sample_weights, zero_division=0
-            )
-            f1_scores.append(f1)
-            
-            hamming_scores.append(hamming_loss(boot_labels, boot_binary, sample_weight=boot_sample_weights))
-            exact_match_scores.append(accuracy_score(boot_labels, boot_binary, sample_weight=boot_sample_weights))
-        except Exception as e:
-            print(f"Warning: Bootstrap iteration failed: {str(e)}")
-            continue
+    # Prepare arguments for parallel processing
+    bootstrap_args = [(labels, predictions, binary_predictions, None)] * n_bootstrap
+    
+    # Run bootstrap iterations in parallel
+    with mp.Pool(n_processes) as pool:
+        bootstrap_results = list(filter(None, pool.map(parallel_bootstrap_metrics, bootstrap_args)))
     
     # Calculate confidence intervals
-    ci_lower = 2.5
-    ci_upper = 97.5
+    ci_lower, ci_upper = 2.5, 97.5
+    for metric in ['auc', 'f1', 'hamming_loss', 'exact_match']:
+        values = [r[metric] for r in bootstrap_results if r and r[metric] is not None]
+        if values:
+            metrics[f'{metric}_ci'] = [
+                np.percentile(values, ci_lower),
+                np.percentile(values, ci_upper)
+            ]
+        else:
+            metrics[f'{metric}_ci'] = [0.0, 0.0]
     
-    # Prepare results dictionary
-    results = {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'f1_ci': [np.percentile(f1_scores, ci_lower), np.percentile(f1_scores, ci_upper)] if f1_scores else [0.0, 0.0],
-        'hamming_loss': h_loss,
-        'hamming_loss_ci': [np.percentile(hamming_scores, ci_lower), np.percentile(hamming_scores, ci_upper)] if hamming_scores else [0.0, 0.0],
-        'exact_match': exact_match,
-        'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)] if exact_match_scores else [0.0, 0.0],
+    metrics.update({
         'sample_count': len(labels),
-        'bootstrap_samples': len(f1_scores),
+        'bootstrap_samples': len(bootstrap_results),
         'class_weights': class_weights
-    }
+    })
     
-    # Add AUC metrics only if available
-    if auc is not None:
-        results['auc'] = auc
-        if auc_scores:
-            results['auc_ci'] = [np.percentile(auc_scores, ci_lower), np.percentile(auc_scores, ci_upper)]
-    
-    return results
+    return metrics
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
-    """Calculate detailed metrics for a specific class with class weights"""
-    # Calculate class weights
+    """Calculate detailed metrics for a specific class with parallel processing"""
+    # Calculate initial class weights
     unique_classes = np.unique(labels)
     weights = compute_class_weight(
         class_weight='balanced',
         classes=unique_classes,
         y=labels
     )
-    # Convert labels to integers for indexing
     label_indices = labels.astype(int)
     sample_weights = np.array([weights[idx] for idx in label_indices])
     
-    # Calculate weighted metrics
-    auc = roc_auc_score(labels, predictions, sample_weight=sample_weights)
+    # Calculate base metrics
+    metrics = {
+        'auc': roc_auc_score(labels, predictions, sample_weight=sample_weights),
+        'threshold': threshold
+    }
+    
     precision, recall, f1, _ = precision_recall_fscore_support(
         labels, binary_predictions, average='binary',
         sample_weight=sample_weights
     )
+    metrics.update({
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
+    })
     
-    # Calculate additional metrics
     tn, fp, fn, tp = confusion_matrix(
-        labels, binary_predictions, 
+        labels, binary_predictions,
         sample_weight=sample_weights
     ).ravel()
-    specificity = tn / (tn + fp)
-    npv = tn / (tn + fn)
     
-    # Calculate confidence intervals using bootstrap
-    n_bootstrap = 1000
-    metrics_boot = {
-        'auc': [], 'precision': [], 'recall': [], 
-        'f1': [], 'specificity': [], 'npv': []
-    }
-    
-    for _ in range(n_bootstrap):
-        try:
-            # Use stratified bootstrap sampling for single class
-            boot_labels, boot_preds = bootstrap_sample(
-                labels.reshape(-1, 1), 
-                predictions.reshape(-1, 1)
-            )
-            boot_binary = (boot_preds > threshold).astype(int)
-            
-            # Calculate weights for bootstrap sample
-            boot_weights = compute_class_weight(
-                class_weight='balanced',
-                classes=np.unique(boot_labels),
-                y=boot_labels.ravel()
-            )
-            boot_sample_weights = np.array([boot_weights[l] for l in boot_labels.ravel()])
-            
-            # Calculate metrics for this bootstrap sample
-            metrics_boot['auc'].append(
-                roc_auc_score(boot_labels, boot_preds, sample_weight=boot_sample_weights)
-            )
-            p, r, f, _ = precision_recall_fscore_support(
-                boot_labels, boot_binary, average='binary',
-                sample_weight=boot_sample_weights
-            )
-            metrics_boot['precision'].append(p)
-            metrics_boot['recall'].append(r)
-            metrics_boot['f1'].append(f)
-            
-            tn, fp, fn, tp = confusion_matrix(
-                boot_labels, boot_binary,
-                sample_weight=boot_sample_weights
-            ).ravel()
-            metrics_boot['specificity'].append(tn / (tn + fp))
-            metrics_boot['npv'].append(tn / (tn + fn))
-        except:
-            continue
-    
-    # Calculate confidence intervals
-    ci_lower = 2.5
-    ci_upper = 97.5
-    
-    return {
-        'auc': auc,
-        'auc_ci': [np.percentile(metrics_boot['auc'], ci_lower), 
-                   np.percentile(metrics_boot['auc'], ci_upper)],
-        'precision': precision,
-        'precision_ci': [np.percentile(metrics_boot['precision'], ci_lower),
-                        np.percentile(metrics_boot['precision'], ci_upper)],
-        'recall': recall,
-        'recall_ci': [np.percentile(metrics_boot['recall'], ci_lower),
-                     np.percentile(metrics_boot['recall'], ci_upper)],
-        'f1': f1,
-        'f1_ci': [np.percentile(metrics_boot['f1'], ci_lower),
-                  np.percentile(metrics_boot['f1'], ci_upper)],
-        'specificity': specificity,
-        'specificity_ci': [np.percentile(metrics_boot['specificity'], ci_lower),
-                          np.percentile(metrics_boot['specificity'], ci_upper)],
-        'npv': npv,
-        'npv_ci': [np.percentile(metrics_boot['npv'], ci_lower),
-                   np.percentile(metrics_boot['npv'], ci_upper)],
-        'threshold': threshold,
+    metrics.update({
+        'specificity': tn / (tn + fp),
+        'npv': tn / (tn + fn),
         'positive_samples': int(labels.sum()),
         'true_positives': int(tp),
         'false_positives': int(fp),
         'true_negatives': int(tn),
-        'false_negatives': int(fn),
-        'bootstrap_samples': len(metrics_boot['auc']),
-        'class_weights': dict(zip(np.unique(labels), weights))  # Store class weights for reference
-    }
+        'false_negatives': int(fn)
+    })
+    
+    # Parallel bootstrap calculations
+    n_bootstrap = 1000
+    n_processes = min(mp.cpu_count(), 8)  # Limit to 8 processes max
+    
+    # Prepare arguments for parallel processing
+    bootstrap_args = [(
+        labels.reshape(-1, 1),
+        predictions.reshape(-1, 1),
+        binary_predictions.reshape(-1, 1),
+        threshold
+    )] * n_bootstrap
+    
+    # Run bootstrap iterations in parallel
+    with mp.Pool(n_processes) as pool:
+        bootstrap_results = list(filter(None, pool.map(parallel_bootstrap_metrics, bootstrap_args)))
+    
+    # Calculate confidence intervals
+    ci_lower, ci_upper = 2.5, 97.5
+    for metric in ['auc', 'precision', 'recall', 'f1', 'specificity', 'npv']:
+        values = [r[metric] for r in bootstrap_results if r and r[metric] is not None]
+        if values:
+            metrics[f'{metric}_ci'] = [
+                np.percentile(values, ci_lower),
+                np.percentile(values, ci_upper)
+            ]
+        else:
+            metrics[f'{metric}_ci'] = [0.0, 0.0]
+    
+    metrics.update({
+        'bootstrap_samples': len(bootstrap_results),
+        'class_weights': dict(zip(np.unique(labels), weights))
+    })
+    
+    return metrics
 
 def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=10):
     """Plot confusion matrices in batches using class-specific thresholds"""
@@ -740,6 +759,114 @@ def plot_metrics(results, output_dir):
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
+    plt.close()
+    
+    # Create correlation heatmaps
+    # 1. Language-Metric Correlation Matrix
+    metric_names = ['auc', 'f1', 'precision', 'recall', 'hamming_loss', 'exact_match']
+    lang_metric_data = []
+    
+    for lang in languages:
+        metrics = results['per_language'][lang]
+        lang_values = []
+        for metric in metric_names:
+            value = metrics.get(metric, np.nan)
+            if isinstance(value, (int, float, np.number)):
+                lang_values.append(value)
+            else:
+                lang_values.append(np.nan)
+        lang_metric_data.append(lang_values)
+    
+    # Create DataFrame for correlation analysis
+    lang_metric_df = pd.DataFrame(lang_metric_data, columns=metric_names, index=languages)
+    
+    # Plot correlation heatmap between metrics
+    plt.figure(figsize=(10, 8))
+    metric_corr = lang_metric_df.corr()
+    sns.heatmap(metric_corr, annot=True, cmap='coolwarm', center=0, fmt='.2f',
+                square=True, cbar_kws={'label': 'Correlation'})
+    plt.title('Correlation between Performance Metrics across Languages')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'metric_correlations.png'))
+    plt.close()
+    
+    # 2. Class-Language Performance Matrix
+    class_lang_data = []
+    for lang in languages:
+        class_metrics = results['per_language'][lang].get('class_metrics', {})
+        lang_values = []
+        for class_name in classes:
+            if class_name in class_metrics:
+                lang_values.append(class_metrics[class_name].get('f1', np.nan))
+            else:
+                lang_values.append(np.nan)
+        class_lang_data.append(lang_values)
+    
+    # Create and plot class-language heatmap
+    plt.figure(figsize=(12, 8))
+    class_lang_df = pd.DataFrame(class_lang_data, columns=classes, index=languages)
+    sns.heatmap(class_lang_df, annot=True, cmap='YlOrRd', center=0.5, fmt='.2f',
+                cbar_kws={'label': 'F1 Score'})
+    plt.title('F1 Scores by Class and Language')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'class_language_performance.png'))
+    plt.close()
+    
+    # 3. Performance Distribution Plots
+    plt.figure(figsize=(15, 5))
+    
+    # Create subplot for metric distributions
+    plt.subplot(131)
+    for metric in ['auc', 'f1', 'precision', 'recall']:
+        values = [results['per_language'][lang].get(metric, np.nan) for lang in languages]
+        values = [v for v in values if not np.isnan(v)]
+        if values:
+            sns.kdeplot(data=values, label=metric.upper())
+    
+    plt.title('Distribution of Metrics across Languages')
+    plt.xlabel('Score')
+    plt.ylabel('Density')
+    plt.legend()
+    
+    # Create subplot for class performance distributions
+    plt.subplot(132)
+    class_scores = []
+    class_names = []
+    for class_name in classes:
+        scores = [results['per_language'][lang].get('class_metrics', {}).get(class_name, {}).get('f1', np.nan) 
+                 for lang in languages]
+        scores = [s for s in scores if not np.isnan(s)]
+        if scores:
+            class_scores.extend(scores)
+            class_names.extend([class_name] * len(scores))
+    
+    if class_scores:
+        sns.boxplot(x=class_names, y=class_scores)
+        plt.title('Class Performance Distribution')
+        plt.xticks(rotation=45)
+        plt.xlabel('Class')
+        plt.ylabel('F1 Score')
+    
+    # Create subplot for language performance distributions
+    plt.subplot(133)
+    lang_scores = []
+    lang_names = []
+    for lang in languages:
+        scores = [metrics.get('f1', np.nan) for metrics in results['per_language'][lang].get('class_metrics', {}).values()]
+        scores = [s for s in scores if not np.isnan(s)]
+        if scores:
+            lang_scores.extend(scores)
+            lang_names.extend([lang] * len(scores))
+    
+    if lang_scores:
+        sns.boxplot(x=lang_names, y=lang_scores)
+        plt.title('Language Performance Distribution')
+        plt.xticks(rotation=45)
+        plt.xlabel('Language')
+        plt.ylabel('F1 Score')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'performance_distributions.png'))
     plt.close()
 
 def convert_to_serializable(obj):
