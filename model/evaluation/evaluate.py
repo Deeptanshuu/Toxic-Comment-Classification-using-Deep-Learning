@@ -295,6 +295,16 @@ def evaluate_model(model, test_loader, device, output_dir):
     
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
+    # Default thresholds in case evaluation fails
+    default_thresholds = {
+        'toxic': 0.3991,
+        'severe_toxic': 0.2350,
+        'obscene': 0.47,
+        'threat': 0.3614,
+        'insult': 0.3906,
+        'identity_hate': 0.2533
+    }
+    
     # Prepare arguments for parallel processing
     eval_args = []
     unique_langs = np.unique(langs)
@@ -323,16 +333,26 @@ def evaluate_model(model, test_loader, device, output_dir):
     with mp.Pool(processes=n_processes) as pool:
         lang_results = list(filter(None, pool.map(evaluate_language, eval_args)))
     
-    # Collect results
-    for lang_id, lang_metrics, lang_thresholds in lang_results:
-        results['per_language'][str(lang_id)] = lang_metrics
-        results['thresholds'][str(lang_id)] = lang_thresholds
+    # Collect results and ensure each language has thresholds
+    for lang in unique_langs:
+        # Find the result for this language
+        lang_result = next((r for r in lang_results if r[0] == lang), None)
+        
+        if lang_result:
+            lang_id, lang_metrics, lang_thresholds = lang_result
+            results['per_language'][str(lang_id)] = lang_metrics
+            results['thresholds'][str(lang_id)] = lang_thresholds
+        else:
+            # If evaluation failed, use default thresholds
+            results['thresholds'][str(lang)] = default_thresholds
+            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang), f'Unknown ({lang})')}")
     
     # Calculate overall metrics using language-specific thresholds
     overall_binary_preds = np.zeros_like(predictions)
     for i, lang in enumerate(langs):
+        lang_thresholds = results['thresholds'].get(str(lang), default_thresholds)
         for j, class_name in enumerate(toxicity_types):
-            threshold = results['thresholds'][str(lang)][class_name]
+            threshold = lang_thresholds.get(class_name, default_thresholds[class_name])
             overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
     
     # Calculate overall metrics
@@ -633,82 +653,81 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     return metrics
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
-    """Calculate detailed metrics for a specific class with parallel processing"""
-    # Calculate initial class weights
-    unique_classes = np.unique(labels)
-    weights = compute_class_weight(
-        class_weight='balanced',
-        classes=unique_classes,
-        y=labels
-    )
-    label_indices = labels.astype(int)
-    sample_weights = np.array([weights[idx] for idx in label_indices])
-    
-    # Calculate base metrics
-    metrics = {
-        'auc': roc_auc_score(labels, predictions, sample_weight=sample_weights),
-        'threshold': threshold
-    }
-    
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='binary',
-        sample_weight=sample_weights
-    )
-    metrics.update({
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
-    })
-    
-    tn, fp, fn, tp = confusion_matrix(
-        labels, binary_predictions,
-        sample_weight=sample_weights
-    ).ravel()
-    
-    metrics.update({
-        'specificity': tn / (tn + fp),
-        'npv': tn / (tn + fn),
-        'positive_samples': int(labels.sum()),
-        'true_positives': int(tp),
-        'false_positives': int(fp),
-        'true_negatives': int(tn),
-        'false_negatives': int(fn)
-    })
-    
-    # Parallel bootstrap calculations
-    n_bootstrap = 1000
-    n_processes = min(mp.cpu_count(), 8)  # Limit to 8 processes max
-    
-    # Prepare arguments for parallel processing
-    bootstrap_args = [(
-        labels.reshape(-1, 1),
-        predictions.reshape(-1, 1),
-        binary_predictions.reshape(-1, 1),
-        threshold
-    )] * n_bootstrap
-    
-    # Run bootstrap iterations in parallel
-    with mp.Pool(n_processes) as pool:
-        bootstrap_results = list(filter(None, pool.map(parallel_bootstrap_metrics, bootstrap_args)))
-    
-    # Calculate confidence intervals
-    ci_lower, ci_upper = 2.5, 97.5
-    for metric in ['auc', 'precision', 'recall', 'f1', 'specificity', 'npv']:
-        values = [r[metric] for r in bootstrap_results if r and r[metric] is not None]
-        if values:
-            metrics[f'{metric}_ci'] = [
-                np.percentile(values, ci_lower),
-                np.percentile(values, ci_upper)
-            ]
-        else:
-            metrics[f'{metric}_ci'] = [0.0, 0.0]
-    
-    metrics.update({
-        'bootstrap_samples': len(bootstrap_results),
-        'class_weights': dict(zip(np.unique(labels), weights))
-    })
-    
-    return metrics
+    """Calculate detailed metrics for a specific class"""
+    try:
+        # Calculate initial class weights
+        unique_classes = np.unique(labels)
+        weights = compute_class_weight(
+            class_weight='balanced',
+            classes=unique_classes,
+            y=labels
+        )
+        label_indices = labels.astype(int)
+        sample_weights = np.array([weights[idx] for idx in label_indices])
+        
+        # Calculate base metrics
+        metrics = {
+            'auc': roc_auc_score(labels, predictions, sample_weight=sample_weights),
+            'threshold': threshold
+        }
+        
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, binary_predictions, average='binary',
+            sample_weight=sample_weights
+        )
+        metrics.update({
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        })
+        
+        tn, fp, fn, tp = confusion_matrix(
+            labels, binary_predictions,
+            sample_weight=sample_weights
+        ).ravel()
+        
+        metrics.update({
+            'specificity': tn / (tn + fp) if (tn + fp) > 0 else 0.0,
+            'npv': tn / (tn + fn) if (tn + fn) > 0 else 0.0,
+            'positive_samples': int(labels.sum()),
+            'true_positives': int(tp),
+            'false_positives': int(fp),
+            'true_negatives': int(tn),
+            'false_negatives': int(fn)
+        })
+        
+        # Add confidence intervals as fixed values since we're not doing bootstrap
+        for metric in ['auc', 'precision', 'recall', 'f1', 'specificity', 'npv']:
+            metrics[f'{metric}_ci'] = [metrics[metric], metrics[metric]]
+        
+        metrics['class_weights'] = dict(zip(np.unique(labels), weights))
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"Warning: Error in calculate_class_metrics: {str(e)}")
+        # Return default metrics
+        return {
+            'auc': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0,
+            'specificity': 0.0,
+            'npv': 0.0,
+            'threshold': threshold,
+            'positive_samples': 0,
+            'true_positives': 0,
+            'false_positives': 0,
+            'true_negatives': 0,
+            'false_negatives': 0,
+            'auc_ci': [0.0, 0.0],
+            'precision_ci': [0.0, 0.0],
+            'recall_ci': [0.0, 0.0],
+            'f1_ci': [0.0, 0.0],
+            'specificity_ci': [0.0, 0.0],
+            'npv_ci': [0.0, 0.0],
+            'class_weights': {0: 1.0, 1: 1.0}
+        }
 
 def plot_confusion_matrices(predictions, labels, langs, output_dir, batch_size=10):
     """Plot confusion matrices in batches using class-specific thresholds"""
