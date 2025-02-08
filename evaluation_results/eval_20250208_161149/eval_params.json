@@ -1,0 +1,7 @@
+{
+  "timestamp": "20250208_161149",
+  "model_path": "weights/toxic_classifier_xlm-roberta-large",
+  "test_file": "dataset/split/test.csv",
+  "batch_size": 32,
+  "num_workers": null
+}

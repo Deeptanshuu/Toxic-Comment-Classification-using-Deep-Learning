@@ -4,6 +4,11 @@ from transformers import XLMRobertaTokenizer
 import argparse
 import os
 
+SUPPORTED_LANGUAGES = {
+    'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
+    'fr': 4, 'it': 5, 'pt': 6
+}
+
 def load_model(model_path):
     """Load the trained model and tokenizer"""
     # Check if model path exists
@@ -18,8 +23,7 @@ def load_model(model_path):
             num_labels=6,
             hidden_size=1024,
             num_attention_heads=16,
-            model_name='xlm-roberta-large',
-            dropout=0.1
+            model_name='xlm-roberta-large'
         )
         
         # Load the trained weights
