@@ -90,15 +90,20 @@ def evaluate_model(model, test_loader, device, output_dir):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
-            langs = batch['lang']
+            langs = batch['lang'].to(device)
             
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                lang_ids=langs
+            )
             loss = outputs['loss'].item()
             predictions = outputs['probabilities'].cpu().numpy()
             
             all_predictions.extend(predictions)
             all_labels.extend(labels.cpu().numpy())
-            all_langs.extend(langs)
+            all_langs.extend(langs.cpu().numpy())
             all_losses.append(loss)
             
             # Clear GPU memory
