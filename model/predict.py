@@ -29,8 +29,7 @@ LANG_PATTERNS = {
     'tr': [
         r'[şŞıİğĞüÜöÖçÇ]',  # Turkish-specific characters
         r'\b(ve|bu|bir|için|ben|sen|o|biz|siz|de|da|ki|ne|kim|ile|ama|fakat|çünkü|nasıl|nerede|ne zaman)\b',  # Common words
-        r'\b(merhaba|teşekkürler|lütfen|iyi günler|evet|hayır|tabii)\b',  # Common expressions
-        r'\b[a-zA-Z]*[iıİI][a-zA-Z]*\b'  # Words with Turkish i/ı
+        r'\b(merhaba|teşekkürler|lütfen|iyi günler|evet|hayır|tabii)\b'
     ],
     'es': [
         r'\b(el|la|los|las|un|una|unos|unas|y|o|pero|porque|si|cuando|donde|como|que|esto|eso|esta|ese|muy)\b',  # Articles and common words
