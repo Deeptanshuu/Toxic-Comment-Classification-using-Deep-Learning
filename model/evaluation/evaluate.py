@@ -400,6 +400,7 @@ def parallel_bootstrap_metrics(args):
         
         # Calculate weights for bootstrap sample
         if len(boot_labels.shape) > 1:
+            # Multi-label case
             boot_weights = calculate_class_weights(boot_labels)
             boot_sample_weights = np.ones(len(boot_labels))
             for i in range(boot_labels.shape[1]):
@@ -453,8 +454,9 @@ def parallel_bootstrap_metrics(args):
                 'f1': None
             })
         
-        # Calculate additional metrics for multi-label case
+        # Calculate additional metrics based on data type
         if len(boot_labels.shape) > 1:
+            # Multi-label case
             try:
                 metrics['hamming_loss'] = hamming_loss(
                     boot_labels, boot_binary, 
@@ -469,9 +471,8 @@ def parallel_bootstrap_metrics(args):
                     'hamming_loss': None,
                     'exact_match': None
                 })
-        
-        # Calculate confusion matrix metrics for single-class case
         else:
+            # Single-label case
             try:
                 tn, fp, fn, tp = confusion_matrix(
                     boot_labels, boot_binary,
