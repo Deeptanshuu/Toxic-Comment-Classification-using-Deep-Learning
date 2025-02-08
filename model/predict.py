@@ -10,6 +10,14 @@ SUPPORTED_LANGUAGES = {
     'fr': 4, 'it': 5, 'pt': 6
 }
 
+# Threshold adjustments to reduce overflagging while maintaining sensitivity for rare classes
+THRESHOLD_ADJUSTMENTS = {
+    'toxic': 0.80,         # Increased from ~46% to reduce overflagging
+    'insult': 0.70,        # Increased from ~26% to reduce overflagging
+    'threat': 0.30,        # Kept low due to rare class importance
+    'identity_hate': 0.30  # Kept low due to rare class importance
+}
+
 def load_model(model_path):
     """Load the trained model and tokenizer"""
     # Check if model path exists
@@ -52,11 +60,30 @@ def load_model(model_path):
         print("3. You have sufficient permissions to access the model files")
         return None, None, None
 
+def adjust_thresholds(thresholds):
+    """
+    Adjust thresholds based on recommendations to reduce overflagging
+    """
+    if not thresholds:
+        return thresholds
+        
+    adjusted = thresholds.copy()
+    # Adjust thresholds for each language
+    for lang_id in adjusted:
+        for category, recommended in THRESHOLD_ADJUSTMENTS.items():
+            if category in adjusted[lang_id]:
+                # Only increase threshold if recommended is higher
+                adjusted[lang_id][category] = max(adjusted[lang_id][category], recommended)
+    
+    return adjusted
+
 def load_thresholds(thresholds_path='evaluation_results/eval_20250208_161149/thresholds.json'):
     """Load language-specific classification thresholds"""
     try:
         with open(thresholds_path, 'r') as f:
-            return json.load(f)
+            thresholds = json.load(f)
+            # Apply threshold adjustments
+            return adjust_thresholds(thresholds)
     except Exception as e:
         print(f"Warning: Could not load thresholds from {thresholds_path}: {str(e)}")
         return None
