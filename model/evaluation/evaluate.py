@@ -375,15 +375,28 @@ def calculate_class_weights(labels):
     """Calculate balanced class weights for each label"""
     class_weights = {}
     for i in range(labels.shape[1]):
-        unique_classes = np.unique(labels[:, i])
-        weights = compute_class_weight(
-            class_weight='balanced',
-            classes=unique_classes,
-            y=labels[:, i]
-        )
-        # Convert to integer indices
-        class_weights[i] = {int(class_label): weight 
-                          for class_label, weight in zip(unique_classes, weights)}
+        # Get unique classes and their counts
+        unique_classes, class_counts = np.unique(labels[:, i], return_counts=True)
+        
+        # Handle cases where all samples belong to one class
+        if len(unique_classes) == 1:
+            class_weights[i] = {int(unique_classes[0]): 1.0}
+            continue
+            
+        try:
+            weights = compute_class_weight(
+                class_weight='balanced',
+                classes=unique_classes,
+                y=labels[:, i]
+            )
+            # Convert to integer indices and ensure weights are positive
+            class_weights[i] = {int(class_label): max(weight, 0.1) 
+                              for class_label, weight in zip(unique_classes, weights)}
+        except ValueError as e:
+            print(f"Warning: Could not compute class weights for label {i}: {str(e)}")
+            # Fallback to equal weights
+            class_weights[i] = {int(class_label): 1.0 for class_label in unique_classes}
+            
     return class_weights
 
 def calculate_language_metrics(labels, predictions, binary_predictions):
@@ -393,31 +406,62 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         raise ValueError("No samples available for metric calculation")
     
     # Calculate class weights for this language
-    class_weights = calculate_class_weights(labels)
+    try:
+        class_weights = calculate_class_weights(labels)
+    except Exception as e:
+        print(f"Warning: Using default weights due to error in class weight calculation: {str(e)}")
+        class_weights = {i: {0: 1.0, 1: 1.0} for i in range(labels.shape[1])}
     
     # Calculate weighted metrics
     sample_weights = np.ones(len(labels))
     for i in range(labels.shape[1]):
-        # Convert labels to integers for indexing
+        # Convert labels to integers for indexing and ensure they're valid
         label_indices = labels[:, i].astype(int)
-        sample_weights *= np.array([class_weights[i][idx] for idx in label_indices])
+        valid_indices = np.isin(label_indices, list(class_weights[i].keys()))
+        if not valid_indices.all():
+            print(f"Warning: Invalid label indices found for class {i}")
+            continue
+        sample_weights *= np.array([class_weights[i].get(idx, 1.0) for idx in label_indices])
+    
+    # Ensure sample weights are valid
+    sample_weights = np.clip(sample_weights, 0.1, 10.0)  # Clip to reasonable range
+    sample_weights /= sample_weights.sum()  # Normalize
+    sample_weights *= len(sample_weights)  # Scale back to original range
     
     # Calculate AUC only if we have both positive and negative samples
     try:
-        auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
-    except ValueError:
-        # If we don't have both classes, set AUC to None
+        unique_labels = np.unique(labels)
+        if len(unique_labels) > 1:
+            auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
+        else:
+            print("Warning: Only one class present, AUC cannot be calculated")
+            auc = None
+    except ValueError as e:
+        print(f"Warning: Could not calculate AUC: {str(e)}")
         auc = None
     
     # Calculate precision, recall, F1 with zero_division=0
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='weighted', 
-        sample_weight=sample_weights, zero_division=0
-    )
+    try:
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, binary_predictions, average='weighted', 
+            sample_weight=sample_weights, zero_division=0
+        )
+    except Exception as e:
+        print(f"Warning: Error calculating precision/recall metrics: {str(e)}")
+        precision = recall = f1 = 0.0
     
-    # Add multi-label metrics
-    h_loss = hamming_loss(labels, binary_predictions, sample_weight=sample_weights)
-    exact_match = accuracy_score(labels, binary_predictions, sample_weight=sample_weights)
+    # Add multi-label metrics with error handling
+    try:
+        h_loss = hamming_loss(labels, binary_predictions, sample_weight=sample_weights)
+    except Exception as e:
+        print(f"Warning: Error calculating Hamming loss: {str(e)}")
+        h_loss = 0.0
+        
+    try:
+        exact_match = accuracy_score(labels, binary_predictions, sample_weight=sample_weights)
+    except Exception as e:
+        print(f"Warning: Error calculating exact match score: {str(e)}")
+        exact_match = 0.0
     
     # Calculate confidence intervals using stratified bootstrap
     n_bootstrap = 1000
@@ -436,29 +480,34 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
             boot_weights = calculate_class_weights(boot_labels)
             boot_sample_weights = np.ones(len(boot_labels))
             for i in range(boot_labels.shape[1]):
-                # Convert labels to integers for indexing
                 boot_label_indices = boot_labels[:, i].astype(int)
-                boot_sample_weights *= np.array([boot_weights[i][idx] for idx in boot_label_indices])
+                valid_indices = np.isin(boot_label_indices, list(boot_weights[i].keys()))
+                if not valid_indices.all():
+                    continue
+                boot_sample_weights *= np.array([boot_weights[i].get(idx, 1.0) for idx in boot_label_indices])
             
-            # Calculate AUC only if possible
-            try:
-                if auc is not None:  # Only append AUC if main calculation succeeded
-                    auc_scores.append(roc_auc_score(
-                        boot_labels, boot_preds, average='weighted',
-                        sample_weight=boot_sample_weights
-                    ))
-            except ValueError:
-                pass
+            # Normalize and scale bootstrap weights
+            boot_sample_weights = np.clip(boot_sample_weights, 0.1, 10.0)
+            boot_sample_weights /= boot_sample_weights.sum()
+            boot_sample_weights *= len(boot_sample_weights)
             
-            # Calculate other metrics with zero_division=0
+            # Calculate metrics for bootstrap sample
+            if auc is not None and len(np.unique(boot_labels)) > 1:
+                auc_scores.append(roc_auc_score(
+                    boot_labels, boot_preds, average='weighted',
+                    sample_weight=boot_sample_weights
+                ))
+            
             _, _, f1, _ = precision_recall_fscore_support(
                 boot_labels, boot_binary, average='weighted',
                 sample_weight=boot_sample_weights, zero_division=0
             )
             f1_scores.append(f1)
+            
             hamming_scores.append(hamming_loss(boot_labels, boot_binary, sample_weight=boot_sample_weights))
             exact_match_scores.append(accuracy_score(boot_labels, boot_binary, sample_weight=boot_sample_weights))
-        except:
+        except Exception as e:
+            print(f"Warning: Bootstrap iteration failed: {str(e)}")
             continue
     
     # Calculate confidence intervals
@@ -470,11 +519,11 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         'precision': precision,
         'recall': recall,
         'f1': f1,
-        'f1_ci': [np.percentile(f1_scores, ci_lower), np.percentile(f1_scores, ci_upper)],
+        'f1_ci': [np.percentile(f1_scores, ci_lower), np.percentile(f1_scores, ci_upper)] if f1_scores else [0.0, 0.0],
         'hamming_loss': h_loss,
-        'hamming_loss_ci': [np.percentile(hamming_scores, ci_lower), np.percentile(hamming_scores, ci_upper)],
+        'hamming_loss_ci': [np.percentile(hamming_scores, ci_lower), np.percentile(hamming_scores, ci_upper)] if hamming_scores else [0.0, 0.0],
         'exact_match': exact_match,
-        'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)],
+        'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)] if exact_match_scores else [0.0, 0.0],
         'sample_count': len(labels),
         'bootstrap_samples': len(f1_scores),
         'class_weights': class_weights
