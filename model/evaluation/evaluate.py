@@ -486,14 +486,15 @@ def plot_metrics(results, output_dir):
 
 def convert_to_serializable(obj):
     """Convert numpy types to Python native types for JSON serialization"""
-    if isinstance(obj, np.integer):
+    if isinstance(obj, (np.integer, np.int64)):
         return int(obj)
-    elif isinstance(obj, np.floating):
+    elif isinstance(obj, (np.floating, np.float64)):
         return float(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif isinstance(obj, dict):
-        return {key: convert_to_serializable(value) for key, value in obj.items()}
+        return {str(convert_to_serializable(key)): convert_to_serializable(value) 
+                for key, value in obj.items()}
     elif isinstance(obj, list):
         return [convert_to_serializable(item) for item in obj]
     return obj
