@@ -572,7 +572,7 @@ def train(model, train_loader, val_loader, config):
                         metrics_dict = {
                             'train/step_loss': loss_val,
                             'train/learning_rate/base': base_lr,
-                            'time/eta': eta
+                            'train/eta': eta
                         }
                         wandb.log(metrics_dict)
                         
@@ -615,6 +615,7 @@ def train(model, train_loader, val_loader, config):
                     config=config,
                     is_best=True
                 )
+            
         
         # After training loop ends, save the model
         try:
@@ -1742,38 +1743,24 @@ def train_worker(rank, config, train_dataset, val_dataset):
 
 # Training Configuration
 TRAINING_CONFIG = {
-    "model_name": "xlm-roberta-large",
-    "batch_size": 32,
-    "grad_accum_steps": 2,
-    "epochs": 4,
-    "lr": 2e-5,
-    "mixed_precision": "bf16",
-    "num_workers": 12,
-    "activation_checkpointing": True,
-    "tensor_float_32": True,
-    "gc_frequency": 500,
-    "weight_decay": 0.01,
-    "max_length": 128,
-    "fp16": False,
-    "distributed": False,
-    "world_size": 1,
-    # New architecture parameters
-    "hidden_size": 1024,
-    "num_attention_heads": 16,
-    "model_dropout": 0.1,
-    "freeze_layers": 2,
-    "warmup_ratio": 0.1,
-    "label_smoothing": 0.01
+    # Only override values that differ from TrainingConfig defaults
+    "batch_size": 32,  # Specific value for this training setup
+    "grad_accum_steps": 2,  # Specific value for this training setup
+    "mixed_precision": "bf16",  # Specific value for this training setup
+    "num_workers": 12,  # Specific value for this training setup
+    "activation_checkpointing": True,  # Specific value for this training setup
+    "gc_frequency": 500,  # Specific value for this training setup
 }
 
 def main():
     try:
-        # Initialize wandb
+        # Initialize wandb with merged config
         try:
+            config = TrainingConfig(**TRAINING_CONFIG)
             wandb.init(
                 project="toxic-comment-classification",
                 name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
-                config=TRAINING_CONFIG
+                config=config.to_serializable_dict()
             )
             print("Initialized wandb logging")
         except Exception as e:
@@ -1784,9 +1771,6 @@ def main():
         _model = None
         _optimizer = None
         _scheduler = None
-        
-        # Initialize config with parameters from TRAINING_CONFIG
-        config = TrainingConfig(**TRAINING_CONFIG)
         
         # Load datasets with error handling
         print("Loading datasets...")

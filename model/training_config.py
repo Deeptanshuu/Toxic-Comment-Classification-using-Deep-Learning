@@ -390,10 +390,10 @@ class EarlyStopping:
 
 @dataclass
 class TrainingConfig:
-    """Basic training configuration"""
+    """Basic training configuration with consolidated default values"""
     # Model parameters
     model_name: str = "xlm-roberta-large"
-    max_length: int = 512
+    max_length: int = 128
     hidden_size: int = 1024
     num_attention_heads: int = 16
     model_dropout: float = 0.1
@@ -402,12 +402,12 @@ class TrainingConfig:
     # Training parameters
     batch_size: int = 32
     grad_accum_steps: int = 1
-    epochs: int = 6
+    epochs: int = 10
     lr: float = 2e-5
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
-    label_smoothing: float = 0.05
+    label_smoothing: float = 0.01
     
     # Language-specific learning rate multipliers
     lang_lr_multipliers: Dict[str, float] = None
@@ -415,7 +415,7 @@ class TrainingConfig:
     # System parameters
     num_workers: int = 12
     fp16: bool = False
-    mixed_precision: str = "bf16"  # Options: "no", "fp16", "bf16"
+    mixed_precision: str = "no"
     device: str = None
     activation_checkpointing: bool = False
     tensor_float_32: bool = True
