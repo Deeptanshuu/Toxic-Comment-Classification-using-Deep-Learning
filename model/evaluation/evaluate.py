@@ -1057,29 +1057,34 @@ def save_results(results, predictions, labels, langs, output_dir):
     for lang_id, metrics in results['per_language'].items():
         lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
         print(f"\n{lang_name} (n={metrics['sample_count']}):")
-        if 'auc' in metrics and 'auc_ci' in metrics:
-            print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
-        print(f"  F1: {metrics['f1']:.4f} (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])")
         
-        # Handle metrics that might be missing or non-numeric
-        h_loss = metrics.get('hamming_loss', 'N/A')
-        h_loss_ci = metrics.get('hamming_loss_ci', ['N/A', 'N/A'])
-        e_match = metrics.get('exact_match', 'N/A')
-        e_match_ci = metrics.get('exact_match_ci', ['N/A', 'N/A'])
+        # Print AUC with CI if available
+        if 'auc' in metrics:
+            auc_str = f"{metrics['auc']:.4f}"
+            if 'auc_ci' in metrics:
+                auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
+            print(f"  AUC: {auc_str}")
         
-        h_loss_str = h_loss if isinstance(h_loss, str) else f'{h_loss:.4f}'
-        h_loss_ci_str = [
-            ci if isinstance(ci, str) else f'{ci:.4f}'
-            for ci in h_loss_ci
-        ]
-        e_match_str = e_match if isinstance(e_match, str) else f'{e_match:.4f}'
-        e_match_ci_str = [
-            ci if isinstance(ci, str) else f'{ci:.4f}'
-            for ci in e_match_ci
-        ]
+        # Print F1 with CI if available
+        if 'f1' in metrics:
+            f1_str = f"{metrics['f1']:.4f}"
+            if 'f1_ci' in metrics:
+                f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
+            print(f"  F1: {f1_str}")
         
-        print(f"  Hamming Loss: {h_loss_str} (95% CI: [{h_loss_ci_str[0]}, {h_loss_ci_str[1]}])")
-        print(f"  Exact Match: {e_match_str} (95% CI: [{e_match_ci_str[0]}, {e_match_ci_str[1]}])")
+        # Handle Hamming Loss
+        if 'hamming_loss' in metrics:
+            h_loss_str = f"{metrics['hamming_loss']:.4f}"
+            if 'hamming_loss_ci' in metrics:
+                h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
+            print(f"  Hamming Loss: {h_loss_str}")
+        
+        # Handle Exact Match
+        if 'exact_match' in metrics:
+            e_match_str = f"{metrics['exact_match']:.4f}"
+            if 'exact_match_ci' in metrics:
+                e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
+            print(f"  Exact Match: {e_match_str}")
     
     print("\nPer-Class Performance:")
     for class_name, metrics in results['per_class'].items():
