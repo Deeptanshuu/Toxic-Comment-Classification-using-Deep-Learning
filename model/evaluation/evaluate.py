@@ -355,21 +355,50 @@ def evaluate_model(model, test_loader, device, output_dir):
             threshold = lang_thresholds.get(class_name, default_thresholds[class_name])
             overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
     
-    # Calculate overall metrics
-    results['overall'].update({
-        'auc': roc_auc_score(labels, predictions, average='macro'),
-        'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
-    })
+    # Calculate overall metrics with weighted averaging
+    try:
+        results['overall'].update({
+            'auc': roc_auc_score(labels, predictions, average='weighted'),
+            'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
+        })
+    except Exception as e:
+        print(f"Warning: Could not calculate AUC scores: {str(e)}")
+        results['overall'].update({
+            'auc': 0.0,
+            'auc_weighted': 0.0
+        })
     
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, overall_binary_preds, average='macro'
-    )
+    try:
+        # Use weighted averaging for precision, recall, and F1
+        precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+            labels, overall_binary_preds, average='weighted'
+        )
+        
+        results['overall'].update({
+            'precision': precision_weighted,
+            'recall': recall_weighted,
+            'f1': f1_weighted
+        })
+    except Exception as e:
+        print(f"Warning: Could not calculate precision/recall/F1 scores: {str(e)}")
+        results['overall'].update({
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0
+        })
     
-    results['overall'].update({
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
-    })
+    # Calculate additional overall metrics
+    try:
+        results['overall']['hamming_loss'] = hamming_loss(labels, overall_binary_preds)
+    except Exception as e:
+        print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
+        results['overall']['hamming_loss'] = 1.0
+        
+    try:
+        results['overall']['exact_match'] = accuracy_score(labels, overall_binary_preds)
+    except Exception as e:
+        print(f"Warning: Could not calculate Exact Match: {str(e)}")
+        results['overall']['exact_match'] = 0.0
     
     # After calculating metrics, add calibration plots
     plot_calibration_curves(
