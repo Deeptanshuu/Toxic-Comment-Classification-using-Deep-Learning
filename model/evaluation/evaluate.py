@@ -333,7 +333,17 @@ def calculate_metrics(predictions, labels, langs):
 
 def bootstrap_sample(y_true, y_pred):
     """Preserve label relationships during bootstrap sampling"""
-    idx = resample(np.arange(len(y_true)), stratify=y_true.sum(axis=1))
+    n_samples = len(y_true)
+    
+    # Check if we have any positive samples to stratify on
+    row_sums = y_true.sum(axis=1) if len(y_true.shape) > 1 else y_true
+    if len(np.unique(row_sums)) > 1:
+        # If we have both positive and negative samples, use stratified sampling
+        idx = resample(np.arange(n_samples), stratify=row_sums)
+    else:
+        # If all samples are the same (all positive or all negative), use regular bootstrap
+        idx = resample(np.arange(n_samples))
+    
     return y_true[idx], y_pred[idx]
 
 def calculate_class_weights(labels):
@@ -353,6 +363,10 @@ def calculate_class_weights(labels):
 
 def calculate_language_metrics(labels, predictions, binary_predictions):
     """Calculate detailed metrics for a specific language with class weights"""
+    # Check if we have enough samples
+    if len(labels) == 0:
+        raise ValueError("No samples available for metric calculation")
+    
     # Calculate class weights for this language
     class_weights = calculate_class_weights(labels)
     
@@ -363,9 +377,17 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         label_indices = labels[:, i].astype(int)
         sample_weights *= np.array([class_weights[i][idx] for idx in label_indices])
     
-    auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
+    # Calculate AUC only if we have both positive and negative samples
+    try:
+        auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
+    except ValueError:
+        # If we don't have both classes, set AUC to None
+        auc = None
+    
+    # Calculate precision, recall, F1 with zero_division=0
     precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='weighted', sample_weight=sample_weights
+        labels, binary_predictions, average='weighted', 
+        sample_weight=sample_weights, zero_division=0
     )
     
     # Add multi-label metrics
@@ -393,13 +415,20 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
                 boot_label_indices = boot_labels[:, i].astype(int)
                 boot_sample_weights *= np.array([boot_weights[i][idx] for idx in boot_label_indices])
             
-            auc_scores.append(roc_auc_score(
-                boot_labels, boot_preds, average='weighted',
-                sample_weight=boot_sample_weights
-            ))
+            # Calculate AUC only if possible
+            try:
+                if auc is not None:  # Only append AUC if main calculation succeeded
+                    auc_scores.append(roc_auc_score(
+                        boot_labels, boot_preds, average='weighted',
+                        sample_weight=boot_sample_weights
+                    ))
+            except ValueError:
+                pass
+            
+            # Calculate other metrics with zero_division=0
             _, _, f1, _ = precision_recall_fscore_support(
                 boot_labels, boot_binary, average='weighted',
-                sample_weight=boot_sample_weights
+                sample_weight=boot_sample_weights, zero_division=0
             )
             f1_scores.append(f1)
             hamming_scores.append(hamming_loss(boot_labels, boot_binary, sample_weight=boot_sample_weights))
@@ -411,9 +440,8 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     ci_lower = 2.5
     ci_upper = 97.5
     
-    return {
-        'auc': auc,
-        'auc_ci': [np.percentile(auc_scores, ci_lower), np.percentile(auc_scores, ci_upper)],
+    # Prepare results dictionary
+    results = {
         'precision': precision,
         'recall': recall,
         'f1': f1,
@@ -423,9 +451,17 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         'exact_match': exact_match,
         'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)],
         'sample_count': len(labels),
-        'bootstrap_samples': len(auc_scores),
+        'bootstrap_samples': len(f1_scores),
         'class_weights': class_weights
     }
+    
+    # Add AUC metrics only if available
+    if auc is not None:
+        results['auc'] = auc
+        if auc_scores:
+            results['auc_ci'] = [np.percentile(auc_scores, ci_lower), np.percentile(auc_scores, ci_upper)]
+    
+    return results
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
     """Calculate detailed metrics for a specific class with class weights"""
