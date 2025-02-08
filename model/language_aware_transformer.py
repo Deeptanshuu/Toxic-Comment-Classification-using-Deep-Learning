@@ -2,8 +2,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import XLMRobertaModel, XLMRobertaConfig
-from typing import Tuple, Optional
+from transformers import XLMRobertaModel
+from typing import Optional
 import logging
 import os
 import json
@@ -118,11 +118,12 @@ class CriticalClassConfig:
     def __init__(self, class_names):
         self.critical_indices = {
             name: idx for idx, name in enumerate(class_names)
-            if name in ['threat', 'identity_hate']
+            if name in ['threat', 'identity_hate', 'severe_toxicity']
         }
         self.thresholds = {
             'threat': 0.3,
-            'identity_hate': 0.35
+            'identity_hate': 0.35,
+            'severe_toxicity': 0.35,
         }
 
 class LanguageAwareTransformer(nn.Module):
@@ -151,7 +152,8 @@ class LanguageAwareTransformer(nn.Module):
         # Critical class indices for specific metric tracking
         self.critical_indices = {
             'threat': 3,
-            'identity_hate': 5
+            'identity_hate': 5,
+            'severe_toxicity': 6
         }
         
         # Load pretrained model with original config
@@ -222,9 +224,7 @@ class LanguageAwareTransformer(nn.Module):
         
         # Language-specific dropout rates
         self.lang_dropout_rates = {
-            1: 0.45,  # Russian
-            2: 0.45,  # Turkish
-            'default': 0.4
+            'default': 0.2
         }
         
         logger.info(f"Model initialized with working hidden size: {self.working_hidden_size}")
