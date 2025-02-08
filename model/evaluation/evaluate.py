@@ -145,20 +145,48 @@ def evaluate_model(model, test_loader, device, output_dir):
     unique_langs = np.unique(langs)
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
+    # Get language name mapping for logging
+    id_to_lang = {
+        0: 'English (en)',
+        1: 'Russian (ru)',
+        2: 'Turkish (tr)',
+        3: 'Spanish (es)',
+        4: 'French (fr)',
+        5: 'Italian (it)',
+        6: 'Portuguese (pt)'
+    }
+    
     for lang in unique_langs:
         lang_mask = langs == lang
+        lang_name = id_to_lang.get(int(lang), f'Unknown ({lang})')
+        
         if not lang_mask.any():
+            print(f"Warning: No samples found for language {lang_name}")
             continue
             
         lang_preds = predictions[lang_mask]
         lang_labels = labels[lang_mask]
         
+        if len(lang_labels) == 0:
+            print(f"Warning: Empty dataset for language {lang_name}")
+            continue
+        
+        print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
+        
         # Optimize thresholds for this language
         lang_thresholds = {}
         for i, class_name in enumerate(toxicity_types):
             try:
+                class_labels = lang_labels[:, i]
+                class_preds = lang_preds[:, i]
+                
+                if len(np.unique(class_labels)) < 2:
+                    print(f"Warning: Only one class present for {class_name} in {lang_name}")
+                    lang_thresholds[class_name] = 0.5  # Default threshold
+                    continue
+                
                 # Find optimal threshold using ROC curve
-                fpr, tpr, thresh = roc_curve(lang_labels[:, i], lang_preds[:, i])
+                fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 optimal_idx = np.argmax(tpr - fpr)
                 lang_thresholds[class_name] = thresh[optimal_idx]
                 
@@ -168,44 +196,37 @@ def evaluate_model(model, test_loader, device, output_dir):
                 recalls = []
                 
                 for t in thresh:
-                    binary_preds = (lang_preds[:, i] > t).astype(int)
+                    binary_preds = (class_preds > t).astype(int)
                     precision, recall, f1, _ = precision_recall_fscore_support(
-                        lang_labels[:, i], 
+                        class_labels, 
                         binary_preds, 
                         average='binary',
-                        zero_division=0  # Handle cases with no positive predictions
+                        zero_division=0
                     )
                     f1_scores.append(f1)
                     precisions.append(precision)
                     recalls.append(recall)
                 
                 # Use a combination of metrics to find the best threshold
-                # Balance between F1 score and maintaining a reasonable positive prediction rate
                 scores = np.array(f1_scores) * 0.7 + np.array(recalls) * 0.3
                 best_idx = np.argmax(scores)
                 
                 # Only use the new threshold if it's better and produces some positive predictions
-                if scores[best_idx] > scores[optimal_idx]:
-                    test_preds = (lang_preds[:, i] > thresh[best_idx]).astype(int)
-                    if test_preds.sum() > 0:  # Ensure we have some positive predictions
-                        lang_thresholds[class_name] = thresh[best_idx]
+                test_preds = (class_preds > thresh[best_idx]).astype(int)
+                if scores[best_idx] > scores[optimal_idx] and test_preds.sum() > 0:
+                    lang_thresholds[class_name] = thresh[best_idx]
                 
                 # If threshold results in no positive predictions, try a lower one
-                test_preds = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
+                test_preds = (class_preds > lang_thresholds[class_name]).astype(int)
                 if test_preds.sum() == 0:
-                    # Fall back to a lower threshold that gives some positive predictions
-                    positive_pred_mask = test_preds.sum(axis=0) > 0
-                    if positive_pred_mask.any():
-                        percentile_threshold = np.percentile(lang_preds[:, i], 95)  # Use top 5% as positive
-                        lang_thresholds[class_name] = min(percentile_threshold, 0.3)  # Cap at 0.3
-                    else:
-                        lang_thresholds[class_name] = 0.3  # Conservative default
+                    percentile_threshold = np.percentile(class_preds, 95)
+                    lang_thresholds[class_name] = min(percentile_threshold, 0.3)
+                
             except Exception as e:
-                print(f"Warning: Could not optimize threshold for {class_name} in language {lang}: {str(e)}")
-                # Use a conservative default threshold
-                lang_thresholds[class_name] = 0.3
+                print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
+                lang_thresholds[class_name] = 0.3  # Conservative default
         
-        results['thresholds'][lang] = lang_thresholds
+        results['thresholds'][str(lang)] = lang_thresholds
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
@@ -215,7 +236,7 @@ def evaluate_model(model, test_loader, device, output_dir):
         # Calculate language-specific metrics
         try:
             lang_metrics = calculate_language_metrics(lang_labels, lang_preds, binary_preds)
-            results['per_language'][lang] = lang_metrics
+            results['per_language'][str(lang)] = lang_metrics
             
             # Calculate per-class metrics for this language
             class_metrics = {}
@@ -228,16 +249,17 @@ def evaluate_model(model, test_loader, device, output_dir):
                 )
                 class_metrics[class_name] = metrics
             
-            results['per_language'][lang]['class_metrics'] = class_metrics
+            results['per_language'][str(lang)]['class_metrics'] = class_metrics
             
         except Exception as e:
-            print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
+            print(f"Warning: Could not calculate metrics for {lang_name}: {str(e)}")
+            continue
     
     # Calculate overall metrics using language-specific thresholds
     overall_binary_preds = np.zeros_like(predictions)
     for i, lang in enumerate(langs):
         for j, class_name in enumerate(toxicity_types):
-            threshold = results['thresholds'][lang][class_name]
+            threshold = results['thresholds'][str(lang)][class_name]
             overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
     
     # Calculate overall metrics
