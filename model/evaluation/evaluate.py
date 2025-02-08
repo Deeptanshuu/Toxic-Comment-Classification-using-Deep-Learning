@@ -154,22 +154,83 @@ def evaluate_language(args):
         for i, class_name in enumerate(toxicity_types):
             binary_preds[:, i] = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
         
-        # Calculate language-specific metrics
-        lang_metrics = calculate_language_metrics(lang_labels, lang_preds, binary_preds)
+        # Calculate metrics without parallel processing
+        metrics = {}
         
-        # Calculate per-class metrics for this language
+        # Calculate AUC if possible
+        try:
+            if len(np.unique(lang_labels)) > 1:
+                metrics['auc'] = roc_auc_score(lang_labels, lang_preds, average='weighted')
+        except Exception as e:
+            print(f"Warning: Could not calculate AUC: {str(e)}")
+            metrics['auc'] = None
+        
+        # Calculate precision, recall, F1
+        try:
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                lang_labels, binary_preds, average='weighted',
+                zero_division=0
+            )
+            metrics.update({
+                'precision': precision,
+                'recall': recall,
+                'f1': f1
+            })
+        except Exception as e:
+            print(f"Warning: Could not calculate precision/recall/F1: {str(e)}")
+            metrics.update({
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1': 0.0
+            })
+        
+        # Calculate Hamming Loss
+        try:
+            metrics['hamming_loss'] = hamming_loss(lang_labels, binary_preds)
+        except Exception as e:
+            print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
+            metrics['hamming_loss'] = 1.0  # Worst case
+        
+        # Calculate Exact Match
+        try:
+            metrics['exact_match'] = accuracy_score(lang_labels, binary_preds)
+        except Exception as e:
+            print(f"Warning: Could not calculate Exact Match: {str(e)}")
+            metrics['exact_match'] = 0.0  # Worst case
+        
+        # Calculate specificity
+        try:
+            metrics['specificity'] = calculate_specificity(lang_labels, binary_preds)
+        except Exception as e:
+            print(f"Warning: Could not calculate specificity: {str(e)}")
+            metrics['specificity'] = 0.0
+        
+        # Calculate per-class metrics
         class_metrics = {}
         for i, class_name in enumerate(toxicity_types):
-            metrics = calculate_class_metrics(
-                lang_labels[:, i],
-                lang_preds[:, i],
-                binary_preds[:, i],
-                lang_thresholds[class_name]
-            )
-            class_metrics[class_name] = metrics
+            try:
+                class_metrics[class_name] = calculate_class_metrics(
+                    lang_labels[:, i],
+                    lang_preds[:, i],
+                    binary_preds[:, i],
+                    lang_thresholds[class_name]
+                )
+            except Exception as e:
+                print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
+                class_metrics[class_name] = {
+                    'auc': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'f1': 0.0,
+                    'specificity': 0.0,
+                    'npv': 0.0,
+                    'threshold': lang_thresholds[class_name]
+                }
         
-        lang_metrics['class_metrics'] = class_metrics
-        return lang_id, lang_metrics, lang_thresholds
+        metrics['class_metrics'] = class_metrics
+        metrics['sample_count'] = len(lang_labels)
+        
+        return lang_id, metrics, lang_thresholds
         
     except Exception as e:
         print(f"Warning: Could not evaluate language {lang_name}: {str(e)}")
