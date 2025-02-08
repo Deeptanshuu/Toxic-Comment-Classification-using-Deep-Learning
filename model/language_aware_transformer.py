@@ -31,9 +31,7 @@ class LanguageAwareClassifier(nn.Module):
         
         # Language-specific dropout rates with numeric keys
         self.lang_dropout_rates = {
-            1: 0.45,  # Russian
-            2: 0.45,  # Turkish
-            'default': 0.4
+            'default': 0.2
         }
         
         # Base classifier layers
