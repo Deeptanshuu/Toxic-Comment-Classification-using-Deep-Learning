@@ -13,7 +13,7 @@ SUPPORTED_LANGUAGES = {
 
 # Threshold adjustments to reduce overflagging while maintaining sensitivity for rare classes
 THRESHOLD_ADJUSTMENTS = {
-    'toxic': 0.75,         # Increased from ~46% to reduce overflagging
+    'toxic': 0.85,         # Increased from ~46% to reduce overflagging
     'insult': 0.70,        # Increased from ~26% to reduce overflagging
     'threat': 0.30,        # Kept low due to rare class importance
     'identity_hate': 0.30  # Kept low due to rare class importance
