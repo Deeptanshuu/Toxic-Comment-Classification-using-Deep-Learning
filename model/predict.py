@@ -255,7 +255,7 @@ def main():
     while True:
         # Get input text
         print("\nEnter text to analyze (or 'q' to quit):")
-        text = input().strip()
+        text = input().strip().lower()
         
         if text.lower() == 'q':
             break
