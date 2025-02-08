@@ -43,7 +43,7 @@ class ToxicDataset(Dataset):
             'input_ids': encoding['input_ids'].flatten(),
             'attention_mask': encoding['attention_mask'].flatten(),
             'labels': torch.FloatTensor(self.labels[idx]),
-            'lang': self.langs[idx]
+            'lang': torch.tensor(self.langs[idx], dtype=torch.long)
         }
 
 def load_model(model_path):
