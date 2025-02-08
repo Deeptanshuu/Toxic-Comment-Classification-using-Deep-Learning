@@ -1,8 +1,9 @@
 import torch
 from model.language_aware_transformer import LanguageAwareTransformer
 from transformers import XLMRobertaTokenizer
-import argparse
+import json
 import os
+from langdetect import detect
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
@@ -51,8 +52,34 @@ def load_model(model_path):
         print("3. You have sufficient permissions to access the model files")
         return None, None, None
 
-def predict_toxicity(text, model, tokenizer, device):
+def load_thresholds(thresholds_path='evaluation_results/eval_20250208_161149/thresholds.json'):
+    """Load language-specific classification thresholds"""
+    try:
+        with open(thresholds_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: Could not load thresholds from {thresholds_path}: {str(e)}")
+        return None
+
+def detect_language(text):
+    """Detect language of input text and map to supported language ID"""
+    try:
+        detected = detect(text)
+        # Map detected language to our supported languages
+        if detected in SUPPORTED_LANGUAGES:
+            return SUPPORTED_LANGUAGES[detected]
+        else:
+            print(f"Warning: Detected language '{detected}' not supported. Using English (en) as default.")
+            return SUPPORTED_LANGUAGES['en']
+    except:
+        print("Warning: Could not detect language. Using English (en) as default.")
+        return SUPPORTED_LANGUAGES['en']
+
+def predict_toxicity(text, model, tokenizer, device, thresholds=None):
     """Predict toxicity labels for a given text"""
+    # Detect language
+    lang_id = detect_language(text)
+    
     # Tokenize text
     encoding = tokenizer(
         text,
@@ -79,47 +106,76 @@ def predict_toxicity(text, model, tokenizer, device):
     
     # Create results dictionary
     results = {}
-    for label, prob in zip(labels, probabilities):
-        results[label] = float(prob)
     
-    return results
+    # Get language-specific thresholds if available
+    lang_thresholds = thresholds.get(str(lang_id)) if thresholds else None
+    
+    for label, prob in zip(labels, probabilities):
+        threshold = lang_thresholds.get(label) if lang_thresholds else 0.3
+        results[label] = {
+            'probability': float(prob),
+            'is_toxic': prob > threshold,
+            'threshold': threshold
+        }
+    
+    return results, lang_id
 
 def main():
-    parser = argparse.ArgumentParser(description='Predict toxicity of text using trained model')
-    parser.add_argument('--model_path', type=str, default='weights/toxic_classifier_xlm-roberta-large',
-                      help='Path to the trained model')
-    parser.add_argument('--text', type=str, required=True,
-                      help='Text to classify')
-    parser.add_argument('--threshold', type=float, default=0.3,
-                      help='Probability threshold for toxic classification')
-    
-    args = parser.parse_args()
-    
     # Load model
     print("Loading model...")
-    model, tokenizer, device = load_model(args.model_path)
+    model_path = 'weights/toxic_classifier_xlm-roberta-large'
+    model, tokenizer, device = load_model(model_path)
     
     if model is None or tokenizer is None:
         return
     
-    # Make prediction
-    print("\nAnalyzing text...")
-    predictions = predict_toxicity(args.text, model, tokenizer, device)
+    # Load thresholds
+    thresholds = load_thresholds()
     
-    # Print results
-    print("\nResults:")
-    print("-" * 50)
-    print(f"Text: {args.text}")
-    print("\nToxicity Probabilities:")
-    for label, prob in predictions.items():
-        if prob > args.threshold:
-            print(f"- {label}: {prob:.2%}")
-    
-    # Overall assessment
-    if any(prob > args.threshold for prob in predictions.values()):
-        print("\nOverall: ⚠️ This text contains toxic content")
-    else:
-        print("\nOverall: ✅ This text appears to be non-toxic")
+    while True:
+        # Get input text
+        print("\nEnter text to analyze (or 'q' to quit):")
+        text = input().strip()
+        
+        if text.lower() == 'q':
+            break
+        
+        if not text:
+            print("Please enter some text to analyze.")
+            continue
+        
+        # Make prediction
+        print("\nAnalyzing text...")
+        predictions, lang_id = predict_toxicity(text, model, tokenizer, device, thresholds)
+        
+        # Get language name
+        lang_name = [k for k, v in SUPPORTED_LANGUAGES.items() if v == lang_id][0]
+        
+        # Print results
+        print("\nResults:")
+        print("-" * 50)
+        print(f"Text: {text}")
+        print(f"Detected Language: {lang_name}")
+        print("\nToxicity Analysis:")
+        
+        any_toxic = False
+        for label, result in predictions.items():
+            if result['is_toxic']:
+                any_toxic = True
+                print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ⚠️")
+        
+        # Print non-toxic results with lower emphasis
+        print("\nOther categories:")
+        for label, result in predictions.items():
+            if not result['is_toxic']:
+                print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ✓")
+        
+        # Overall assessment
+        print("\nOverall Assessment:")
+        if any_toxic:
+            print("⚠️  This text contains toxic content")
+        else:
+            print("✅  This text appears to be non-toxic")
 
 if __name__ == "__main__":
     main() 
