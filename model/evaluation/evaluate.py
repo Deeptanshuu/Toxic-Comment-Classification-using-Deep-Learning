@@ -119,35 +119,93 @@ def evaluate_language(args):
                 
                 if len(np.unique(class_labels)) < 2:
                     print(f"Warning: Only one class present for {class_name} in {lang_name}")
-                    lang_thresholds[class_name] = 0.5  # Default threshold
+                    # Use a more conservative threshold when only one class is present
+                    if class_labels[0] == 1:  # If all samples are positive
+                        lang_thresholds[class_name] = 0.5
+                    else:  # If all samples are negative
+                        lang_thresholds[class_name] = 0.7
                     continue
                 
-                # Find optimal threshold using F1 score
+                # Calculate class distribution for adaptive thresholding
+                pos_ratio = np.mean(class_labels)
+                
+                # Find optimal threshold using F1 score with class weights
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 f1_scores = []
                 
-                # Calculate F1 score for each threshold
+                # Calculate weighted F1 score for each threshold
+                class_weights = compute_class_weight(
+                    class_weight='balanced',
+                    classes=np.unique(class_labels),
+                    y=class_labels
+                )
+                weight_dict = dict(zip(np.unique(class_labels), class_weights))
+                sample_weights = np.array([weight_dict[label] for label in class_labels])
+                
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
-                    _, _, f1, _ = precision_recall_fscore_support(
-                        class_labels, binary_preds, average='binary', zero_division=0
-                    )
-                    f1_scores.append(f1)
+                    try:
+                        _, _, f1, _ = precision_recall_fscore_support(
+                            class_labels, binary_preds,
+                            average='binary',
+                            sample_weight=sample_weights,
+                            zero_division=0
+                        )
+                        f1_scores.append(f1)
+                    except Exception:
+                        f1_scores.append(0.0)
                 
                 # Select threshold that maximizes F1 score
                 best_idx = np.argmax(f1_scores)
-                lang_thresholds[class_name] = thresh[best_idx]
+                initial_threshold = thresh[best_idx]
                 
-                # If threshold results in no positive predictions, use a lower threshold
-                test_preds = (class_preds > lang_thresholds[class_name]).astype(int)
+                # Test the initial threshold
+                test_preds = (class_preds > initial_threshold).astype(int)
                 if test_preds.sum() == 0:
                     print(f"Warning: No positive predictions for {class_name} in {lang_name}, adjusting threshold")
-                    percentile_threshold = np.percentile(class_preds, 95)
-                    lang_thresholds[class_name] = min(percentile_threshold, 0.3)
+                    
+                    # Use adaptive thresholding based on class distribution
+                    if pos_ratio > 0:  # If we have positive samples in ground truth
+                        # Try multiple percentiles and pick the one that gives closest positive ratio
+                        percentiles = [90, 85, 80, 75, 70]
+                        best_threshold = initial_threshold
+                        min_ratio_diff = float('inf')
+                        
+                        for p in percentiles:
+                            threshold = np.percentile(class_preds, p)
+                            pred_ratio = np.mean(class_preds > threshold)
+                            ratio_diff = abs(pred_ratio - pos_ratio)
+                            
+                            if ratio_diff < min_ratio_diff:
+                                min_ratio_diff = ratio_diff
+                                best_threshold = threshold
+                        
+                        # Set a minimum threshold to prevent too many false positives
+                        lang_thresholds[class_name] = max(best_threshold, 0.2)
+                    else:
+                        # If no positive samples, use a conservative threshold
+                        lang_thresholds[class_name] = 0.7
+                else:
+                    lang_thresholds[class_name] = initial_threshold
+                
+                # Validate final threshold
+                final_preds = (class_preds > lang_thresholds[class_name]).astype(int)
+                pred_ratio = np.mean(final_preds)
+                print(f"  {class_name}: threshold={lang_thresholds[class_name]:.4f}, "
+                      f"pred_ratio={pred_ratio:.4f}, true_ratio={pos_ratio:.4f}")
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                lang_thresholds[class_name] = 0.3  # Conservative default
+                # Use class-specific default thresholds based on typical values
+                default_thresholds = {
+                    'toxic': 0.4,
+                    'severe_toxic': 0.25,
+                    'obscene': 0.45,
+                    'threat': 0.35,
+                    'insult': 0.4,
+                    'identity_hate': 0.25
+                }
+                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.5)
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
@@ -355,50 +413,147 @@ def evaluate_model(model, test_loader, device, output_dir):
             threshold = lang_thresholds.get(class_name, default_thresholds[class_name])
             overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
     
-    # Calculate overall metrics with weighted averaging
+    # Calculate AUC scores with both averaging methods
     try:
         results['overall'].update({
-            'auc': roc_auc_score(labels, predictions, average='weighted'),
+            'auc_macro': roc_auc_score(labels, predictions, average='macro'),
             'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
         })
     except Exception as e:
         print(f"Warning: Could not calculate AUC scores: {str(e)}")
         results['overall'].update({
-            'auc': 0.0,
+            'auc_macro': 0.0,
             'auc_weighted': 0.0
         })
     
     try:
-        # Use weighted averaging for precision, recall, and F1
-        precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
-            labels, overall_binary_preds, average='weighted'
+        # Calculate both macro and weighted averages for precision, recall, and F1
+        precision_macro, recall_macro, f1_macro, support_macro = precision_recall_fscore_support(
+            labels, overall_binary_preds, average='macro', zero_division=0
+        )
+        precision_weighted, recall_weighted, f1_weighted, support_weighted = precision_recall_fscore_support(
+            labels, overall_binary_preds, average='weighted', zero_division=0
         )
         
+        # Calculate per-class metrics and support
+        per_class_precision, per_class_recall, per_class_f1, class_support = precision_recall_fscore_support(
+            labels, overall_binary_preds, average=None, zero_division=0
+        )
+        
+        # Update results with both macro and weighted metrics
         results['overall'].update({
-            'precision': precision_weighted,
-            'recall': recall_weighted,
-            'f1': f1_weighted
+            'precision_macro': precision_macro,
+            'precision_weighted': precision_weighted,
+            'recall_macro': recall_macro,
+            'recall_weighted': recall_weighted,
+            'f1_macro': f1_macro,
+            'f1_weighted': f1_weighted
         })
+        
+        # Add per-class support information
+        results['overall']['class_support'] = {
+            class_name: int(support) for class_name, support in zip(toxicity_types, class_support)
+        }
+        
+        # Add per-class metrics
+        results['overall']['per_class_metrics'] = {
+            class_name: {
+                'precision': float(prec),
+                'recall': float(rec),
+                'f1': float(f1),
+                'support': int(support)
+            } for class_name, prec, rec, f1, support in zip(
+                toxicity_types, per_class_precision, per_class_recall, per_class_f1, class_support
+            )
+        }
+        
+        # Calculate class weights based on support
+        total_samples = sum(class_support)
+        class_weights = class_support / total_samples if total_samples > 0 else np.zeros_like(class_support)
+        results['overall']['class_weights'] = {
+            class_name: float(weight) for class_name, weight in zip(toxicity_types, class_weights)
+        }
+        
     except Exception as e:
         print(f"Warning: Could not calculate precision/recall/F1 scores: {str(e)}")
-        results['overall'].update({
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1': 0.0
-        })
+        # Set default values for all metrics
+        default_metrics = {
+            'precision_macro': 0.0,
+            'precision_weighted': 0.0,
+            'recall_macro': 0.0,
+            'recall_weighted': 0.0,
+            'f1_macro': 0.0,
+            'f1_weighted': 0.0,
+            'class_support': {class_name: 0 for class_name in toxicity_types},
+            'per_class_metrics': {
+                class_name: {
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'f1': 0.0,
+                    'support': 0
+                } for class_name in toxicity_types
+            },
+            'class_weights': {class_name: 0.0 for class_name in toxicity_types}
+        }
+        results['overall'].update(default_metrics)
     
-    # Calculate additional overall metrics
+    # Calculate additional overall metrics with both averaging methods
     try:
+        # Hamming Loss (already normalized by nature)
         results['overall']['hamming_loss'] = hamming_loss(labels, overall_binary_preds)
-    except Exception as e:
-        print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
-        results['overall']['hamming_loss'] = 1.0
         
-    try:
+        # Exact Match (already normalized)
         results['overall']['exact_match'] = accuracy_score(labels, overall_binary_preds)
+        
+        # Calculate specificity with both averaging methods
+        specificities = []
+        weighted_specificities = []
+        class_weights = []
+        
+        for i in range(labels.shape[1]):
+            try:
+                tn, fp, fn, tp = confusion_matrix(
+                    labels[:, i],
+                    overall_binary_preds[:, i]
+                ).ravel()
+                
+                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                specificities.append(specificity)
+                
+                # Weight by class size
+                weight = (tn + fp + fn + tp)
+                weighted_specificities.append(specificity * weight)
+                class_weights.append(weight)
+            except Exception as e:
+                print(f"Warning: Could not calculate specificity for class {i}: {str(e)}")
+                specificities.append(0.0)
+                weighted_specificities.append(0.0)
+                class_weights.append(0.0)
+        
+        # Calculate macro and weighted specificity
+        results['overall'].update({
+            'specificity_macro': np.mean(specificities),
+            'specificity_weighted': (np.sum(weighted_specificities) / np.sum(class_weights) 
+                                   if np.sum(class_weights) > 0 else 0.0)
+        })
+        
+        # Add per-class specificity
+        for i, class_name in enumerate(toxicity_types):
+            if class_name in results['overall']['per_class_metrics']:
+                results['overall']['per_class_metrics'][class_name]['specificity'] = specificities[i]
+        
     except Exception as e:
-        print(f"Warning: Could not calculate Exact Match: {str(e)}")
-        results['overall']['exact_match'] = 0.0
+        print(f"Warning: Could not calculate additional metrics: {str(e)}")
+        results['overall'].update({
+            'hamming_loss': 1.0,
+            'exact_match': 0.0,
+            'specificity_macro': 0.0,
+            'specificity_weighted': 0.0
+        })
+        # Add default specificity to per-class metrics
+        for class_name in toxicity_types:
+            if class_name in results['overall']['per_class_metrics']:
+                results['overall']['per_class_metrics'][class_name]['specificity'] = 0.0
     
     # After calculating metrics, add calibration plots
     plot_calibration_curves(
@@ -532,26 +687,173 @@ def calculate_class_weights(labels):
     return class_weights
 
 def calculate_specificity(y_true, y_pred, sample_weight=None):
-    """Calculate specificity (true negative rate) for binary or multi-label data"""
-    if len(y_true.shape) > 1:
-        # Multi-label case: calculate specificity for each label and average
-        specificities = []
-        for i in range(y_true.shape[1]):
-            tn, fp, fn, tp = confusion_matrix(
-                y_true[:, i], 
-                y_pred[:, i], 
-                sample_weight=sample_weight
-            ).ravel()
-            specificities.append(tn / (tn + fp) if (tn + fp) > 0 else 0.0)
-        return np.mean(specificities)
-    else:
-        # Binary case
-        tn, fp, fn, tp = confusion_matrix(
-            y_true, 
-            y_pred, 
-            sample_weight=sample_weight
-        ).ravel()
-        return tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    """Calculate specificity (true negative rate) for binary or multi-label data
+    
+    Args:
+        y_true: Ground truth labels (n_samples,) or (n_samples, n_classes)
+        y_pred: Predicted labels (n_samples,) or (n_samples, n_classes)
+        sample_weight: Optional sample weights
+    
+    Returns:
+        float: Specificity score (0.0 to 1.0) or None if calculation is invalid
+    """
+    try:
+        # Input validation
+        if y_true is None or y_pred is None:
+            print("Warning: Null input to specificity calculation")
+            return None
+            
+        if len(y_true) == 0 or len(y_pred) == 0:
+            print("Warning: Empty input to specificity calculation")
+            return None
+            
+        if y_true.shape != y_pred.shape:
+            print(f"Warning: Shape mismatch in specificity calculation. y_true: {y_true.shape}, y_pred: {y_pred.shape}")
+            return None
+        
+        # Ensure inputs are numpy arrays
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
+        
+        # Ensure binary values
+        unique_true = np.unique(y_true)
+        unique_pred = np.unique(y_pred)
+        
+        if not all(x in [0, 1] for x in unique_true) or not all(x in [0, 1] for x in unique_pred):
+            print("Warning: Non-binary values found in specificity calculation")
+            return None
+        
+        if len(y_true.shape) > 1:
+            # Multi-label case: calculate specificity for each label and average
+            specificities = []
+            weights = []
+            
+            for i in range(y_true.shape[1]):
+                # Skip if no predictions made for this class
+                if not np.any(y_pred[:, i] == y_true[:, i]):
+                    continue
+                    
+                try:
+                    cm = confusion_matrix(
+                        y_true[:, i],
+                        y_pred[:, i],
+                        sample_weight=sample_weight
+                    ).ravel()
+                    
+                    if len(cm) != 4:  # Ensure we have all confusion matrix elements
+                        continue
+                        
+                    tn, fp, fn, tp = cm
+                    
+                    # Calculate specificity if we have negative samples
+                    if (tn + fp) > 0:
+                        spec = tn / (tn + fp)
+                        specificities.append(spec)
+                        weights.append(tn + fp)  # Weight by number of negative samples
+                except Exception as e:
+                    print(f"Warning: Error in specificity calculation for class {i}: {str(e)}")
+                    continue
+            
+            # Return weighted average if we have any valid calculations
+            if specificities:
+                if sample_weight is not None:
+                    return np.average(specificities, weights=weights)
+                else:
+                    return np.mean(specificities)
+            else:
+                print("Warning: No valid specificity calculations")
+                return None
+                
+        else:
+            # Binary case
+            # Skip if no predictions match ground truth
+            if not np.any(y_pred == y_true):
+                print("Warning: No matching predictions in specificity calculation")
+                return None
+                
+            try:
+                cm = confusion_matrix(
+                    y_true,
+                    y_pred,
+                    sample_weight=sample_weight
+                ).ravel()
+                
+                if len(cm) != 4:  # Ensure we have all confusion matrix elements
+                    print("Warning: Invalid confusion matrix in specificity calculation")
+                    return None
+                    
+                tn, fp, fn, tp = cm
+                
+                # Calculate specificity if we have negative samples
+                if (tn + fp) > 0:
+                    return tn / (tn + fp)
+                else:
+                    print("Warning: No negative samples for specificity calculation")
+                    return None
+                    
+            except Exception as e:
+                print(f"Warning: Error in binary specificity calculation: {str(e)}")
+                return None
+                
+    except Exception as e:
+        print(f"Warning: Unexpected error in specificity calculation: {str(e)}")
+        return None
+
+def calculate_weighted_hamming_loss(y_true, y_pred, sample_weight=None):
+    """Calculate Hamming Loss with support for sample weights
+    
+    Args:
+        y_true: Ground truth labels (n_samples,) or (n_samples, n_classes)
+        y_pred: Predicted labels (n_samples,) or (n_samples, n_classes)
+        sample_weight: Optional sample weights (n_samples,)
+    
+    Returns:
+        float: Weighted Hamming Loss value
+    """
+    try:
+        # Input validation
+        if y_true is None or y_pred is None:
+            print("Warning: Null input to Hamming Loss calculation")
+            return None
+            
+        if len(y_true) == 0 or len(y_pred) == 0:
+            print("Warning: Empty input to Hamming Loss calculation")
+            return None
+            
+        if y_true.shape != y_pred.shape:
+            print(f"Warning: Shape mismatch in Hamming Loss calculation. y_true: {y_true.shape}, y_pred: {y_pred.shape}")
+            return None
+        
+        # Ensure inputs are numpy arrays and integer type
+        y_true = np.asarray(y_true).astype(int)
+        y_pred = np.asarray(y_pred).astype(int)
+        
+        # Handle sample weights
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight)
+            if len(sample_weight) != len(y_true):
+                print(f"Warning: Sample weight length ({len(sample_weight)}) does not match input length ({len(y_true)})")
+                return None
+        
+        if len(y_true.shape) > 1:
+            # Multi-label case
+            if sample_weight is not None:
+                # Calculate weighted Hamming Loss for each sample
+                sample_losses = np.sum(y_true != y_pred, axis=1) / y_true.shape[1]
+                return np.average(sample_losses, weights=sample_weight)
+            else:
+                # Use sklearn's implementation for unweighted case
+                return hamming_loss(y_true, y_pred)
+        else:
+            # Binary case
+            if sample_weight is not None:
+                return np.average(y_true != y_pred, weights=sample_weight)
+            else:
+                return np.mean(y_true != y_pred)
+                
+    except Exception as e:
+        print(f"Warning: Error in Hamming Loss calculation: {str(e)}")
+        return None
 
 def calculate_language_metrics(labels, predictions, binary_predictions):
     """Calculate detailed metrics for a specific language with parallel processing"""
@@ -610,34 +912,26 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
             'f1': 0.0
         })
     
-    # Calculate Hamming Loss
+    # Calculate Hamming Loss with sample weights
     try:
-        # Ensure inputs are in correct format for hamming_loss
-        y_true = labels.astype(int)
-        y_pred = binary_predictions.astype(int)
-        
-        # Calculate Hamming Loss with sample weights
-        metrics['hamming_loss'] = hamming_loss(
-            y_true, 
-            y_pred, 
+        metrics['hamming_loss'] = calculate_weighted_hamming_loss(
+            labels,
+            binary_predictions,
             sample_weight=sample_weights
         )
+        if metrics['hamming_loss'] is None:
+            metrics['hamming_loss'] = 1.0  # Worst case
     except Exception as e:
         print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
         metrics['hamming_loss'] = 1.0  # Worst case
     
-    # Calculate Exact Match (subset accuracy)
+    # Calculate Exact Match with sample weights
     try:
-        # Ensure inputs are in correct format for accuracy_score
-        y_true = labels.astype(int)
-        y_pred = binary_predictions.astype(int)
-        
-        # Calculate Exact Match with sample weights
         metrics['exact_match'] = accuracy_score(
-            y_true, 
-            y_pred,
+            labels,
+            binary_predictions,
             sample_weight=sample_weights,
-            normalize=True  # Return the fraction of correctly classified samples
+            normalize=True
         )
     except Exception as e:
         print(f"Warning: Could not calculate Exact Match: {str(e)}")
@@ -1048,6 +1342,35 @@ def save_results(results, predictions, labels, langs, output_dir):
         6: 'Portuguese (pt)'
     }
     
+    # Add global metrics summary to results
+    results['overall']['summary'] = {
+        'auc': {
+            'macro': results['overall'].get('auc_macro', 0.0),
+            'weighted': results['overall'].get('auc_weighted', 0.0)
+        },
+        'f1': {
+            'macro': results['overall'].get('f1_macro', 0.0),
+            'weighted': results['overall'].get('f1_weighted', 0.0)
+        },
+        'precision': {
+            'macro': results['overall'].get('precision_macro', 0.0),
+            'weighted': results['overall'].get('precision_weighted', 0.0)
+        },
+        'recall': {
+            'macro': results['overall'].get('recall_macro', 0.0),
+            'weighted': results['overall'].get('recall_weighted', 0.0)
+        },
+        'specificity': {
+            'macro': results['overall'].get('specificity_macro', 0.0),
+            'weighted': results['overall'].get('specificity_weighted', 0.0)
+        },
+        'other_metrics': {
+            'hamming_loss': results['overall'].get('hamming_loss', 1.0),
+            'exact_match': results['overall'].get('exact_match', 0.0)
+        },
+        'class_support': results['overall'].get('class_support', {})
+    }
+    
     # Convert results to JSON serializable format
     serializable_results = convert_to_serializable(results)
     
@@ -1066,26 +1389,44 @@ def save_results(results, predictions, labels, langs, output_dir):
     # Plot confusion matrices
     plot_confusion_matrices(predictions, labels, langs, output_dir)
     
-    # Print detailed summary
+    # Print detailed summary with both macro and weighted metrics
     print("\nEvaluation Results:")
     print("-" * 80)
     print(f"Overall Metrics:")
-    print(f"  AUC (macro): {results['overall']['auc']:.4f}")
-    print(f"  F1 (macro): {results['overall']['f1']:.4f}")
     
-    # Handle metrics that might be missing or non-numeric
-    hamming_loss = results['overall'].get('hamming_loss', 'N/A')
-    exact_match = results['overall'].get('exact_match', 'N/A')
-    loss = results['overall'].get('loss', 'N/A')
+    print("\nAUC Scores:")
+    print(f"  Macro-averaged: {results['overall'].get('auc_macro', 0.0):.4f}")
+    print(f"  Weighted-averaged: {results['overall'].get('auc_weighted', 0.0):.4f}")
     
-    print(f"  Hamming Loss: {hamming_loss if isinstance(hamming_loss, str) else f'{hamming_loss:.4f}'}")
-    print(f"  Exact Match: {exact_match if isinstance(exact_match, str) else f'{exact_match:.4f}'}")
-    print(f"  Loss: {loss if isinstance(loss, str) else f'{loss:.4f}'}")
+    print("\nF1 Scores:")
+    print(f"  Macro-averaged: {results['overall'].get('f1_macro', 0.0):.4f}")
+    print(f"  Weighted-averaged: {results['overall'].get('f1_weighted', 0.0):.4f}")
+    
+    print("\nPrecision:")
+    print(f"  Macro-averaged: {results['overall'].get('precision_macro', 0.0):.4f}")
+    print(f"  Weighted-averaged: {results['overall'].get('precision_weighted', 0.0):.4f}")
+    
+    print("\nRecall:")
+    print(f"  Macro-averaged: {results['overall'].get('recall_macro', 0.0):.4f}")
+    print(f"  Weighted-averaged: {results['overall'].get('recall_weighted', 0.0):.4f}")
+    
+    print("\nSpecificity:")
+    print(f"  Macro-averaged: {results['overall'].get('specificity_macro', 0.0):.4f}")
+    print(f"  Weighted-averaged: {results['overall'].get('specificity_weighted', 0.0):.4f}")
+    
+    print("\nOther Metrics:")
+    print(f"  Hamming Loss: {results['overall'].get('hamming_loss', 1.0):.4f}")
+    print(f"  Exact Match: {results['overall'].get('exact_match', 0.0):.4f}")
+    
+    if 'class_support' in results['overall']:
+        print("\nClass Support (number of samples):")
+        for class_name, support in results['overall']['class_support'].items():
+            print(f"  {class_name}: {support:,}")
     
     print("\nPer-Language Performance:")
     for lang_id, metrics in results['per_language'].items():
         lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
-        print(f"\n{lang_name} (n={metrics['sample_count']}):")
+        print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
         
         # Print AUC with CI if available
         if 'auc' in metrics:
@@ -1116,18 +1457,20 @@ def save_results(results, predictions, labels, langs, output_dir):
             print(f"  Exact Match: {e_match_str}")
     
     print("\nPer-Class Performance:")
-    for class_name, metrics in results['per_class'].items():
+    for class_name, metrics in results.get('per_class', {}).items():
         print(f"\n{class_name}:")
-        print(f"  AUC: {metrics['auc']:.4f}")
-        print(f"  F1: {metrics['f1']:.4f}")
-        print(f"  Precision: {metrics['precision']:.4f}")
-        print(f"  Recall: {metrics['recall']:.4f}")
-        print(f"  Specificity: {metrics['specificity']:.4f}")
-        print(f"  NPV: {metrics['npv']:.4f}")
-        print(f"  Threshold: {metrics['threshold']:.4f}")
+        print(f"  AUC: {metrics.get('auc', 0.0):.4f}")
+        print(f"  F1: {metrics.get('f1', 0.0):.4f}")
+        print(f"  Precision: {metrics.get('precision', 0.0):.4f}")
+        print(f"  Recall: {metrics.get('recall', 0.0):.4f}")
+        print(f"  Specificity: {metrics.get('specificity', 0.0):.4f}")
+        print(f"  NPV: {metrics.get('npv', 0.0):.4f}")
+        print(f"  Threshold: {metrics.get('threshold', 0.0):.4f}")
         print(f"  Confusion Matrix:")
-        print(f"    TP: {metrics['true_positives']}, FP: {metrics['false_positives']}")
-        print(f"    FN: {metrics['false_negatives']}, TN: {metrics['true_negatives']}")
+        print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
+        print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
+        if 'support' in metrics:
+            print(f"  Support: {metrics['support']:,}")
 
 def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, languages=None, langs=None):
     """Plot calibration curves for model predictions
@@ -1220,13 +1563,7 @@ def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, lan
                 plt.close()
 
 def parallel_bootstrap_metrics(args):
-    """Calculate metrics for a single bootstrap iteration
-    
-    Args:
-        args: Tuple of (labels, predictions, binary_predictions, threshold)
-    Returns:
-        Dictionary of calculated metrics
-    """
+    """Calculate metrics for a single bootstrap iteration"""
     try:
         y_true, y_pred, y_binary, threshold = args
         
@@ -1259,8 +1596,11 @@ def parallel_bootstrap_metrics(args):
             'f1': f1
         })
         
-        # Hamming Loss and Exact Match
-        metrics['hamming_loss'] = hamming_loss(y_true_boot, y_binary_boot)
+        # Hamming Loss with proper handling
+        hamming_loss_value = calculate_weighted_hamming_loss(y_true_boot, y_binary_boot)
+        metrics['hamming_loss'] = hamming_loss_value if hamming_loss_value is not None else 1.0
+        
+        # Exact Match
         metrics['exact_match'] = accuracy_score(y_true_boot, y_binary_boot)
         
         # Specificity
