@@ -340,12 +340,15 @@ def calculate_class_weights(labels):
     """Calculate balanced class weights for each label"""
     class_weights = {}
     for i in range(labels.shape[1]):
+        unique_classes = np.unique(labels[:, i])
         weights = compute_class_weight(
             class_weight='balanced',
-            classes=np.unique(labels[:, i]),
+            classes=unique_classes,
             y=labels[:, i]
         )
-        class_weights[i] = dict(zip(np.unique(labels[:, i]), weights))
+        # Convert to integer indices
+        class_weights[i] = {int(class_label): weight 
+                          for class_label, weight in zip(unique_classes, weights)}
     return class_weights
 
 def calculate_language_metrics(labels, predictions, binary_predictions):
@@ -356,7 +359,9 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     # Calculate weighted metrics
     sample_weights = np.ones(len(labels))
     for i in range(labels.shape[1]):
-        sample_weights *= np.array([class_weights[i][l] for l in labels[:, i]])
+        # Convert labels to integers for indexing
+        label_indices = labels[:, i].astype(int)
+        sample_weights *= np.array([class_weights[i][idx] for idx in label_indices])
     
     auc = roc_auc_score(labels, predictions, average='weighted', sample_weight=sample_weights)
     precision, recall, f1, _ = precision_recall_fscore_support(
@@ -384,7 +389,9 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
             boot_weights = calculate_class_weights(boot_labels)
             boot_sample_weights = np.ones(len(boot_labels))
             for i in range(boot_labels.shape[1]):
-                boot_sample_weights *= np.array([boot_weights[i][l] for l in boot_labels[:, i]])
+                # Convert labels to integers for indexing
+                boot_label_indices = boot_labels[:, i].astype(int)
+                boot_sample_weights *= np.array([boot_weights[i][idx] for idx in boot_label_indices])
             
             auc_scores.append(roc_auc_score(
                 boot_labels, boot_preds, average='weighted',
@@ -417,18 +424,21 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         'exact_match_ci': [np.percentile(exact_match_scores, ci_lower), np.percentile(exact_match_scores, ci_upper)],
         'sample_count': len(labels),
         'bootstrap_samples': len(auc_scores),
-        'class_weights': class_weights  # Store class weights for reference
+        'class_weights': class_weights
     }
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
     """Calculate detailed metrics for a specific class with class weights"""
     # Calculate class weights
+    unique_classes = np.unique(labels)
     weights = compute_class_weight(
         class_weight='balanced',
-        classes=np.unique(labels),
+        classes=unique_classes,
         y=labels
     )
-    sample_weights = np.array([weights[l] for l in labels])
+    # Convert labels to integers for indexing
+    label_indices = labels.astype(int)
+    sample_weights = np.array([weights[idx] for idx in label_indices])
     
     # Calculate weighted metrics
     auc = roc_auc_score(labels, predictions, sample_weight=sample_weights)
@@ -665,17 +675,41 @@ def save_results(results, predictions, labels, langs, output_dir):
     print(f"Overall Metrics:")
     print(f"  AUC (macro): {results['overall']['auc']:.4f}")
     print(f"  F1 (macro): {results['overall']['f1']:.4f}")
-    print(f"  Hamming Loss: {results['overall'].get('hamming_loss', 'N/A'):.4f}")
-    print(f"  Exact Match: {results['overall'].get('exact_match', 'N/A'):.4f}")
-    print(f"  Loss: {results['overall'].get('loss', 'N/A')}")
+    
+    # Handle metrics that might be missing or non-numeric
+    hamming_loss = results['overall'].get('hamming_loss', 'N/A')
+    exact_match = results['overall'].get('exact_match', 'N/A')
+    loss = results['overall'].get('loss', 'N/A')
+    
+    print(f"  Hamming Loss: {hamming_loss if isinstance(hamming_loss, str) else f'{hamming_loss:.4f}'}")
+    print(f"  Exact Match: {exact_match if isinstance(exact_match, str) else f'{exact_match:.4f}'}")
+    print(f"  Loss: {loss if isinstance(loss, str) else f'{loss:.4f}'}")
     
     print("\nPer-Language Performance:")
     for lang, metrics in results['per_language'].items():
         print(f"\n{lang} (n={metrics['sample_count']}):")
         print(f"  AUC: {metrics['auc']:.4f} (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])")
         print(f"  F1: {metrics['f1']:.4f} (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])")
-        print(f"  Hamming Loss: {metrics['hamming_loss']:.4f} (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])")
-        print(f"  Exact Match: {metrics['exact_match']:.4f} (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])")
+        
+        # Handle metrics that might be missing or non-numeric
+        h_loss = metrics.get('hamming_loss', 'N/A')
+        h_loss_ci = metrics.get('hamming_loss_ci', ['N/A', 'N/A'])
+        e_match = metrics.get('exact_match', 'N/A')
+        e_match_ci = metrics.get('exact_match_ci', ['N/A', 'N/A'])
+        
+        h_loss_str = h_loss if isinstance(h_loss, str) else f'{h_loss:.4f}'
+        h_loss_ci_str = [
+            ci if isinstance(ci, str) else f'{ci:.4f}'
+            for ci in h_loss_ci
+        ]
+        e_match_str = e_match if isinstance(e_match, str) else f'{e_match:.4f}'
+        e_match_ci_str = [
+            ci if isinstance(ci, str) else f'{ci:.4f}'
+            for ci in e_match_ci
+        ]
+        
+        print(f"  Hamming Loss: {h_loss_str} (95% CI: [{h_loss_ci_str[0]}, {h_loss_ci_str[1]}])")
+        print(f"  Exact Match: {e_match_str} (95% CI: [{e_match_ci_str[0]}, {e_match_ci_str[1]}])")
     
     print("\nPer-Class Performance:")
     for class_name, metrics in results['per_class'].items():
