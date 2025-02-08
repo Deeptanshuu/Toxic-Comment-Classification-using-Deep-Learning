@@ -558,11 +558,27 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
-                      help='Directory to save results')
+                      help='Base directory to save results')
     parser.add_argument('--num_workers', type=int, default=None,
                       help='Number of workers for data loading (default: CPU count - 1)')
     
     args = parser.parse_args()
+    
+    # Create timestamped directory for this evaluation run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    eval_dir = os.path.join(args.output_dir, f"eval_{timestamp}")
+    os.makedirs(eval_dir, exist_ok=True)
+    
+    # Save evaluation parameters
+    eval_params = {
+        'timestamp': timestamp,
+        'model_path': args.model_path,
+        'test_file': args.test_file,
+        'batch_size': args.batch_size,
+        'num_workers': args.num_workers
+    }
+    with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
+        json.dump(eval_params, f, indent=2)
     
     # Set number of workers
     if args.num_workers is None:
@@ -591,14 +607,17 @@ def main():
             pin_memory=True
         )
         
-        # Evaluate model
-        results = evaluate_model(model, test_loader, device, args.output_dir)
+        # Evaluate model using the timestamped directory
+        results = evaluate_model(model, test_loader, device, eval_dir)
         
-        print(f"\nEvaluation complete! Results saved to {args.output_dir}")
+        print(f"\nEvaluation complete! Results saved to {eval_dir}")
         return results
         
     except Exception as e:
         print(f"Error during evaluation: {str(e)}")
+        # Save error log in the evaluation directory
+        with open(os.path.join(eval_dir, 'error_log.txt'), 'w') as f:
+            f.write(f"Error during evaluation: {str(e)}")
         raise
     
     finally:
