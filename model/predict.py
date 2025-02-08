@@ -12,7 +12,7 @@ SUPPORTED_LANGUAGES = {
 
 # Threshold adjustments to reduce overflagging while maintaining sensitivity for rare classes
 THRESHOLD_ADJUSTMENTS = {
-    'toxic': 0.80,         # Increased from ~46% to reduce overflagging
+    'toxic': 0.70,         # Increased from ~46% to reduce overflagging
     'insult': 0.70,        # Increased from ~26% to reduce overflagging
     'threat': 0.30,        # Kept low due to rare class importance
     'identity_hate': 0.30  # Kept low due to rare class importance
@@ -91,15 +91,24 @@ def load_thresholds(thresholds_path='evaluation_results/eval_20250208_161149/thr
 def detect_language(text):
     """Detect language of input text and map to supported language ID"""
     try:
+        # Clean and normalize text
+        cleaned_text = text.strip().lower()
+        
+        # If text is too short or simple, default to English
+        if len(cleaned_text.split()) <= 3:
+            return SUPPORTED_LANGUAGES['en']
+            
+        # Try language detection
         detected = detect(text)
+        
         # Map detected language to our supported languages
         if detected in SUPPORTED_LANGUAGES:
             return SUPPORTED_LANGUAGES[detected]
         else:
-            print(f"Warning: Detected language '{detected}' not supported. Using English (en) as default.")
+            print(f"Note: Detected language '{detected}' not in supported languages {list(SUPPORTED_LANGUAGES.keys())}. Using English.")
             return SUPPORTED_LANGUAGES['en']
-    except:
-        print("Warning: Could not detect language. Using English (en) as default.")
+    except Exception as e:
+        print(f"Note: Could not detect language ({str(e)}). Using English.")
         return SUPPORTED_LANGUAGES['en']
 
 def predict_toxicity(text, model, tokenizer, device, thresholds=None):
