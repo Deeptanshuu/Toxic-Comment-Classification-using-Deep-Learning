@@ -155,20 +155,46 @@ def evaluate_model(model, test_loader, device, output_dir):
                 
                 # Calculate F1 scores for different thresholds
                 f1_scores = []
+                precisions = []
+                recalls = []
+                
                 for t in thresh:
                     binary_preds = (lang_preds[:, i] > t).astype(int)
                     precision, recall, f1, _ = precision_recall_fscore_support(
-                        lang_labels[:, i], binary_preds, average='binary'
+                        lang_labels[:, i], 
+                        binary_preds, 
+                        average='binary',
+                        zero_division=0  # Handle cases with no positive predictions
                     )
                     f1_scores.append(f1)
+                    precisions.append(precision)
+                    recalls.append(recall)
                 
-                # Use threshold that maximizes F1 if it's better
-                f1_optimal_idx = np.argmax(f1_scores)
-                if f1_scores[f1_optimal_idx] > f1_scores[optimal_idx]:
-                    lang_thresholds[class_name] = thresh[f1_optimal_idx]
-            except:
-                # Fallback to default threshold
-                lang_thresholds[class_name] = 0.5
+                # Use a combination of metrics to find the best threshold
+                # Balance between F1 score and maintaining a reasonable positive prediction rate
+                scores = np.array(f1_scores) * 0.7 + np.array(recalls) * 0.3
+                best_idx = np.argmax(scores)
+                
+                # Only use the new threshold if it's better and produces some positive predictions
+                if scores[best_idx] > scores[optimal_idx]:
+                    test_preds = (lang_preds[:, i] > thresh[best_idx]).astype(int)
+                    if test_preds.sum() > 0:  # Ensure we have some positive predictions
+                        lang_thresholds[class_name] = thresh[best_idx]
+                
+                # If threshold results in no positive predictions, try a lower one
+                test_preds = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
+                if test_preds.sum() == 0:
+                    # Fall back to a lower threshold that gives some positive predictions
+                    positive_pred_mask = test_preds.sum(axis=0) > 0
+                    if positive_pred_mask.any():
+                        percentile_threshold = np.percentile(lang_preds[:, i], 95)  # Use top 5% as positive
+                        lang_thresholds[class_name] = min(percentile_threshold, 0.3)  # Cap at 0.3
+                    else:
+                        lang_thresholds[class_name] = 0.3  # Conservative default
+            except Exception as e:
+                print(f"Warning: Could not optimize threshold for {class_name} in language {lang}: {str(e)}")
+                # Use a conservative default threshold
+                lang_thresholds[class_name] = 0.3
         
         results['thresholds'][lang] = lang_thresholds
         
