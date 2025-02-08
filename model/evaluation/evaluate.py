@@ -730,104 +730,145 @@ def plot_metrics(results, output_dir):
     plots_dir = os.path.join(output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
     
-    # Plot per-class performance
-    plt.figure(figsize=(12, 6))
-    classes = list(results['per_class'].keys())
-    metrics = ['auc', 'precision', 'recall', 'f1']
+    # Plot per-class performance if we have class metrics
+    if results.get('per_class'):
+        plt.figure(figsize=(12, 6))
+        classes = list(results['per_class'].keys())
+        metrics = ['auc', 'precision', 'recall', 'f1']
+        
+        for metric in metrics:
+            values = [results['per_class'][c].get(metric, np.nan) for c in classes]
+            if any(not np.isnan(v) for v in values):  # Only plot if we have valid values
+                plt.plot(classes, values, marker='o', label=metric.upper())
+        
+        plt.title('Per-Class Performance Metrics')
+        plt.xticks(rotation=45)
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
+        plt.close()
     
-    for metric in metrics:
-        values = [results['per_class'][c][metric] for c in classes]
-        plt.plot(classes, values, marker='o', label=metric.upper())
+    # Plot per-language performance if we have language metrics
+    if results.get('per_language'):
+        plt.figure(figsize=(10, 6))
+        languages = list(results['per_language'].keys())
+        auc_scores = [results['per_language'][lang].get('auc', np.nan) for lang in languages]
+        sample_counts = [results['per_language'][lang].get('sample_count', 0) for lang in languages]
+        
+        # Only create bubble plot if we have valid data
+        valid_data = [(lang, auc, count) for lang, auc, count in zip(languages, auc_scores, sample_counts)
+                     if not np.isnan(auc) and count > 0]
+        
+        if valid_data:
+            langs, aucs, counts = zip(*valid_data)
+            plt.scatter(langs, aucs, s=[count/50 for count in counts], alpha=0.6)
+            plt.title('AUC Scores by Language (bubble size = sample count)')
+            plt.xticks(rotation=45)
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
+        plt.close()
     
-    plt.title('Per-Class Performance Metrics')
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
-    plt.close()
-    
-    # Plot per-language performance
-    plt.figure(figsize=(10, 6))
-    languages = list(results['per_language'].keys())
-    auc_scores = [results['per_language'][lang]['auc'] for lang in languages]
-    sample_counts = [results['per_language'][lang]['sample_count'] for lang in languages]
-    
-    # Create bubble plot
-    plt.scatter(languages, auc_scores, s=[count/50 for count in sample_counts], alpha=0.6)
-    plt.title('AUC Scores by Language (bubble size = sample count)')
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
-    plt.close()
-    
-    # Create correlation heatmaps
-    # 1. Language-Metric Correlation Matrix
-    metric_names = ['auc', 'f1', 'precision', 'recall', 'hamming_loss', 'exact_match']
-    lang_metric_data = []
-    
-    for lang in languages:
-        metrics = results['per_language'][lang]
-        lang_values = []
-        for metric in metric_names:
-            value = metrics.get(metric, np.nan)
-            if isinstance(value, (int, float, np.number)):
-                lang_values.append(value)
-            else:
-                lang_values.append(np.nan)
-        lang_metric_data.append(lang_values)
-    
-    # Create DataFrame for correlation analysis
-    lang_metric_df = pd.DataFrame(lang_metric_data, columns=metric_names, index=languages)
-    
-    # Plot correlation heatmap between metrics
-    plt.figure(figsize=(10, 8))
-    metric_corr = lang_metric_df.corr()
-    sns.heatmap(metric_corr, annot=True, cmap='coolwarm', center=0, fmt='.2f',
-                square=True, cbar_kws={'label': 'Correlation'})
-    plt.title('Correlation between Performance Metrics across Languages')
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'metric_correlations.png'))
-    plt.close()
-    
-    # 2. Class-Language Performance Matrix
-    class_lang_data = []
-    for lang in languages:
-        class_metrics = results['per_language'][lang].get('class_metrics', {})
-        lang_values = []
-        for class_name in classes:
-            if class_name in class_metrics:
-                lang_values.append(class_metrics[class_name].get('f1', np.nan))
-            else:
-                lang_values.append(np.nan)
-        class_lang_data.append(lang_values)
-    
-    # Create and plot class-language heatmap
-    plt.figure(figsize=(12, 8))
-    class_lang_df = pd.DataFrame(class_lang_data, columns=classes, index=languages)
-    sns.heatmap(class_lang_df, annot=True, cmap='YlOrRd', center=0.5, fmt='.2f',
-                cbar_kws={'label': 'F1 Score'})
-    plt.title('F1 Scores by Class and Language')
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'class_language_performance.png'))
-    plt.close()
+    # Create correlation heatmaps if we have language metrics
+    if results.get('per_language'):
+        metric_names = ['auc', 'f1', 'precision', 'recall', 'hamming_loss', 'exact_match']
+        lang_metric_data = []
+        valid_languages = []
+        
+        for lang in languages:
+            metrics = results['per_language'][lang]
+            lang_values = []
+            has_valid_metrics = False
+            
+            for metric in metric_names:
+                value = metrics.get(metric, np.nan)
+                if isinstance(value, (int, float, np.number)):
+                    lang_values.append(value)
+                    has_valid_metrics = True
+                else:
+                    lang_values.append(np.nan)
+            
+            if has_valid_metrics:
+                lang_metric_data.append(lang_values)
+                valid_languages.append(lang)
+        
+        # Only create correlation heatmap if we have valid data
+        if lang_metric_data and valid_languages:
+            # Create DataFrame for correlation analysis
+            lang_metric_df = pd.DataFrame(lang_metric_data, columns=metric_names, index=valid_languages)
+            
+            # Remove columns with all NaN values
+            lang_metric_df = lang_metric_df.dropna(axis=1, how='all')
+            
+            if not lang_metric_df.empty and lang_metric_df.shape[1] > 1:
+                plt.figure(figsize=(10, 8))
+                metric_corr = lang_metric_df.corr()
+                sns.heatmap(metric_corr, annot=True, cmap='coolwarm', center=0, fmt='.2f',
+                           square=True, cbar_kws={'label': 'Correlation'})
+                plt.title('Correlation between Performance Metrics across Languages')
+                plt.tight_layout()
+                plt.savefig(os.path.join(plots_dir, 'metric_correlations.png'))
+            plt.close()
+        
+        # 2. Class-Language Performance Matrix
+        if results.get('per_class'):
+            class_lang_data = []
+            valid_languages = []
+            classes = list(results['per_class'].keys())
+            
+            for lang in languages:
+                class_metrics = results['per_language'][lang].get('class_metrics', {})
+                lang_values = []
+                has_valid_metrics = False
+                
+                for class_name in classes:
+                    if class_name in class_metrics:
+                        value = class_metrics[class_name].get('f1', np.nan)
+                        if not np.isnan(value):
+                            has_valid_metrics = True
+                    else:
+                        value = np.nan
+                    lang_values.append(value)
+                
+                if has_valid_metrics:
+                    class_lang_data.append(lang_values)
+                    valid_languages.append(lang)
+            
+            # Only create heatmap if we have valid data
+            if class_lang_data and valid_languages:
+                class_lang_df = pd.DataFrame(class_lang_data, columns=classes, index=valid_languages)
+                
+                # Remove columns with all NaN values
+                class_lang_df = class_lang_df.dropna(axis=1, how='all')
+                
+                if not class_lang_df.empty and class_lang_df.shape[1] > 0:
+                    plt.figure(figsize=(12, 8))
+                    sns.heatmap(class_lang_df, annot=True, cmap='YlOrRd', center=0.5, fmt='.2f',
+                              cbar_kws={'label': 'F1 Score'})
+                    plt.title('F1 Scores by Class and Language')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(plots_dir, 'class_language_performance.png'))
+                plt.close()
     
     # 3. Performance Distribution Plots
     plt.figure(figsize=(15, 5))
     
     # Create subplot for metric distributions
     plt.subplot(131)
+    has_metric_data = False
     for metric in ['auc', 'f1', 'precision', 'recall']:
         values = [results['per_language'][lang].get(metric, np.nan) for lang in languages]
         values = [v for v in values if not np.isnan(v)]
         if values:
             sns.kdeplot(data=values, label=metric.upper())
+            has_metric_data = True
     
-    plt.title('Distribution of Metrics across Languages')
-    plt.xlabel('Score')
-    plt.ylabel('Density')
-    plt.legend()
+    if has_metric_data:
+        plt.title('Distribution of Metrics across Languages')
+        plt.xlabel('Score')
+        plt.ylabel('Density')
+        plt.legend()
     
     # Create subplot for class performance distributions
     plt.subplot(132)
@@ -866,8 +907,9 @@ def plot_metrics(results, output_dir):
         plt.xlabel('Language')
         plt.ylabel('F1 Score')
     
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'performance_distributions.png'))
+    if has_metric_data or class_scores or lang_scores:
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'performance_distributions.png'))
     plt.close()
 
 def convert_to_serializable(obj):
