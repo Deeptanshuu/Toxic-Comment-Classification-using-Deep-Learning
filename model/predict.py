@@ -4,6 +4,7 @@ from transformers import XLMRobertaTokenizer
 import json
 import os
 import re
+from collections import Counter
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
@@ -18,53 +19,46 @@ THRESHOLD_ADJUSTMENTS = {
     'identity_hate': 0.30  # Kept low due to rare class importance
 }
 
-# Language detection patterns
-LANG_PATTERNS = {
+# Unicode ranges for different scripts
+UNICODE_RANGES = {
     'ru': [
-        r'[а-яА-Я]',  # Cyrillic characters
-        r'\b(и|в|не|что|на|я|быть|он|с|а|это|к|по|они|мы|как|все|она|так|его|но|да|ты|у|же|вы|за|тот|от|меня|еще|нет|вот)\b',  # Common words
-        r'[ёЁ]',  # Specific Russian character
-        r'\b(привет|спасибо|пожалуйста|здравствуйте|хорошо|да|нет|конечно)\b'  # Common expressions
+        (0x0400, 0x04FF),  # Cyrillic
+        (0x0500, 0x052F),  # Cyrillic Supplement
     ],
     'tr': [
-        r'[şŞıİğĞüÜöÖçÇ]',  # Turkish-specific characters
-        r'\b(ve|bu|bir|için|ben|sen|o|biz|siz|de|da|ki|ne|kim|ile|ama|fakat|çünkü|nasıl|nerede|ne zaman)\b',  # Common words
-        r'\b(merhaba|teşekkürler|lütfen|iyi günler|evet|hayır|tabii)\b'
+        (0x011E, 0x011F),  # Ğ ğ
+        (0x0130, 0x0131),  # İ ı
+        (0x015E, 0x015F),  # Ş ş
     ],
     'es': [
-        r'\b(el|la|los|las|un|una|unos|unas|y|o|pero|porque|si|cuando|donde|como|que|esto|eso|esta|ese|muy)\b',  # Articles and common words
-        r'\b(de|en|para|por|con|sin|sobre|entre|detrás|después|antes|durante|hacia|hasta|desde)\b',  # Prepositions
-        r'[¿¡]',  # Spanish punctuation
-        r'\b(hola|gracias|por favor|buenos días|sí|no|claro|vale|bien)\b',  # Common expressions
-        r'\b(estar|ser|tener|hacer|decir|ir|ver|dar|saber|querer|llegar|pasar|deber|poner|parecer|quedar|creer)\b'  # Common verbs
+        (0x00C1, 0x00C1),  # Á
+        (0x00C9, 0x00C9),  # É
+        (0x00CD, 0x00CD),  # Í
+        (0x00D1, 0x00D1),  # Ñ
+        (0x00D3, 0x00D3),  # Ó
+        (0x00DA, 0x00DA),  # Ú
+        (0x00DC, 0x00DC),  # Ü
     ],
     'fr': [
-        r'\b(le|la|les|un|une|des|et|ou|mais|donc|car|ni|que|qui|quoi|où|comment|pourquoi|ce|cette|ces|mon|ton|son)\b',  # Articles and pronouns
-        r'\b(de|à|dans|par|pour|en|vers|avec|sans|sous|sur|chez|avant|après|pendant|depuis|vers)\b',  # Prepositions
-        r'\b(être|avoir|faire|dire|aller|voir|savoir|pouvoir|falloir|vouloir)\b',  # Common verbs
-        r'\b(bonjour|merci|s\'il vous plaît|au revoir|oui|non|bien sûr|d\'accord)\b',  # Common expressions
-        r'[àâæçéèêëîïôœùûüÿ]'  # French-specific characters
+        (0x00C0, 0x00C6),  # À-Æ
+        (0x00C8, 0x00CB),  # È-Ë
+        (0x00CC, 0x00CF),  # Ì-Ï
+        (0x00D2, 0x00D6),  # Ò-Ö
+        (0x0152, 0x0153),  # Œ œ
     ],
     'it': [
-        r'\b(il|lo|la|i|gli|le|un|uno|una|dei|degli|delle|e|o|ma|perché|quando|dove|come|che|questo|quello|questa|quella)\b',  # Articles and pronouns
-        r'\b(di|a|da|in|con|su|per|tra|fra|dentro|fuori|sopra|sotto|prima|dopo)\b',  # Prepositions
-        r'\b(essere|avere|fare|dire|andare|vedere|sapere|potere|dovere|volere)\b',  # Common verbs
-        r'\b(ciao|grazie|per favore|arrivederci|sì|no|certo|va bene)\b',  # Common expressions
-        r'[àèéìíîòóùú]'  # Italian-specific characters
+        (0x00C0, 0x00C0),  # À
+        (0x00C8, 0x00C8),  # È
+        (0x00C9, 0x00C9),  # É
+        (0x00CC, 0x00CC),  # Ì
+        (0x00D2, 0x00D2),  # Ò
+        (0x00D9, 0x00D9),  # Ù
     ],
     'pt': [
-        r'\b(o|a|os|as|um|uma|uns|umas|e|ou|mas|porque|se|quando|onde|como|que|isto|isso|esta|esse|muito)\b',  # Articles and common words
-        r'\b(de|em|para|por|com|sem|sobre|entre|atrás|depois|antes|durante)\b',  # Prepositions
-        r'\b(ser|estar|ter|fazer|dizer|ir|ver|dar|saber|querer)\b',  # Common verbs
-        r'\b(olá|obrigado|obrigada|por favor|bom dia|sim|não|claro|tudo bem)\b',  # Common expressions
-        r'[áâãàçéêíóôõúü]'  # Portuguese-specific characters
-    ],
-    'en': [
-        r'\b(the|a|an|and|or|but|if|when|where|how|what|this|that|these|those|my|your|his|her|its|our|their)\b',  # Articles and pronouns
-        r'\b(in|on|at|to|for|with|by|from|about|into|through|after|before|under|over)\b',  # Prepositions
-        r'\b(be|have|do|say|get|make|go|know|take|see|come|think|look|want|give|use)\b',  # Common verbs
-        r'\b(hello|thanks|thank you|please|goodbye|yes|no|maybe|sure|okay)\b',  # Common expressions
-        r'\b(i|you|he|she|it|we|they|me|him|her|us|them)\b'  # Personal pronouns
+        (0x00C0, 0x00C3),  # À-Ã
+        (0x00C7, 0x00C7),  # Ç
+        (0x00C9, 0x00CA),  # É-Ê
+        (0x00D3, 0x00D5),  # Ó-Õ
     ]
 }
 
@@ -138,67 +132,95 @@ def load_thresholds(thresholds_path='evaluation_results/eval_20250208_161149/thr
         print(f"Warning: Could not load thresholds from {thresholds_path}: {str(e)}")
         return None
 
-def detect_language_regex(text):
-    """
-    Detect language using regex patterns of common words and special characters.
-    Returns language code of best match.
-    """
-    # Normalize text
-    text = ' ' + text.lower() + ' '  # Add spaces to help with word boundary detection
+def analyze_unicode_ranges(text):
+    """Analyze text for characters in language-specific Unicode ranges"""
+    scores = {lang: 0 for lang in SUPPORTED_LANGUAGES.keys()}
     
-    # Count matches for each language
-    scores = {}
+    for char in text:
+        code = ord(char)
+        for lang, ranges in UNICODE_RANGES.items():
+            for start, end in ranges:
+                if start <= code <= end:
+                    scores[lang] += 1
     
-    # Check each language's patterns
-    for lang, patterns in LANG_PATTERNS.items():
-        score = 0
-        for pattern in patterns:
-            matches = len(re.findall(pattern, text))
-            # Weight matches based on pattern type
-            if '[' in pattern:  # Special characters pattern
-                score += matches * 2  # Give more weight to special characters
-            else:  # Word pattern
-                score += matches
-        scores[lang] = score
-    
-    # Special case: if no matches or only English matches, check for ASCII-only content
-    if all(score == 0 for lang, score in scores.items()) or (sum(scores.values()) == scores.get('en', 0)):
-        # If text is ASCII-only and has words, likely English
-        if all(ord(c) < 128 for c in text) and bool(re.search(r'\w', text)):
-            return SUPPORTED_LANGUAGES['en']
-    
-    # Get language with highest score
-    max_score = max(scores.values())
-    if max_score > 0:
-        # Get the language with the highest score
-        detected = max(scores.items(), key=lambda x: x[1])[0]
-        return SUPPORTED_LANGUAGES[detected]
-    
-    # Default to English if no clear match
-    return SUPPORTED_LANGUAGES['en']
+    return scores
 
-def detect_language(text):
-    """Detect language of input text and map to supported language ID"""
+def analyze_tokenizer_stats(text, tokenizer):
+    """Analyze tokenizer statistics for language detection"""
+    # Get tokenizer output
+    tokens = tokenizer.tokenize(text)
+    
+    # Count language-specific token patterns
+    scores = {lang: 0 for lang in SUPPORTED_LANGUAGES.keys()}
+    
+    # Analyze token patterns
+    for token in tokens:
+        token = token.lower()
+        # Check for language-specific subwords
+        if 'en' in token or '_en' in token:
+            scores['en'] += 1
+        elif 'ru' in token or '_ru' in token:
+            scores['ru'] += 1
+        elif 'tr' in token or '_tr' in token:
+            scores['tr'] += 1
+        elif 'es' in token or '_es' in token:
+            scores['es'] += 1
+        elif 'fr' in token or '_fr' in token:
+            scores['fr'] += 1
+        elif 'it' in token or '_it' in token:
+            scores['it'] += 1
+        elif 'pt' in token or '_pt' in token:
+            scores['pt'] += 1
+    
+    return scores
+
+def detect_language(text, tokenizer):
+    """
+    Enhanced language detection using multiple methods:
+    1. Unicode range analysis
+    2. Tokenizer statistics
+    3. ASCII analysis for English
+    """
     try:
-        # Clean and normalize text
-        cleaned_text = text.strip()
+        # Clean text
+        text = text.strip()
         
-        # If text is empty or just whitespace/punctuation
-        if not re.search(r'\w', cleaned_text):
+        # If empty or just punctuation
+        if not text or not re.search(r'\w', text):
+            return SUPPORTED_LANGUAGES['en']
+            
+        # If text is ASCII only, likely English
+        if all(ord(c) < 128 for c in text):
             return SUPPORTED_LANGUAGES['en']
         
-        # Detect language using regex patterns
-        lang_id = detect_language_regex(cleaned_text)
-        return lang_id
+        # Get scores from different methods
+        unicode_scores = analyze_unicode_ranges(text)
+        tokenizer_scores = analyze_tokenizer_stats(text, tokenizer)
+        
+        # Combine scores with weights
+        final_scores = {lang: 0 for lang in SUPPORTED_LANGUAGES.keys()}
+        for lang in SUPPORTED_LANGUAGES.keys():
+            final_scores[lang] = (
+                unicode_scores[lang] * 2 +  # Unicode ranges have higher weight
+                tokenizer_scores[lang]
+            )
+        
+        # Get language with highest score
+        if any(score > 0 for score in final_scores.values()):
+            detected_lang = max(final_scores.items(), key=lambda x: x[1])[0]
+            return SUPPORTED_LANGUAGES[detected_lang]
+        
+        # Default to English if no clear match
+        return SUPPORTED_LANGUAGES['en']
         
     except Exception as e:
-        print(f"Note: Could not detect language ({str(e)}). Using English.")
+        print(f"Note: Language detection failed ({str(e)}). Using English.")
         return SUPPORTED_LANGUAGES['en']
 
 def predict_toxicity(text, model, tokenizer, device, thresholds=None):
     """Predict toxicity labels for a given text"""
     # Detect language
-    lang_id = detect_language(text)
+    lang_id = detect_language(text, tokenizer)
     
     # Tokenize text
     encoding = tokenizer(
