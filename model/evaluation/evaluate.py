@@ -22,7 +22,16 @@ class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, max_length=128):
         self.texts = df['comment_text'].values
         self.labels = df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values
-        self.langs = df['lang'].values
+        
+        # Define language mapping
+        self.lang_to_id = {
+            'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
+            'fr': 4, 'it': 5, 'pt': 6
+        }
+        
+        # Convert language strings to IDs, default to English (0) if language not found
+        self.langs = np.array([self.lang_to_id.get(str(lang).lower(), 0) for lang in df['lang'].values])
+        
         self.tokenizer = tokenizer
         self.max_length = max_length
 
