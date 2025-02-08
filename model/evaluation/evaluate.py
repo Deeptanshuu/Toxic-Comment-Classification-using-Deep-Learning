@@ -6,8 +6,9 @@ import numpy as np
 from sklearn.metrics import (
     roc_auc_score, precision_recall_fscore_support, 
     confusion_matrix, roc_curve, hamming_loss, 
-    accuracy_score, calibration_curve
+    accuracy_score
 )
+from sklearn.calibration import calibration_curve
 from sklearn.utils import resample
 from sklearn.utils.class_weight import compute_class_weight
 import seaborn as sns
