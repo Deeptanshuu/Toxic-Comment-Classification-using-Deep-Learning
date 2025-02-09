@@ -159,22 +159,24 @@ def load_model_and_data():
 def collect_validation_losses(model, combined_loader, device, optimizer, scheduler, scaler, config):
     """Run validation and collect step losses across multiple epochs"""
     try:
+        logger.warning("This is an analysis run on combined val+test data - model will not be saved or updated")
+        # Ensure we're in eval mode and no gradients are computed
         model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+            
         all_losses = []
         epoch_losses = []
         
-
         for epoch in range(config.epochs):
             logger.info(f"\nStarting validation epoch {epoch+1}/{config.epochs}")
             total_loss = 0
             num_batches = len(combined_loader)
             epoch_start_time = datetime.now()
-            
 
-            with torch.no_grad():
+            with torch.no_grad():  # Extra safety to ensure no gradients
                 for step, batch in enumerate(combined_loader):
                     # Move batch to device
-
                     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                             for k, v in batch.items()}
                     
