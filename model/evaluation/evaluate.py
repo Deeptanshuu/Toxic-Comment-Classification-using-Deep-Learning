@@ -520,7 +520,7 @@ def evaluate_model(model, test_loader, device, output_dir):
         else:
             # If evaluation failed, use default thresholds
             results['thresholds'][str(lang)] = default_thresholds
-            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang), f'Unknown ({lang})')}")
+            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang))}")
     
     # Calculate overall metrics using language-specific thresholds
     overall_binary_preds = np.zeros_like(predictions)
@@ -670,7 +670,17 @@ def evaluate_model(model, test_loader, device, output_dir):
             if class_name in results['overall']['per_class_metrics']:
                 results['overall']['per_class_metrics'][class_name]['specificity'] = 0.0
     
-    # After calculating metrics, add calibration plots
+    # After calculating metrics, add ROC curves
+    plot_roc_curves(
+        labels,
+        predictions,
+        output_dir,
+        toxicity_types=toxicity_types,
+        languages=id_to_lang,
+        langs=langs
+    )
+    
+    # Add calibration plots
     plot_calibration_curves(
         labels,
         predictions,
@@ -1750,6 +1760,80 @@ def parallel_bootstrap_metrics(args):
     except Exception as e:
         print(f"Warning: Bootstrap iteration failed: {str(e)}")
         return None
+
+def plot_roc_curves(labels, predictions, output_dir, toxicity_types=None, languages=None, langs=None):
+    """Plot ROC curves for each class and language
+    
+    Args:
+        labels: True labels (n_samples, n_classes)
+        predictions: Predicted probabilities (n_samples, n_classes)
+        output_dir: Directory to save plots
+        toxicity_types: List of toxicity class names
+        languages: Dictionary mapping language IDs to names
+        langs: Array of language IDs for each sample
+    """
+    plots_dir = os.path.join(output_dir, 'plots')
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    # Overall ROC curves for each class
+    plt.figure(figsize=(12, 8))
+    for i, class_name in enumerate(toxicity_types):
+        try:
+            fpr, tpr, _ = roc_curve(labels[:, i], predictions[:, i])
+            roc_auc = roc_auc_score(labels[:, i], predictions[:, i])
+            plt.plot(fpr, tpr, label=f'{class_name} (AUC = {roc_auc:.3f})')
+        except Exception as e:
+            print(f"Warning: Could not plot ROC curve for {class_name}: {str(e)}")
+    
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves for All Classes')
+    plt.legend(loc="lower right", fontsize='small')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'roc_curves_overall.png'))
+    plt.close()
+    
+    # Per-language ROC curves
+    if languages and langs is not None:
+        for lang_id, lang_name in languages.items():
+            try:
+                lang_mask = langs == int(lang_id)
+                if lang_mask.sum() == 0:
+                    continue
+                
+                plt.figure(figsize=(12, 8))
+                for i, class_name in enumerate(toxicity_types):
+                    try:
+                        fpr, tpr, _ = roc_curve(
+                            labels[lang_mask, i],
+                            predictions[lang_mask, i]
+                        )
+                        roc_auc = roc_auc_score(
+                            labels[lang_mask, i],
+                            predictions[lang_mask, i]
+                        )
+                        plt.plot(fpr, tpr, label=f'{class_name} (AUC = {roc_auc:.3f})')
+                    except Exception as e:
+                        print(f"Warning: Could not plot ROC curve for {class_name} in {lang_name}: {str(e)}")
+                
+                plt.plot([0, 1], [0, 1], 'k--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title(f'ROC Curves for {lang_name}')
+                plt.legend(loc="lower right", fontsize='small')
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(os.path.join(plots_dir, f'roc_curves_{lang_id}.png'))
+                plt.close()
+            except Exception as e:
+                print(f"Warning: Could not plot ROC curves for {lang_name}: {str(e)}")
+                plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
