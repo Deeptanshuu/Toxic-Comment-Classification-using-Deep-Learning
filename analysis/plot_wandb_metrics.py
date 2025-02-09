@@ -4,14 +4,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import os
+from pprint import pprint
+from collections import defaultdict
 
-def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
+def analyze_wandb_metrics(run_path: str = None):
     """
-    Plot training metrics from wandb logs, showing both epoch-level and batch-level statistics.
+    Analyze and print all available metrics from a wandb run.
     
     Args:
         run_path (str): Optional path to specific wandb run
-        save_dir (str): Directory to save the plots
     """
     # Initialize wandb
     api = wandb.Api()
@@ -25,8 +26,80 @@ def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
             raise ValueError("No runs found in the project")
         run = runs[0]
     
+    print("\n=== Run Information ===")
+    print(f"Run ID: {run.id}")
+    print(f"Run Name: {run.name}")
+    print(f"Project: {run.project}")
+    print(f"Created: {run.created_at}")
+    
     # Get history
     history = pd.DataFrame(run.scan_history())
+    
+    # Analyze available metrics
+    print("\n=== Available Metrics ===")
+    metrics = defaultdict(list)
+    
+    # Group metrics by category
+    for column in sorted(history.columns):
+        parts = column.split('/')
+        if len(parts) > 1:
+            category = parts[0]
+            metrics[category].append(column)
+        else:
+            metrics['other'].append(column)
+    
+    # Print metrics by category
+    for category, columns in metrics.items():
+        print(f"\n{category.upper()} Metrics:")
+        for col in sorted(columns):
+            data = history[col].dropna()
+            print(f"  {col}:")
+            print(f"    - Data points: {len(data)}")
+            if len(data) > 0:
+                print(f"    - Range: [{data.min():.4f}, {data.max():.4f}]")
+                print(f"    - Mean: {data.mean():.4f}")
+                print(f"    - Standard deviation: {data.std():.4f}")
+    
+    # Print available languages
+    print("\n=== Language-specific Metrics ===")
+    languages = set()
+    for col in history.columns:
+        if '/' in col:
+            lang = col.split('/')[1]
+            if lang in ['en', 'ru', 'tr', 'es', 'fr', 'it', 'pt']:
+                languages.add(lang)
+    print("Available languages:", sorted(list(languages)))
+    
+    # Print available class metrics
+    print("\n=== Class-specific Metrics ===")
+    classes = set()
+    for col in history.columns:
+        if 'class_metrics' in col:
+            cls = col.split('/')[2]
+            classes.add(cls)
+    print("Available classes:", sorted(list(classes)))
+    
+    # Return the history DataFrame for further use
+    return history
+
+def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
+    """
+    Plot training metrics from wandb logs, showing both epoch-level and batch-level statistics.
+    First prints analysis of available metrics, then creates plots.
+    
+    Args:
+        run_path (str): Optional path to specific wandb run
+        save_dir (str): Directory to save the plots
+    """
+    # First analyze and print all available metrics
+    print("\nAnalyzing available metrics...")
+    history = analyze_wandb_metrics(run_path)
+    
+    # Ask user if they want to proceed with plotting
+    response = input("\nWould you like to proceed with plotting? (y/n): ")
+    if response.lower() != 'y':
+        print("Plotting cancelled.")
+        return
     
     # Create two figures: one for training metrics and one for class-specific metrics
     plt.style.use('default')
