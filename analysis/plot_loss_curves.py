@@ -76,10 +76,20 @@ def load_model_and_data():
         val_loader = DataLoader(
             val_dataset,
             batch_size=config.batch_size,
-            shuffle=False,
+            shuffle=True,  # Enable shuffling
             num_workers=config.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=False  # Keep all samples
         )
+        
+        # Log dataloader config to wandb
+        if wandb.run is not None:
+            wandb.config.update({
+                'shuffle': True,
+                'drop_last': False,
+                'total_validation_steps': len(val_loader),
+                'total_validation_samples': len(val_dataset)
+            })
         
         # Load model
         logger.info("Loading model...")
