@@ -98,98 +98,14 @@ def load_model(model_path):
         print(f"Error loading model: {str(e)}")
         return None, None, None
 
-def calculate_soft_precision(y_true, y_pred, partial_match_weight=0.5):
-    """Calculate a more forgiving precision metric for multi-label classification
-    
-    Args:
-        y_true: Ground truth labels (n_samples, n_classes)
-        y_pred: Predicted labels (n_samples, n_classes)
-        partial_match_weight: Weight given to partial matches (default: 0.5)
-    
-    Returns:
-        float: Soft precision score
-    """
-    try:
-        if y_true.shape != y_pred.shape:
-            raise ValueError("Shape mismatch between true and predicted labels")
-            
-        total_precision = 0
-        total_weight = 0
-        
-        for i in range(len(y_true)):
-            true_positives = (y_true[i] == 1) & (y_pred[i] == 1)
-            pred_positives = y_pred[i] == 1
-            
-            if pred_positives.sum() == 0:
-                continue
-                
-            # Full matches
-            full_match_score = true_positives.sum()
-            
-            # Partial matches (when we predict some but not all labels)
-            partial_matches = 0
-            if pred_positives.sum() > 0:
-                true_pos_ratio = true_positives.sum() / pred_positives.sum()
-                partial_matches = true_pos_ratio * partial_match_weight
-            
-            # Combine scores
-            row_precision = (full_match_score + partial_matches) / pred_positives.sum()
-            total_precision += row_precision
-            total_weight += 1
-        
-        return total_precision / total_weight if total_weight > 0 else 0.0
-        
-    except Exception as e:
-        print(f"Warning: Error in soft precision calculation: {str(e)}")
-        return 0.0
-
-def calculate_soft_recall(y_true, y_pred, partial_match_weight=0.5):
-    """Calculate a more forgiving recall metric for multi-label classification
-    
-    Args:
-        y_true: Ground truth labels (n_samples, n_classes)
-        y_pred: Predicted labels (n_samples, n_classes)
-        partial_match_weight: Weight given to partial matches (default: 0.5)
-    
-    Returns:
-        float: Soft recall score
-    """
-    try:
-        if y_true.shape != y_pred.shape:
-            raise ValueError("Shape mismatch between true and predicted labels")
-            
-        total_recall = 0
-        total_weight = 0
-        
-        for i in range(len(y_true)):
-            true_positives = (y_true[i] == 1) & (y_pred[i] == 1)
-            actual_positives = y_true[i] == 1
-            
-            if actual_positives.sum() == 0:
-                continue
-                
-            # Full matches
-            full_match_score = true_positives.sum()
-            
-            # Partial matches (when we predict at least some of the true labels)
-            partial_matches = 0
-            if actual_positives.sum() > 0:
-                true_pos_ratio = true_positives.sum() / actual_positives.sum()
-                partial_matches = true_pos_ratio * partial_match_weight
-            
-            # Combine scores
-            row_recall = (full_match_score + partial_matches) / actual_positives.sum()
-            total_recall += row_recall
-            total_weight += 1
-        
-        return total_recall / total_weight if total_weight > 0 else 0.0
-        
-    except Exception as e:
-        print(f"Warning: Error in soft recall calculation: {str(e)}")
-        return 0.0
-
 def evaluate_language(args):
-    """Evaluate model performance for a single language with balanced metrics"""
+    """Evaluate model performance for a single language
+    
+    Args:
+        args: Tuple of (lang_id, lang_name, lang_preds, lang_labels, toxicity_types)
+    Returns:
+        Tuple of (lang_id, metrics, thresholds)
+    """
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
@@ -203,23 +119,21 @@ def evaluate_language(args):
                 
                 if len(np.unique(class_labels)) < 2:
                     print(f"Warning: Only one class present for {class_name} in {lang_name}")
-                    if class_labels[0] == 1:
-                        lang_thresholds[class_name] = 0.5  # Balanced threshold for positive-only
-                    else:
+                    # Use a more conservative threshold when only one class is present
+                    if class_labels[0] == 1:  # If all samples are positive
+                        lang_thresholds[class_name] = 0.5
+                    else:  # If all samples are negative
                         lang_thresholds[class_name] = 0.7
                     continue
                 
-                # Calculate class distribution
+                # Calculate class distribution for adaptive thresholding
                 pos_ratio = np.mean(class_labels)
                 
-                # Find optimal threshold using weighted scores
+                # Find optimal threshold using F1 score with class weights
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 f1_scores = []
-                precision_scores = []
-                recall_scores = []
-                balanced_scores = []
                 
-                # Calculate class weights
+                # Calculate weighted F1 score for each threshold
                 class_weights = compute_class_weight(
                     class_weight='balanced',
                     classes=np.unique(class_labels),
@@ -231,114 +145,77 @@ def evaluate_language(args):
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
                     try:
-                        precision, recall, f1, _ = precision_recall_fscore_support(
+                        _, _, f1, _ = precision_recall_fscore_support(
                             class_labels, binary_preds,
                             average='binary',
                             sample_weight=sample_weights,
                             zero_division=0
                         )
-                        
-                        # Calculate soft metrics
-                        soft_precision = calculate_soft_precision(
-                            class_labels.reshape(-1, 1),
-                            binary_preds.reshape(-1, 1)
-                        )
-                        soft_recall = calculate_soft_recall(
-                            class_labels.reshape(-1, 1),
-                            binary_preds.reshape(-1, 1)
-                        )
-                        
-                        # Balanced combination based on class frequency
-                        if pos_ratio < 0.05:  # Very rare class
-                            # For very rare classes, we need higher precision to avoid false positives
-                            combined_score = (f1 + soft_precision * 2 + soft_recall) / 4
-                        elif pos_ratio < 0.1:  # Rare class
-                            # For rare classes, balance precision and recall
-                            combined_score = (f1 + soft_precision + soft_recall) / 3
-                        else:  # More common class
-                            # For common classes, maintain high precision
-                            combined_score = (f1 + soft_precision * 3 + soft_recall) / 5
-                        
-                        # Additional score that heavily weights precision
-                        precision_weighted_score = precision * 0.7 + recall * 0.3
-                        
                         f1_scores.append(f1)
-                        precision_scores.append(precision)
-                        recall_scores.append(recall)
-                        balanced_scores.append(precision_weighted_score)
                     except Exception:
                         f1_scores.append(0.0)
-                        precision_scores.append(0.0)
-                        recall_scores.append(0.0)
-                        balanced_scores.append(0.0)
                 
-                # Find optimal thresholds for different metrics
-                f1_threshold = thresh[np.argmax(f1_scores)]
-                precision_threshold = thresh[np.argmax(precision_scores)]
-                balanced_threshold = thresh[np.argmax(balanced_scores)]
+                # Select threshold that maximizes F1 score
+                best_idx = np.argmax(f1_scores)
+                initial_threshold = thresh[best_idx]
                 
-                # Set minimum precision threshold based on class frequency
-                min_precision_threshold = 0.5 if pos_ratio < 0.1 else 0.4
-                
-                # Combine thresholds with emphasis on precision
-                if pos_ratio < 0.05:  # Very rare class
-                    final_threshold = max(
-                        (f1_threshold + precision_threshold * 3 + balanced_threshold * 2) / 6,
-                        min_precision_threshold
-                    )
-                elif pos_ratio < 0.1:  # Rare class
-                    final_threshold = max(
-                        (f1_threshold + precision_threshold * 2 + balanced_threshold) / 4,
-                        min_precision_threshold
-                    )
-                else:  # Common class
-                    final_threshold = max(
-                        (f1_threshold + precision_threshold + balanced_threshold) / 3,
-                        0.35  # Base minimum threshold
-                    )
-                
-                # Default thresholds as fallback
-                default_thresholds = {
-                    'toxic': 0.45,
-                    'severe_toxic': 0.40,
-                    'obscene': 0.50,
-                    'threat': 0.45,
-                    'insult': 0.45,
-                    'identity_hate': 0.40
-                }
-                
-                # Ensure threshold isn't below class-specific minimum
-                min_threshold = default_thresholds.get(class_name, 0.4)
-                final_threshold = max(final_threshold, min_threshold)
-                
-                lang_thresholds[class_name] = final_threshold
+                # Test the initial threshold
+                test_preds = (class_preds > initial_threshold).astype(int)
+                if test_preds.sum() == 0:
+                    print(f"Warning: No positive predictions for {class_name} in {lang_name}, adjusting threshold")
+                    
+                    # Use adaptive thresholding based on class distribution
+                    if pos_ratio > 0:  # If we have positive samples in ground truth
+                        # Try multiple percentiles and pick the one that gives closest positive ratio
+                        percentiles = [90, 85, 80, 75, 70]
+                        best_threshold = initial_threshold
+                        min_ratio_diff = float('inf')
+                        
+                        for p in percentiles:
+                            threshold = np.percentile(class_preds, p)
+                            pred_ratio = np.mean(class_preds > threshold)
+                            ratio_diff = abs(pred_ratio - pos_ratio)
+                            
+                            if ratio_diff < min_ratio_diff:
+                                min_ratio_diff = ratio_diff
+                                best_threshold = threshold
+                        
+                        # Set a minimum threshold to prevent too many false positives
+                        lang_thresholds[class_name] = max(best_threshold, 0.2)
+                    else:
+                        # If no positive samples, use a conservative threshold
+                        lang_thresholds[class_name] = 0.7
+                else:
+                    lang_thresholds[class_name] = initial_threshold
                 
                 # Validate final threshold
-                final_preds = (class_preds > final_threshold).astype(int)
+                final_preds = (class_preds > lang_thresholds[class_name]).astype(int)
                 pred_ratio = np.mean(final_preds)
-                print(f"  {class_name}: threshold={final_threshold:.4f}, "
+                print(f"  {class_name}: threshold={lang_thresholds[class_name]:.4f}, "
                       f"pred_ratio={pred_ratio:.4f}, true_ratio={pos_ratio:.4f}")
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                # Use more conservative default thresholds
+                # Use class-specific default thresholds based on typical values
                 default_thresholds = {
-                    'toxic': 0.45,
-                    'severe_toxic': 0.40,
-                    'obscene': 0.50,
-                    'threat': 0.45,
-                    'insult': 0.45,
-                    'identity_hate': 0.40
+                    'toxic': 0.4,
+                    'severe_toxic': 0.25,
+                    'obscene': 0.45,
+                    'threat': 0.35,
+                    'insult': 0.4,
+                    'identity_hate': 0.25
                 }
-                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.45)
+                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.5)
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
         for i, class_name in enumerate(toxicity_types):
             binary_preds[:, i] = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
         
+        # Calculate metrics without parallel processing
         metrics = {}
         
+        # Calculate AUC if possible
         try:
             if len(np.unique(lang_labels)) > 1:
                 metrics['auc'] = roc_auc_score(lang_labels, lang_preds, average='weighted')
@@ -346,64 +223,70 @@ def evaluate_language(args):
             print(f"Warning: Could not calculate AUC: {str(e)}")
             metrics['auc'] = None
         
-        # Calculate standard and soft precision
+        # Calculate precision, recall, F1
         try:
             precision, recall, f1, _ = precision_recall_fscore_support(
                 lang_labels, binary_preds, average='weighted',
                 zero_division=0
             )
-            soft_precision = calculate_soft_precision(lang_labels, binary_preds)
-            
-            # Combined precision favoring the soft precision
-            combined_precision = (precision + soft_precision * 2) / 3
-            
             metrics.update({
-                'precision': combined_precision,
-                'soft_precision': soft_precision,
-                'standard_precision': precision,
+                'precision': precision,
                 'recall': recall,
-                'f1': (2 * combined_precision * recall) / (combined_precision + recall) if (combined_precision + recall) > 0 else 0.0
+                'f1': f1
             })
         except Exception as e:
             print(f"Warning: Could not calculate precision/recall/F1: {str(e)}")
             metrics.update({
                 'precision': 0.0,
-                'soft_precision': 0.0,
-                'standard_precision': 0.0,
                 'recall': 0.0,
                 'f1': 0.0
             })
         
+        # Calculate Hamming Loss
         try:
-            metrics['hamming_loss'] = calculate_weighted_hamming_loss(
-                lang_labels,
-                binary_preds
-            )
-            if metrics['hamming_loss'] is None:
-                metrics['hamming_loss'] = 1.0
+            metrics['hamming_loss'] = hamming_loss(lang_labels, binary_preds)
         except Exception as e:
             print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
-            metrics['hamming_loss'] = 1.0
+            metrics['hamming_loss'] = 1.0  # Worst case
         
+        # Calculate Exact Match
         try:
-            metrics['exact_match'] = accuracy_score(
-                lang_labels,
-                binary_preds,
-                normalize=True
-            )
+            metrics['exact_match'] = accuracy_score(lang_labels, binary_preds)
         except Exception as e:
             print(f"Warning: Could not calculate Exact Match: {str(e)}")
-            metrics['exact_match'] = 0.0
+            metrics['exact_match'] = 0.0  # Worst case
         
+        # Calculate specificity
         try:
             metrics['specificity'] = calculate_specificity(lang_labels, binary_preds)
         except Exception as e:
             print(f"Warning: Could not calculate specificity: {str(e)}")
             metrics['specificity'] = 0.0
         
-        metrics.update({
-            'sample_count': len(lang_labels)
-        })
+        # Calculate per-class metrics
+        class_metrics = {}
+        for i, class_name in enumerate(toxicity_types):
+            try:
+                class_metrics[class_name] = calculate_class_metrics(
+                    lang_labels[:, i],
+                    lang_preds[:, i],
+                    binary_preds[:, i],
+                    lang_thresholds[class_name]
+                )
+            except Exception as e:
+                print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
+                class_metrics[class_name] = {
+                    'auc': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'f1': 0.0,
+                    'specificity': 0.0,
+                    'npv': 0.0,
+                    'threshold': lang_thresholds[class_name]
+                }
+        
+        metrics['class_metrics'] = class_metrics
+        metrics['sample_count'] = len(lang_labels)
         
         return lang_id, metrics, lang_thresholds
         
@@ -520,7 +403,7 @@ def evaluate_model(model, test_loader, device, output_dir):
         else:
             # If evaluation failed, use default thresholds
             results['thresholds'][str(lang)] = default_thresholds
-            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang))}")
+            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang), f'Unknown ({lang})')}")
     
     # Calculate overall metrics using language-specific thresholds
     overall_binary_preds = np.zeros_like(predictions)
@@ -648,9 +531,11 @@ def evaluate_model(model, test_loader, device, output_dir):
                 class_weights.append(0.0)
         
         # Calculate macro and weighted specificity
-        results['overall']['specificity_macro'] = np.mean(specificities)
-        results['overall']['specificity_weighted'] = (np.sum(weighted_specificities) / np.sum(class_weights) 
-                                                    if np.sum(class_weights) > 0 else 0.0)
+        results['overall'].update({
+            'specificity_macro': np.mean(specificities),
+            'specificity_weighted': (np.sum(weighted_specificities) / np.sum(class_weights) 
+                                   if np.sum(class_weights) > 0 else 0.0)
+        })
         
         # Add per-class specificity
         for i, class_name in enumerate(toxicity_types):
@@ -670,17 +555,7 @@ def evaluate_model(model, test_loader, device, output_dir):
             if class_name in results['overall']['per_class_metrics']:
                 results['overall']['per_class_metrics'][class_name]['specificity'] = 0.0
     
-    # After calculating metrics, add ROC curves
-    plot_roc_curves(
-        labels,
-        predictions,
-        output_dir,
-        toxicity_types=toxicity_types,
-        languages=id_to_lang,
-        langs=langs
-    )
-    
-    # Add calibration plots
+    # After calculating metrics, add calibration plots
     plot_calibration_curves(
         labels,
         predictions,
@@ -1101,7 +976,7 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     return metrics
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
-    """Calculate detailed metrics for a specific class with more forgiving precision and recall"""
+    """Calculate detailed metrics for a specific class"""
     try:
         # Calculate initial class weights
         unique_classes = np.unique(labels)
@@ -1119,35 +994,14 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
             'threshold': threshold
         }
         
-        # Calculate standard precision/recall/f1
         precision, recall, f1, _ = precision_recall_fscore_support(
             labels, binary_predictions, average='binary',
             sample_weight=sample_weights
         )
-        
-        # Calculate soft metrics
-        soft_precision = calculate_soft_precision(
-            labels.reshape(-1, 1), 
-            binary_predictions.reshape(-1, 1)
-        )
-        
-        soft_recall = calculate_soft_recall(
-            labels.reshape(-1, 1),
-            binary_predictions.reshape(-1, 1)
-        )
-        
-        # Use weighted average of standard and soft metrics
-        combined_precision = (precision + soft_precision * 2) / 3
-        combined_recall = (recall + soft_recall * 2) / 3
-        
         metrics.update({
-            'precision': combined_precision,
-            'soft_precision': soft_precision,
-            'standard_precision': precision,
-            'recall': combined_recall,
-            'soft_recall': soft_recall,
-            'standard_recall': recall,
-            'f1': (2 * combined_precision * combined_recall) / (combined_precision + combined_recall) if (combined_precision + combined_recall) > 0 else 0.0
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
         })
         
         tn, fp, fn, tp = confusion_matrix(
@@ -1165,8 +1019,8 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
             'false_negatives': int(fn)
         })
         
-        # Add confidence intervals
-        for metric in ['auc', 'precision', 'soft_precision', 'recall', 'f1', 'specificity', 'npv']:
+        # Add confidence intervals as fixed values since we're not doing bootstrap
+        for metric in ['auc', 'precision', 'recall', 'f1', 'specificity', 'npv']:
             metrics[f'{metric}_ci'] = [metrics[metric], metrics[metric]]
         
         metrics['class_weights'] = dict(zip(np.unique(labels), weights))
@@ -1175,14 +1029,11 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
         
     except Exception as e:
         print(f"Warning: Error in calculate_class_metrics: {str(e)}")
+        # Return default metrics
         return {
             'auc': 0.0,
             'precision': 0.0,
-            'soft_precision': 0.0,
-            'standard_precision': 0.0,
             'recall': 0.0,
-            'soft_recall': 0.0,
-            'standard_recall': 0.0,
             'f1': 0.0,
             'specificity': 0.0,
             'npv': 0.0,
@@ -1194,7 +1045,6 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
             'false_negatives': 0,
             'auc_ci': [0.0, 0.0],
             'precision_ci': [0.0, 0.0],
-            'soft_precision_ci': [0.0, 0.0],
             'recall_ci': [0.0, 0.0],
             'f1_ci': [0.0, 0.0],
             'specificity_ci': [0.0, 0.0],
@@ -1760,80 +1610,6 @@ def parallel_bootstrap_metrics(args):
     except Exception as e:
         print(f"Warning: Bootstrap iteration failed: {str(e)}")
         return None
-
-def plot_roc_curves(labels, predictions, output_dir, toxicity_types=None, languages=None, langs=None):
-    """Plot ROC curves for each class and language
-    
-    Args:
-        labels: True labels (n_samples, n_classes)
-        predictions: Predicted probabilities (n_samples, n_classes)
-        output_dir: Directory to save plots
-        toxicity_types: List of toxicity class names
-        languages: Dictionary mapping language IDs to names
-        langs: Array of language IDs for each sample
-    """
-    plots_dir = os.path.join(output_dir, 'plots')
-    os.makedirs(plots_dir, exist_ok=True)
-    
-    # Overall ROC curves for each class
-    plt.figure(figsize=(12, 8))
-    for i, class_name in enumerate(toxicity_types):
-        try:
-            fpr, tpr, _ = roc_curve(labels[:, i], predictions[:, i])
-            roc_auc = roc_auc_score(labels[:, i], predictions[:, i])
-            plt.plot(fpr, tpr, label=f'{class_name} (AUC = {roc_auc:.3f})')
-        except Exception as e:
-            print(f"Warning: Could not plot ROC curve for {class_name}: {str(e)}")
-    
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curves for All Classes')
-    plt.legend(loc="lower right", fontsize='small')
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'roc_curves_overall.png'))
-    plt.close()
-    
-    # Per-language ROC curves
-    if languages and langs is not None:
-        for lang_id, lang_name in languages.items():
-            try:
-                lang_mask = langs == int(lang_id)
-                if lang_mask.sum() == 0:
-                    continue
-                
-                plt.figure(figsize=(12, 8))
-                for i, class_name in enumerate(toxicity_types):
-                    try:
-                        fpr, tpr, _ = roc_curve(
-                            labels[lang_mask, i],
-                            predictions[lang_mask, i]
-                        )
-                        roc_auc = roc_auc_score(
-                            labels[lang_mask, i],
-                            predictions[lang_mask, i]
-                        )
-                        plt.plot(fpr, tpr, label=f'{class_name} (AUC = {roc_auc:.3f})')
-                    except Exception as e:
-                        print(f"Warning: Could not plot ROC curve for {class_name} in {lang_name}: {str(e)}")
-                
-                plt.plot([0, 1], [0, 1], 'k--')
-                plt.xlim([0.0, 1.0])
-                plt.ylim([0.0, 1.05])
-                plt.xlabel('False Positive Rate')
-                plt.ylabel('True Positive Rate')
-                plt.title(f'ROC Curves for {lang_name}')
-                plt.legend(loc="lower right", fontsize='small')
-                plt.grid(True)
-                plt.tight_layout()
-                plt.savefig(os.path.join(plots_dir, f'roc_curves_{lang_id}.png'))
-                plt.close()
-            except Exception as e:
-                print(f"Warning: Could not plot ROC curves for {lang_name}: {str(e)}")
-                plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
