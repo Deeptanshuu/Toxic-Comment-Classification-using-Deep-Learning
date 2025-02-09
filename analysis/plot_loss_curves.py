@@ -53,7 +53,7 @@ def load_model_and_data():
     try:
         # Initialize config with training settings
         config = TrainingConfig(
-            batch_size=8,
+            batch_size=32,
             num_workers=16,
             lr=2e-5,
             weight_decay=0.01,
@@ -67,14 +67,17 @@ def load_model_and_data():
         )
         
         # Load validation data
-        logger.info("Loading validation data...")
+        logger.info("Loading validation and test data...")
         val_df = pd.read_csv("dataset/split/val.csv")
+        test_df = pd.read_csv("dataset/split/test.csv")
+        combined_df = pd.concat([val_df, test_df])
         tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
-        val_dataset = ToxicDataset(val_df, tokenizer, config, mode='val')
+        combined_dataset = ToxicDataset(combined_df, tokenizer, config, mode='combined')
         
-        # Create validation dataloader
-        val_loader = DataLoader(
-            val_dataset,
+
+        # Create combined dataloader
+        combined_loader = DataLoader(
+            combined_dataset,
             batch_size=config.batch_size,
             shuffle=True,  # Enable shuffling
             num_workers=config.num_workers,
@@ -87,10 +90,11 @@ def load_model_and_data():
             wandb.config.update({
                 'shuffle': True,
                 'drop_last': False,
-                'total_validation_steps': len(val_loader),
-                'total_validation_samples': len(val_dataset)
+                'total_validation_steps': len(combined_loader),
+                'total_validation_samples': len(combined_dataset)
             })
         
+
         # Load model
         logger.info("Loading model...")
         model = LanguageAwareTransformer(
@@ -116,8 +120,9 @@ def load_model_and_data():
         optimizer = torch.optim.AdamW(param_groups)
         
         # Setup scheduler
-        total_steps = len(val_loader) * config.epochs
+        total_steps = len(combined_loader) * config.epochs
         warmup_steps = int(total_steps * config.warmup_ratio)
+
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=warmup_steps,
@@ -143,28 +148,32 @@ def load_model_and_data():
                 'validation_epochs': config.epochs
             })
         
-        return model, val_loader, device, optimizer, scheduler, scaler, config
+        return model, combined_loader, device, optimizer, scheduler, scaler, config
         
+
     except Exception as e:
         logger.error(f"Error loading model and data: {str(e)}")
         raise
 
-def collect_validation_losses(model, val_loader, device, optimizer, scheduler, scaler, config):
+def collect_validation_losses(model, combined_loader, device, optimizer, scheduler, scaler, config):
     """Run validation and collect step losses across multiple epochs"""
     try:
         model.eval()
         all_losses = []
         epoch_losses = []
         
+
         for epoch in range(config.epochs):
             logger.info(f"\nStarting validation epoch {epoch+1}/{config.epochs}")
             total_loss = 0
-            num_batches = len(val_loader)
+            num_batches = len(combined_loader)
             epoch_start_time = datetime.now()
             
+
             with torch.no_grad():
-                for step, batch in enumerate(val_loader):
+                for step, batch in enumerate(combined_loader):
                     # Move batch to device
+
                     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                             for k, v in batch.items()}
                     
@@ -327,14 +336,16 @@ def main():
         
         # Load model and data
         logger.info("Loading model and data...")
-        model, val_loader, device, optimizer, scheduler, scaler, config = load_model_and_data()
+        model, combined_loader, device, optimizer, scheduler, scaler, config = load_model_and_data()
         
+
         # Collect validation losses
         logger.info("Collecting validation losses...")
         epoch_losses = collect_validation_losses(
-            model, val_loader, device, optimizer, scheduler, scaler, config
+            model, combined_loader, device, optimizer, scheduler, scaler, config
         )
         
+
         # Plot losses
         logger.info("Plotting validation losses...")
         plot_validation_losses(epoch_losses)
