@@ -143,13 +143,58 @@ def calculate_soft_precision(y_true, y_pred, partial_match_weight=0.5):
         print(f"Warning: Error in soft precision calculation: {str(e)}")
         return 0.0
 
+def calculate_soft_recall(y_true, y_pred, partial_match_weight=0.5):
+    """Calculate a more forgiving recall metric for multi-label classification
+    
+    Args:
+        y_true: Ground truth labels (n_samples, n_classes)
+        y_pred: Predicted labels (n_samples, n_classes)
+        partial_match_weight: Weight given to partial matches (default: 0.5)
+    
+    Returns:
+        float: Soft recall score
+    """
+    try:
+        if y_true.shape != y_pred.shape:
+            raise ValueError("Shape mismatch between true and predicted labels")
+            
+        total_recall = 0
+        total_weight = 0
+        
+        for i in range(len(y_true)):
+            true_positives = (y_true[i] == 1) & (y_pred[i] == 1)
+            actual_positives = y_true[i] == 1
+            
+            if actual_positives.sum() == 0:
+                continue
+                
+            # Full matches
+            full_match_score = true_positives.sum()
+            
+            # Partial matches (when we predict at least some of the true labels)
+            partial_matches = 0
+            if actual_positives.sum() > 0:
+                true_pos_ratio = true_positives.sum() / actual_positives.sum()
+                partial_matches = true_pos_ratio * partial_match_weight
+            
+            # Combine scores
+            row_recall = (full_match_score + partial_matches) / actual_positives.sum()
+            total_recall += row_recall
+            total_weight += 1
+        
+        return total_recall / total_weight if total_weight > 0 else 0.0
+        
+    except Exception as e:
+        print(f"Warning: Error in soft recall calculation: {str(e)}")
+        return 0.0
+
 def evaluate_language(args):
-    """Evaluate model performance for a single language with more forgiving precision metrics"""
+    """Evaluate model performance for a single language with more forgiving metrics"""
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
         
-        # Optimize thresholds for this language with emphasis on precision
+        # Optimize thresholds for this language
         lang_thresholds = {}
         for i, class_name in enumerate(toxicity_types):
             try:
@@ -159,18 +204,19 @@ def evaluate_language(args):
                 if len(np.unique(class_labels)) < 2:
                     print(f"Warning: Only one class present for {class_name} in {lang_name}")
                     if class_labels[0] == 1:
-                        lang_thresholds[class_name] = 0.5
+                        lang_thresholds[class_name] = 0.4  # Lower threshold for positive-only classes
                     else:
-                        lang_thresholds[class_name] = 0.7
+                        lang_thresholds[class_name] = 0.6
                     continue
                 
                 # Calculate class distribution
                 pos_ratio = np.mean(class_labels)
                 
-                # Find optimal threshold using weighted F1 score
+                # Find optimal threshold using weighted scores
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 f1_scores = []
                 precision_scores = []
+                recall_scores = []
                 
                 # Calculate class weights
                 class_weights = compute_class_weight(
@@ -190,69 +236,67 @@ def evaluate_language(args):
                             sample_weight=sample_weights,
                             zero_division=0
                         )
-                        # Calculate soft precision
+                        # Calculate soft metrics
                         soft_precision = calculate_soft_precision(
                             class_labels.reshape(-1, 1),
                             binary_preds.reshape(-1, 1)
                         )
-                        # Weighted combination favoring precision
-                        combined_score = (f1 + soft_precision * 2) / 3
+                        soft_recall = calculate_soft_recall(
+                            class_labels.reshape(-1, 1),
+                            binary_preds.reshape(-1, 1)
+                        )
+                        
+                        # Balanced combination favoring recall for rare classes
+                        if pos_ratio < 0.1:  # For rare classes
+                            combined_score = (f1 + soft_recall * 3) / 4
+                        else:  # For more common classes
+                            combined_score = (f1 + soft_precision + soft_recall * 2) / 4
+                            
                         f1_scores.append(combined_score)
                         precision_scores.append(precision)
+                        recall_scores.append(recall)
                     except Exception:
                         f1_scores.append(0.0)
                         precision_scores.append(0.0)
+                        recall_scores.append(0.0)
                 
-                # Select threshold that maximizes combined score while maintaining good precision
+                # Select threshold that balances metrics
                 best_idx = np.argmax(f1_scores)
                 initial_threshold = thresh[best_idx]
                 
-                # Adjust threshold to favor precision
-                precision_threshold = thresh[np.argmax(precision_scores)]
-                final_threshold = (initial_threshold + precision_threshold * 2) / 3
+                # Find high recall threshold
+                recall_threshold = thresh[np.argmax(recall_scores)]
                 
-                # Test the threshold
-                test_preds = (class_preds > final_threshold).astype(int)
-                if test_preds.sum() == 0:
-                    print(f"Warning: No positive predictions for {class_name} in {lang_name}, adjusting threshold")
-                    
-                    if pos_ratio > 0:
-                        percentiles = [90, 85, 80, 75, 70]
-                        best_threshold = final_threshold
-                        min_ratio_diff = float('inf')
-                        
-                        for p in percentiles:
-                            threshold = np.percentile(class_preds, p)
-                            pred_ratio = np.mean(class_preds > threshold)
-                            ratio_diff = abs(pred_ratio - pos_ratio)
-                            
-                            if ratio_diff < min_ratio_diff:
-                                min_ratio_diff = ratio_diff
-                                best_threshold = threshold
-                        
-                        lang_thresholds[class_name] = max(best_threshold, 0.2)
-                    else:
-                        lang_thresholds[class_name] = 0.7
-                else:
-                    lang_thresholds[class_name] = final_threshold
+                # Adjust threshold based on class frequency
+                if pos_ratio < 0.1:  # Rare class
+                    final_threshold = (initial_threshold + recall_threshold * 3) / 4
+                else:  # More common class
+                    final_threshold = (initial_threshold + recall_threshold) / 2
+                
+                # Ensure threshold isn't too high for rare classes
+                if pos_ratio < 0.05:  # Very rare class
+                    final_threshold = min(final_threshold, 0.3)
+                
+                lang_thresholds[class_name] = final_threshold
                 
                 # Validate final threshold
-                final_preds = (class_preds > lang_thresholds[class_name]).astype(int)
+                final_preds = (class_preds > final_threshold).astype(int)
                 pred_ratio = np.mean(final_preds)
-                print(f"  {class_name}: threshold={lang_thresholds[class_name]:.4f}, "
+                print(f"  {class_name}: threshold={final_threshold:.4f}, "
                       f"pred_ratio={pred_ratio:.4f}, true_ratio={pos_ratio:.4f}")
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
+                # Lower default thresholds to improve recall
                 default_thresholds = {
-                    'toxic': 0.4,
-                    'severe_toxic': 0.25,
-                    'obscene': 0.47,
-                    'threat': 0.35,
-                    'insult': 0.4,
-                    'identity_hate': 0.25
+                    'toxic': 0.35,
+                    'severe_toxic': 0.2,
+                    'obscene': 0.4,
+                    'threat': 0.25,
+                    'insult': 0.35,
+                    'identity_hate': 0.2
                 }
-                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.5)
+                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.4)
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
@@ -1015,7 +1059,7 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
     return metrics
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
-    """Calculate detailed metrics for a specific class with more forgiving precision"""
+    """Calculate detailed metrics for a specific class with more forgiving precision and recall"""
     try:
         # Calculate initial class weights
         unique_classes = np.unique(labels)
@@ -1039,21 +1083,29 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
             sample_weight=sample_weights
         )
         
-        # Calculate soft precision
+        # Calculate soft metrics
         soft_precision = calculate_soft_precision(
             labels.reshape(-1, 1), 
             binary_predictions.reshape(-1, 1)
         )
         
-        # Use weighted average of standard and soft precision
+        soft_recall = calculate_soft_recall(
+            labels.reshape(-1, 1),
+            binary_predictions.reshape(-1, 1)
+        )
+        
+        # Use weighted average of standard and soft metrics
         combined_precision = (precision + soft_precision * 2) / 3
+        combined_recall = (recall + soft_recall * 2) / 3
         
         metrics.update({
-            'precision': combined_precision,  # More forgiving combined precision
-            'soft_precision': soft_precision,  # Additional soft precision metric
-            'standard_precision': precision,  # Keep original for reference
-            'recall': recall,
-            'f1': (2 * combined_precision * recall) / (combined_precision + recall) if (combined_precision + recall) > 0 else 0.0
+            'precision': combined_precision,
+            'soft_precision': soft_precision,
+            'standard_precision': precision,
+            'recall': combined_recall,
+            'soft_recall': soft_recall,
+            'standard_recall': recall,
+            'f1': (2 * combined_precision * combined_recall) / (combined_precision + combined_recall) if (combined_precision + combined_recall) > 0 else 0.0
         })
         
         tn, fp, fn, tp = confusion_matrix(
@@ -1087,6 +1139,8 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
             'soft_precision': 0.0,
             'standard_precision': 0.0,
             'recall': 0.0,
+            'soft_recall': 0.0,
+            'standard_recall': 0.0,
             'f1': 0.0,
             'specificity': 0.0,
             'npv': 0.0,
