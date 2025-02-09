@@ -63,7 +63,7 @@ def load_model_and_data():
 
             mixed_precision="fp16",
             activation_checkpointing=True,
-            epochs=2  # Number of validation epochs
+            epochs=1  # Number of validation epochs
 
         )
         
