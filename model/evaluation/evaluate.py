@@ -189,7 +189,7 @@ def calculate_soft_recall(y_true, y_pred, partial_match_weight=0.5):
         return 0.0
 
 def evaluate_language(args):
-    """Evaluate model performance for a single language with more forgiving metrics"""
+    """Evaluate model performance for a single language with balanced metrics"""
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
@@ -204,9 +204,9 @@ def evaluate_language(args):
                 if len(np.unique(class_labels)) < 2:
                     print(f"Warning: Only one class present for {class_name} in {lang_name}")
                     if class_labels[0] == 1:
-                        lang_thresholds[class_name] = 0.4  # Lower threshold for positive-only classes
+                        lang_thresholds[class_name] = 0.5  # Balanced threshold for positive-only
                     else:
-                        lang_thresholds[class_name] = 0.6
+                        lang_thresholds[class_name] = 0.7
                     continue
                 
                 # Calculate class distribution
@@ -217,6 +217,7 @@ def evaluate_language(args):
                 f1_scores = []
                 precision_scores = []
                 recall_scores = []
+                balanced_scores = []
                 
                 # Calculate class weights
                 class_weights = compute_class_weight(
@@ -236,6 +237,7 @@ def evaluate_language(args):
                             sample_weight=sample_weights,
                             zero_division=0
                         )
+                        
                         # Calculate soft metrics
                         soft_precision = calculate_soft_precision(
                             class_labels.reshape(-1, 1),
@@ -246,36 +248,68 @@ def evaluate_language(args):
                             binary_preds.reshape(-1, 1)
                         )
                         
-                        # Balanced combination favoring recall for rare classes
-                        if pos_ratio < 0.1:  # For rare classes
-                            combined_score = (f1 + soft_recall * 3) / 4
-                        else:  # For more common classes
-                            combined_score = (f1 + soft_precision + soft_recall * 2) / 4
-                            
-                        f1_scores.append(combined_score)
+                        # Balanced combination based on class frequency
+                        if pos_ratio < 0.05:  # Very rare class
+                            # For very rare classes, we need higher precision to avoid false positives
+                            combined_score = (f1 + soft_precision * 2 + soft_recall) / 4
+                        elif pos_ratio < 0.1:  # Rare class
+                            # For rare classes, balance precision and recall
+                            combined_score = (f1 + soft_precision + soft_recall) / 3
+                        else:  # More common class
+                            # For common classes, maintain high precision
+                            combined_score = (f1 + soft_precision * 3 + soft_recall) / 5
+                        
+                        # Additional score that heavily weights precision
+                        precision_weighted_score = precision * 0.7 + recall * 0.3
+                        
+                        f1_scores.append(f1)
                         precision_scores.append(precision)
                         recall_scores.append(recall)
+                        balanced_scores.append(precision_weighted_score)
                     except Exception:
                         f1_scores.append(0.0)
                         precision_scores.append(0.0)
                         recall_scores.append(0.0)
+                        balanced_scores.append(0.0)
                 
-                # Select threshold that balances metrics
-                best_idx = np.argmax(f1_scores)
-                initial_threshold = thresh[best_idx]
+                # Find optimal thresholds for different metrics
+                f1_threshold = thresh[np.argmax(f1_scores)]
+                precision_threshold = thresh[np.argmax(precision_scores)]
+                balanced_threshold = thresh[np.argmax(balanced_scores)]
                 
-                # Find high recall threshold
-                recall_threshold = thresh[np.argmax(recall_scores)]
+                # Set minimum precision threshold based on class frequency
+                min_precision_threshold = 0.5 if pos_ratio < 0.1 else 0.4
                 
-                # Adjust threshold based on class frequency
-                if pos_ratio < 0.1:  # Rare class
-                    final_threshold = (initial_threshold + recall_threshold * 3) / 4
-                else:  # More common class
-                    final_threshold = (initial_threshold + recall_threshold) / 2
-                
-                # Ensure threshold isn't too high for rare classes
+                # Combine thresholds with emphasis on precision
                 if pos_ratio < 0.05:  # Very rare class
-                    final_threshold = min(final_threshold, 0.3)
+                    final_threshold = max(
+                        (f1_threshold + precision_threshold * 3 + balanced_threshold * 2) / 6,
+                        min_precision_threshold
+                    )
+                elif pos_ratio < 0.1:  # Rare class
+                    final_threshold = max(
+                        (f1_threshold + precision_threshold * 2 + balanced_threshold) / 4,
+                        min_precision_threshold
+                    )
+                else:  # Common class
+                    final_threshold = max(
+                        (f1_threshold + precision_threshold + balanced_threshold) / 3,
+                        0.35  # Base minimum threshold
+                    )
+                
+                # Default thresholds as fallback
+                default_thresholds = {
+                    'toxic': 0.45,
+                    'severe_toxic': 0.40,
+                    'obscene': 0.50,
+                    'threat': 0.45,
+                    'insult': 0.45,
+                    'identity_hate': 0.40
+                }
+                
+                # Ensure threshold isn't below class-specific minimum
+                min_threshold = default_thresholds.get(class_name, 0.4)
+                final_threshold = max(final_threshold, min_threshold)
                 
                 lang_thresholds[class_name] = final_threshold
                 
@@ -287,16 +321,16 @@ def evaluate_language(args):
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                # Lower default thresholds to improve recall
+                # Use more conservative default thresholds
                 default_thresholds = {
-                    'toxic': 0.35,
-                    'severe_toxic': 0.2,
-                    'obscene': 0.4,
-                    'threat': 0.25,
-                    'insult': 0.35,
-                    'identity_hate': 0.2
+                    'toxic': 0.45,
+                    'severe_toxic': 0.40,
+                    'obscene': 0.50,
+                    'threat': 0.45,
+                    'insult': 0.45,
+                    'identity_hate': 0.40
                 }
-                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.4)
+                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.45)
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
@@ -614,11 +648,9 @@ def evaluate_model(model, test_loader, device, output_dir):
                 class_weights.append(0.0)
         
         # Calculate macro and weighted specificity
-        results['overall'].update({
-            'specificity_macro': np.mean(specificities),
-            'specificity_weighted': (np.sum(weighted_specificities) / np.sum(class_weights) 
-                                   if np.sum(class_weights) > 0 else 0.0)
-        })
+        results['overall']['specificity_macro'] = np.mean(specificities)
+        results['overall']['specificity_weighted'] = (np.sum(weighted_specificities) / np.sum(class_weights) 
+                                                    if np.sum(class_weights) > 0 else 0.0)
         
         # Add per-class specificity
         for i, class_name in enumerate(toxicity_types):
