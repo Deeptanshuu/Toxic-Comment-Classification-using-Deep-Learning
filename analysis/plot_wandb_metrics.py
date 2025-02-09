@@ -17,14 +17,18 @@ def analyze_wandb_metrics(run_path: str = None):
         if run_path:
             run = api.run(run_path)
         else:
+            # Get all runs and sort by creation time (newest first)
             runs = api.runs("toxic-comment-classification")
             if not runs:
                 raise ValueError("No runs found in the project")
-            run = runs[0]  # Get latest run
+            # Sort runs by creation time (newest first)
+            sorted_runs = sorted(runs, key=lambda x: x.created_at, reverse=True)
+            run = sorted_runs[0]  # Get the most recent run
         
         print("\n=== Latest Run ===")
         print(f"Run ID: {run.id}")
         print(f"Run Name: {run.name}")
+        print(f"Created: {run.created_at}")
         
         # Get history
         history = pd.DataFrame(run.scan_history())
