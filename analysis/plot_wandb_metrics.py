@@ -1,9 +1,9 @@
 import wandb
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import os
 
 def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
     """
@@ -30,22 +30,42 @@ def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
     # Get history
     history = pd.DataFrame(run.scan_history())
     
+    # Set up matplotlib style
+    plt.style.use('default')
+    plt.rcParams.update({
+        'figure.figsize': (15, 12),
+        'axes.grid': True,
+        'grid.alpha': 0.3,
+        'lines.linewidth': 2,
+        'font.size': 10,
+        'axes.titlesize': 12,
+        'axes.labelsize': 11
+    })
+    
     # Create figure with subplots
-    plt.style.use('seaborn')
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
     fig.suptitle('Training Metrics', fontsize=16, y=0.95)
+    
+    # Define colors
+    colors = {
+        'main_line': '#1f77b4',  # Blue
+        'avg_line': '#ff7f0e',   # Orange
+        'annotation': '#2ca02c',  # Green
+        'grid': '#cccccc'        # Light gray
+    }
     
     # 1. Plot Validation Loss
     if 'val/loss' in history.columns:
         val_loss = history['val/loss'].dropna()
         epochs = range(1, len(val_loss) + 1)
-        ax1.plot(epochs, val_loss, 'b-', linewidth=2, label='Validation Loss')
+        ax1.plot(epochs, val_loss, color=colors['main_line'], label='Validation Loss')
         
         # Add moving average
         window_size = min(3, len(val_loss))
         if window_size > 1:
             moving_avg = val_loss.rolling(window=window_size).mean()
-            ax1.plot(epochs, moving_avg, 'r--', linewidth=1.5, label='Moving Average')
+            ax1.plot(epochs, moving_avg, '--', color=colors['avg_line'], 
+                    alpha=0.7, label='Moving Average')
         
         # Add min point annotation
         min_loss = val_loss.min()
@@ -54,38 +74,37 @@ def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
                     xy=(min_epoch, min_loss),
                     xytext=(10, 10),
                     textcoords='offset points',
-                    bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.5),
-                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec=colors['annotation'], alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', color=colors['annotation']))
         
         ax1.set_title('Validation Loss')
         ax1.set_xlabel('Epoch')
         ax1.set_ylabel('Loss')
-        ax1.grid(True)
         ax1.legend()
     
     # 2. Plot Training Loss
     if 'train/epoch_loss' in history.columns:
         train_loss = history['train/epoch_loss'].dropna()
         epochs = range(1, len(train_loss) + 1)
-        ax2.plot(epochs, train_loss, 'g-', linewidth=2, label='Training Loss')
+        ax2.plot(epochs, train_loss, color=colors['main_line'], label='Training Loss')
         
         # Add moving average
         window_size = min(3, len(train_loss))
         if window_size > 1:
             moving_avg = train_loss.rolling(window=window_size).mean()
-            ax2.plot(epochs, moving_avg, 'r--', linewidth=1.5, label='Moving Average')
+            ax2.plot(epochs, moving_avg, '--', color=colors['avg_line'], 
+                    alpha=0.7, label='Moving Average')
         
         ax2.set_title('Training Loss')
         ax2.set_xlabel('Epoch')
         ax2.set_ylabel('Loss')
-        ax2.grid(True)
         ax2.legend()
     
     # 3. Plot AUC
     if 'val/auc' in history.columns:
         auc = history['val/auc'].dropna()
         epochs = range(1, len(auc) + 1)
-        ax3.plot(epochs, auc, 'purple', linewidth=2, label='Validation AUC')
+        ax3.plot(epochs, auc, color=colors['main_line'], label='Validation AUC')
         
         # Add max point annotation
         max_auc = auc.max()
@@ -94,28 +113,29 @@ def plot_wandb_metrics(run_path: str = None, save_dir: str = 'images'):
                     xy=(max_epoch, max_auc),
                     xytext=(10, 10),
                     textcoords='offset points',
-                    bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.5),
-                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec=colors['annotation'], alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', color=colors['annotation']))
         
         ax3.set_title('Validation AUC')
         ax3.set_xlabel('Epoch')
         ax3.set_ylabel('AUC')
-        ax3.grid(True)
         ax3.legend()
     
     # 4. Plot Learning Rate
     if 'train/learning_rate/base' in history.columns:
         lr = history['train/learning_rate/base'].dropna()
         steps = range(1, len(lr) + 1)
-        ax4.plot(steps, lr, 'orange', linewidth=2, label='Learning Rate')
+        ax4.plot(steps, lr, color=colors['main_line'], label='Learning Rate')
         ax4.set_title('Learning Rate Schedule')
         ax4.set_xlabel('Step')
         ax4.set_ylabel('Learning Rate')
-        ax4.grid(True)
         ax4.legend()
     
     # Adjust layout
     plt.tight_layout()
+    
+    # Create save directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
     
     # Save plots
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
