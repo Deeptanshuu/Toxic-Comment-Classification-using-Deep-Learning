@@ -1,7 +1,6 @@
+import pandas as pd
 import torch
 import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging
@@ -30,8 +29,7 @@ logger = logging.getLogger(__name__)
 def setup_plot_style():
     """Configure plot styling"""
     plt.style.use('seaborn-darkgrid')
-    sns.set_palette("husl")
-    plt.rcParams['figure.figsize'] = (12, 6)
+    plt.rcParams['figure.figsize'] = (12, 12)
     plt.rcParams['font.size'] = 12
 
 def setup_wandb():
@@ -55,16 +53,17 @@ def load_model_and_data():
     try:
         # Initialize config with training settings
         config = TrainingConfig(
-            batch_size=32,
+            batch_size=8,
             num_workers=16,
             lr=2e-5,
-            weight_decay=0.005,
+            weight_decay=0.01,
             max_grad_norm=1.0,
             warmup_ratio=0.1,
             label_smoothing=0.01,
-            mixed_precision="bf16",
+            mixed_precision="fp16",
             activation_checkpointing=True,
             epochs=4  # Number of validation epochs
+
         )
         
         # Load validation data
@@ -149,7 +148,6 @@ def collect_validation_losses(model, val_loader, device, optimizer, scheduler, s
         
         for epoch in range(config.epochs):
             logger.info(f"\nStarting validation epoch {epoch+1}/{config.epochs}")
-            step_losses = []
             total_loss = 0
             num_batches = len(val_loader)
             epoch_start_time = datetime.now()
@@ -166,14 +164,6 @@ def collect_validation_losses(model, val_loader, device, optimizer, scheduler, s
                         loss = outputs['loss'].item()
                     
                     total_loss += loss
-                    
-                    # Store step and loss
-                    step_losses.append({
-                        'epoch': epoch,
-                        'step': step,
-                        'loss': loss,
-                        'global_step': epoch * num_batches + step
-                    })
                     
                     # Calculate running averages
                     avg_loss = total_loss / (step + 1)
@@ -223,73 +213,41 @@ def collect_validation_losses(model, val_loader, device, optimizer, scheduler, s
                 'val/epoch_time': epoch_losses[-1]['elapsed_time']
             })
             
-            # Extend all_losses with step losses
-            all_losses.extend(step_losses)
-            
             # Clear GPU memory after each epoch
             torch.cuda.empty_cache()
         
-        return pd.DataFrame(all_losses), pd.DataFrame(epoch_losses)
+        return epoch_losses
         
     except Exception as e:
         logger.error(f"Error collecting validation losses: {str(e)}")
         raise
 
-def plot_validation_losses(step_losses_df, epoch_losses_df):
-    """Plot validation step and epoch losses"""
+def plot_validation_losses(epoch_losses):
+    """Plot validation epoch losses"""
     try:
         setup_plot_style()
         
-        # Create a figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
+        # Create figure
+        fig, ax = plt.subplots()
         
-        # Plot step losses
-        sns.lineplot(
-            data=step_losses_df,
-            x='global_step',
-            y='loss',
-            label='Step Loss',
-            alpha=0.6,
-            color='blue',
-            ax=ax1
-        )
-        
-        # Add trend line for step losses
-        z = np.polyfit(step_losses_df['global_step'], step_losses_df['loss'], 1)
-        p = np.poly1d(z)
-        ax1.plot(step_losses_df['global_step'], p(step_losses_df['global_step']), 
-                "r--", alpha=0.8, label='Step Loss Trend')
-        
-        # Customize step loss plot
-        ax1.set_title('Validation Step Losses')
-        ax1.set_xlabel('Global Step')
-        ax1.set_ylabel('Loss')
-        ax1.legend()
-        ax1.grid(True, linestyle='--', alpha=0.7)
+        # Extract data
+        epochs = [d['epoch'] for d in epoch_losses]
+        losses = [d['avg_loss'] for d in epoch_losses]
         
         # Plot epoch losses
-        sns.lineplot(
-            data=epoch_losses_df,
-            x='epoch',
-            y='avg_loss',
-            label='Epoch Average Loss',
-            marker='o',
-            color='green',
-            ax=ax2
-        )
+        ax.plot(epochs, losses, 'go-', label='Epoch Average Loss', linewidth=2, markersize=8)
         
-        # Add trend line for epoch losses
-        z = np.polyfit(epoch_losses_df['epoch'], epoch_losses_df['avg_loss'], 1)
+        # Add trend line
+        z = np.polyfit(epochs, losses, 1)
         p = np.poly1d(z)
-        ax2.plot(epoch_losses_df['epoch'], p(epoch_losses_df['epoch']), 
-                "r--", alpha=0.8, label='Epoch Loss Trend')
+        ax.plot(epochs, p(epochs), "r--", alpha=0.8, label='Loss Trend')
         
-        # Customize epoch loss plot
-        ax2.set_title('Validation Epoch Losses')
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Average Loss')
-        ax2.legend()
-        ax2.grid(True, linestyle='--', alpha=0.7)
+        # Customize plot
+        ax.set_title('Validation Epoch Losses')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Average Loss')
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.7)
         
         # Adjust layout
         plt.tight_layout()
@@ -298,79 +256,55 @@ def plot_validation_losses(step_losses_df, epoch_losses_df):
         output_dir = Path('analysis/plots')
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save plots
+        # Save plot
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_path = output_dir / f'validation_losses_{timestamp}.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         logger.info(f"Plot saved to {output_path}")
         
-        # Log plots to wandb
+        # Log plot to wandb
         wandb.log({
-            "val/loss_plots": wandb.Image(str(output_path))
+            "val/loss_plot": wandb.Image(str(output_path))
         })
         
-        # Save the loss data
-        step_losses_df.to_csv(output_dir / f'validation_step_losses_{timestamp}.csv', index=False)
-        epoch_losses_df.to_csv(output_dir / f'validation_epoch_losses_{timestamp}.csv', index=False)
-        logger.info(f"Loss data saved to {output_dir}")
-        
-        # Show plots
+        # Show plot
         plt.show()
         
     except Exception as e:
         logger.error(f"Error plotting validation losses: {str(e)}")
         raise
 
-def calculate_loss_statistics(step_losses_df, epoch_losses_df):
-    """Calculate and print loss statistics for both steps and epochs"""
+def calculate_loss_statistics(epoch_losses):
+    """Calculate and print loss statistics"""
     try:
-        # Step-wise statistics
-        step_stats = {
-            'Step Mean': step_losses_df['loss'].mean(),
-            'Step Std': step_losses_df['loss'].std(),
-            'Step Min': step_losses_df['loss'].min(),
-            'Step Max': step_losses_df['loss'].max(),
-            'Step Median': step_losses_df['loss'].median(),
-            'Step 25th Percentile': step_losses_df['loss'].quantile(0.25),
-            'Step 75th Percentile': step_losses_df['loss'].quantile(0.75)
-        }
+        losses = [d['avg_loss'] for d in epoch_losses]
         
-        # Epoch-wise statistics
-        epoch_stats = {
-            'Epoch Mean': epoch_losses_df['avg_loss'].mean(),
-            'Epoch Std': epoch_losses_df['avg_loss'].std(),
-            'Epoch Min': epoch_losses_df['avg_loss'].min(),
-            'Epoch Max': epoch_losses_df['avg_loss'].max(),
-            'Best Epoch': epoch_losses_df.loc[epoch_losses_df['avg_loss'].idxmin(), 'epoch']
+        stats = {
+            'Mean Loss': np.mean(losses),
+            'Std Loss': np.std(losses),
+            'Min Loss': np.min(losses),
+            'Max Loss': np.max(losses),
+            'Best Epoch': epoch_losses[np.argmin(losses)]['epoch']
         }
         
         # Log statistics to wandb
         wandb.log({
-            'val/step_mean_loss': step_stats['Step Mean'],
-            'val/step_std_loss': step_stats['Step Std'],
-            'val/step_min_loss': step_stats['Step Min'],
-            'val/step_max_loss': step_stats['Step Max'],
-            'val/step_median_loss': step_stats['Step Median'],
-            'val/epoch_mean_loss': epoch_stats['Epoch Mean'],
-            'val/epoch_std_loss': epoch_stats['Epoch Std'],
-            'val/epoch_min_loss': epoch_stats['Epoch Min'],
-            'val/epoch_max_loss': epoch_stats['Epoch Max'],
-            'val/best_epoch': epoch_stats['Best Epoch']
+            'val/mean_loss': stats['Mean Loss'],
+            'val/std_loss': stats['Std Loss'],
+            'val/min_loss': stats['Min Loss'],
+            'val/max_loss': stats['Max Loss'],
+            'val/best_epoch': stats['Best Epoch']
         })
         
         # Print statistics
-        print("\nStep-wise Validation Loss Statistics:")
-        for metric_name, value in step_stats.items():
-            print(f"{metric_name}: {value:.4f}")
-        
-        print("\nEpoch-wise Validation Loss Statistics:")
-        for metric_name, value in epoch_stats.items():
+        print("\nValidation Loss Statistics:")
+        for metric_name, value in stats.items():
             if metric_name == 'Best Epoch':
                 print(f"{metric_name}: {int(value)}")
             else:
                 print(f"{metric_name}: {value:.4f}")
         
-        return {'step_stats': step_stats, 'epoch_stats': epoch_stats}
+        return stats
         
     except Exception as e:
         logger.error(f"Error calculating statistics: {str(e)}")
@@ -387,17 +321,17 @@ def main():
         
         # Collect validation losses
         logger.info("Collecting validation losses...")
-        step_losses_df, epoch_losses_df = collect_validation_losses(
+        epoch_losses = collect_validation_losses(
             model, val_loader, device, optimizer, scheduler, scaler, config
         )
         
         # Plot losses
         logger.info("Plotting validation losses...")
-        plot_validation_losses(step_losses_df, epoch_losses_df)
+        plot_validation_losses(epoch_losses)
         
         # Calculate and print statistics
         logger.info("Calculating statistics...")
-        calculate_loss_statistics(step_losses_df, epoch_losses_df)
+        calculate_loss_statistics(epoch_losses)
         
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
