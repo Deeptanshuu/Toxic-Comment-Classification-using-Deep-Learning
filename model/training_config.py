@@ -400,11 +400,11 @@ class TrainingConfig:
     freeze_layers: int = 8
     
     # Training parameters
-    batch_size: int = 32
+    batch_size: int = 64
     grad_accum_steps: int = 1
-    epochs: int = 6
+    epochs: int = 8
     lr: float = 2e-5
-    weight_decay: float = 0.01
+    weight_decay: float = 0.005
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
     label_smoothing: float = 0.01
@@ -413,7 +413,7 @@ class TrainingConfig:
     lang_lr_multipliers: Dict[str, float] = None
     
     # System parameters
-    num_workers: int = 12
+    num_workers: int = 16
     fp16: bool = False
     mixed_precision: str = "no"
     device: str = None
@@ -563,13 +563,7 @@ class TrainingConfig:
             # Initialize with defaults if not set
             if self.lang_lr_multipliers is None:
                 self.lang_lr_multipliers = {
-                    'en': 1.2,  # Higher LR for English (most data)
-                    'ru': 0.9,  # Lower for Russian (different script)
-                    'tr': 0.95, # Slightly lower for Turkish
-                    'es': 1.0,  # Default for Spanish
-                    'fr': 1.0,  # Default for French
-                    'it': 0.95, # Slightly lower for Italian (less data)
-                    'pt': 0.95, # Slightly lower for Portuguese (less data)
+                    'en': 0.9,  # Higher LR for English (less data)
                     'default': 1.0  # Default multiplier for other languages
                 }
             

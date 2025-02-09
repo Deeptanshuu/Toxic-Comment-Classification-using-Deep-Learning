@@ -29,10 +29,9 @@ from sklearn.metrics import roc_auc_score
 import numpy as np
 import pandas as pd
 import wandb
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 import os
 import warnings
-from torch.amp import autocast, GradScaler
 from datetime import datetime
 import GPUtil
 import json
@@ -52,6 +51,7 @@ from model.language_aware_transformer import LanguageAwareTransformer
 # Set environment variables if not already set
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.environ.get('TF_CPP_MIN_LOG_LEVEL', '2')
 warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0")
+warnings.filterwarnings("ignore", message="AVX2 detected")
 
 # Initialize global variables with None
 _model = None
@@ -111,72 +111,6 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-@dataclass
-class Config:
-    model_name: str = "xlm-roberta-large"
-    max_length: int = 128
-    batch_size: int = 32
-    grad_accum_steps: int = 4
-    epochs: int = 10
-    lr: float = 1e-5
-    warmup_ratio: float = 0.1
-    weight_decay: float = 0.01
-    max_grad_norm: float = 1.0
-    label_smoothing: float = 0.01
-    device: str = None
-    fp16: bool = True
-    mixed_precision: str = 'bf16'
-    num_workers: int = 4
-    pin_memory: bool = True
-    prefetch_factor: int = 2
-    activation_checkpointing: bool = False
-    tensor_float_32: bool = True
-    gc_frequency: int = 100
-    freeze_layers: int = 0
-    
-    def __post_init__(self):
-        try:
-            # Load language-specific weights
-            weights_path = Path('weights/language_class_weights.json')
-            if not weights_path.exists():
-                raise FileNotFoundError(f"Weights file not found: {weights_path}")
-                
-            with open(weights_path, 'r') as f:
-                weights_data = json.load(f)
-                self.lang_weights = weights_data['weights']
-        except Exception as e:
-            print(f"Error loading language weights: {str(e)}")
-            print("Using default weights...")
-            self.lang_weights = self._get_default_weights()
-            
-        # Set device with error handling
-        if torch.cuda.is_available():
-            try:
-                torch.cuda.init()
-                self.device = torch.device('cuda')
-            except Exception as e:
-                print(f"Warning: CUDA initialization failed: {str(e)}")
-                self.device = torch.device('cpu')
-        
-        # Set TF32 if requested and available
-        if torch.cuda.is_available() and self.tensor_float_32:
-            if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-            else:
-                print("Warning: TF32 not supported on this GPU. Disabling.")
-                self.tensor_float_32 = False
-            
-        # Define toxicity labels
-        self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-        self.num_labels = len(self.toxicity_labels)
-    
-    def _get_default_weights(self):
-        """Provide default weights if loading fails"""
-        return {
-            'en': {label: {'0': 0.5, '1': 1.0} for label in self.toxicity_labels},
-            'default': {label: {'0': 0.5, '1': 1.0} for label in self.toxicity_labels}
-        }
 
 def init_model(config):
     """Initialize model with error handling"""
@@ -961,9 +895,13 @@ class WeightedFocalLoss(nn.Module):
         
         # Low-resource language boost factors
         self.lang_boost = {
-            'tr': 1.2,  # Turkish has fewer samples
-            'it': 1.3,  # Italian has even fewer
-            'pt': 1.3   # Portuguese similar to Italian
+            'en': 1.2,  # English has more data
+            'ru': 1.1,  # Russian has more data
+            'tr': 1.1,  # Turkish has more data
+            'es': 1.0,  # Spanish has moderate data
+            'fr': 1.0,  # French has moderate data
+            'it': 1.0,  # Italian has moderate data
+            'pt': 1.0   # Portuguese similar to Italian
         }
     
     def calculate_alpha_weights(self, langs, labels):
