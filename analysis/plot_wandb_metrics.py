@@ -4,7 +4,7 @@ from collections import defaultdict
 
 def analyze_wandb_metrics(run_path: str = None):
     """
-    Print all available metrics from the latest wandb run.
+    Print all available metrics from the latest wandb run with validation metrics.
     
     Args:
         run_path (str): Optional path to specific wandb run
@@ -21,14 +21,29 @@ def analyze_wandb_metrics(run_path: str = None):
             runs = api.runs("toxic-comment-classification")
             if not runs:
                 raise ValueError("No runs found in the project")
+            
             # Sort runs by creation time (newest first)
             sorted_runs = sorted(runs, key=lambda x: x.created_at, reverse=True)
-            run = sorted_runs[0]  # Get the most recent run
+            
+            # Find the latest run with validation metrics
+            selected_run = None
+            for run in sorted_runs:
+                history = pd.DataFrame(run.scan_history())
+                if any(col.startswith('val/') for col in history.columns):
+                    selected_run = run
+                    break
+            
+            if selected_run is None:
+                print("\nWarning: No runs found with validation metrics. Showing latest run instead.")
+                selected_run = sorted_runs[0]
+            
+            run = selected_run
         
-        print("\n=== Latest Run ===")
+        print("\n=== Selected Run ===")
         print(f"Run ID: {run.id}")
         print(f"Run Name: {run.name}")
         print(f"Created: {run.created_at}")
+        print(f"Status: {run.state}")
         
         # Get history
         history = pd.DataFrame(run.scan_history())
@@ -49,6 +64,13 @@ def analyze_wandb_metrics(run_path: str = None):
             print(f"\n{category.upper()}:")
             for metric in sorted(columns):
                 print(f"  {metric}")
+        
+        # Print number of steps/epochs
+        print("\n=== Run Statistics ===")
+        print(f"Total Steps: {len(history)}")
+        if 'train/epoch' in history.columns:
+            max_epoch = history['train/epoch'].max()
+            print(f"Total Epochs: {max_epoch}")
         
         return history
         
