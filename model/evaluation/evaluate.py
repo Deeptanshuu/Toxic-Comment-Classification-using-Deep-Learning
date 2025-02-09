@@ -419,7 +419,7 @@ def evaluate_model(model, test_loader, device, output_dir):
             
         eval_args.append((
             lang,
-            id_to_lang.get(int(lang),
+            id_to_lang.get(int(lang), f'Unknown ({lang})'),
             lang_preds,
             lang_labels,
             toxicity_types
