@@ -53,16 +53,17 @@ def load_model_and_data():
     try:
         # Initialize config with training settings
         config = TrainingConfig(
-            batch_size=32,
+            batch_size=16,
             num_workers=16,
             lr=2e-5,
             weight_decay=0.01,
             max_grad_norm=1.0,
             warmup_ratio=0.1,
             label_smoothing=0.01,
+
             mixed_precision="fp16",
             activation_checkpointing=True,
-            epochs=4  # Number of validation epochs
+            epochs=2  # Number of validation epochs
 
         )
         
