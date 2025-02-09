@@ -1150,25 +1150,61 @@ def plot_metrics(results, output_dir, toxicity_types=None):
         plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
         plt.close()
     
-    # Plot per-language performance if we have language metrics
+    # Enhanced language performance visualization
     if results.get('per_language'):
-        plt.figure(figsize=(10, 6))
+        # Prepare data for plotting
         languages = list(results['per_language'].keys())
-        auc_scores = [results['per_language'][lang].get('auc', np.nan) for lang in languages]
+        metrics_to_plot = ['auc', 'f1', 'precision', 'recall']
+        
+        # Create figure with subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12), height_ratios=[2, 1])
+        
+        # Plot 1: Main metrics by language
+        x = np.arange(len(languages))
+        width = 0.2  # Width of bars
+        
+        for i, metric in enumerate(metrics_to_plot):
+            values = []
+            errors = []
+            for lang in languages:
+                metric_value = results['per_language'][lang].get(metric, 0)
+                metric_ci = results['per_language'][lang].get(f'{metric}_ci', [metric_value, metric_value])
+                values.append(metric_value)
+                errors.append((metric_value - metric_ci[0], metric_ci[1] - metric_value))
+            
+            errors = np.array(errors).T
+            ax1.bar(x + i*width, values, width, label=metric.upper(),
+                   yerr=errors, capsize=5)
+        
+        # Customize first subplot
+        ax1.set_ylabel('Score')
+        ax1.set_title('Language Performance Metrics')
+        ax1.set_xticks(x + width * (len(metrics_to_plot)-1)/2)
+        ax1.set_xticklabels([f'Lang {lang}' for lang in languages], rotation=45)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Sample distribution
         sample_counts = [results['per_language'][lang].get('sample_count', 0) for lang in languages]
+        total_samples = sum(sample_counts)
+        percentages = [count/total_samples * 100 for count in sample_counts]
         
-        # Only create bubble plot if we have valid data
-        valid_data = [(lang, auc, count) for lang, auc, count in zip(languages, auc_scores, sample_counts)
-                     if not np.isnan(auc) and count > 0]
+        bars = ax2.bar(x, percentages, width*2)
         
-        if valid_data:
-            langs, aucs, counts = zip(*valid_data)
-            plt.scatter(langs, aucs, s=[count/50 for count in counts], alpha=0.6)
-            plt.title('AUC Scores by Language (bubble size = sample count)')
-            plt.xticks(rotation=45)
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(plots_dir, 'language_performance.png'))
+        # Add value labels on the bars
+        for i, (count, percentage) in enumerate(zip(sample_counts, percentages)):
+            ax2.text(i, percentage, f'{count:,}\n({percentage:.1f}%)', 
+                    ha='center', va='bottom')
+        
+        # Customize second subplot
+        ax2.set_ylabel('Sample Distribution (%)')
+        ax2.set_title('Dataset Distribution Across Languages')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels([f'Lang {lang}' for lang in languages], rotation=45)
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'language_performance.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
     # Create correlation heatmaps if we have language metrics
@@ -1251,7 +1287,7 @@ def plot_metrics(results, output_dir, toxicity_types=None):
                     plt.savefig(os.path.join(plots_dir, 'class_language_performance.png'))
                 plt.close()
     
-    # 3. Performance Distribution Plots
+    # Performance Distribution Plots
     plt.figure(figsize=(15, 5))
     
     # Create subplot for metric distributions
