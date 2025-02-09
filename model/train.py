@@ -25,7 +25,7 @@ from transformers import (
     get_linear_schedule_with_warmup
 )
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import precision_score, recall_score, roc_auc_score
 import numpy as np
 import pandas as pd
 import wandb
@@ -576,57 +576,19 @@ def train(model, train_loader, val_loader, config):
 
 def get_grad_norm(model):
     """Calculate gradient norm for monitoring"""
-    total_norm = 0.0
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.data.norm(2)
-            total_norm += param_norm.item() ** 2
-    return total_norm ** 0.5
-
-def get_gpu_stats():
-    """Get GPU statistics"""
-    gpu = GPUtil.getGPUs()[0]
-    return {
-        'utilization': gpu.load * 100,
-        'memory': gpu.memoryUtil * 100,
-        'temperature': gpu.temperature
-    }
-
-def save_model(model, config, epoch, auc):
-    """Save model checkpoint"""
-    model_save_path = f"weights/toxic_classifier_{config.model_name}"
-    model.save_pretrained(model_save_path)
-    
-    # Log model as wandb artifact
-    artifact = wandb.Artifact(
-        name=f"model-epoch{epoch+1}",
-        type="model",
-        description=f"Model checkpoint from epoch {epoch+1} with AUC {auc:.4f}"
-    )
-    artifact.add_dir(model_save_path)
-    wandb.log_artifact(artifact)
-
-def log_epoch_metrics(epoch, metrics, epoch_time, eta):
-    """Log epoch-level metrics to wandb"""
-    wandb.log({
-        'val/auc': metrics['auc'],
-        'val/loss': metrics['loss'],
-        'val/precision': metrics['precision'],
-        'val/recall': metrics['recall'],
-        'val/f1': metrics['f1'],
-        'time/epoch_minutes': epoch_time / 60,
-        'time/epoch_eta': eta,
-        'epoch': epoch + 1
-    })
-    
-    # Log per-language metrics
-    for lang, lang_metrics in metrics['lang_metrics'].items():
-        wandb.log({
-            f'val/{lang}/auc': lang_metrics['auc'],
-            f'val/{lang}/precision': lang_metrics['precision'],
-            f'val/{lang}/recall': lang_metrics['recall'],
-            f'val/{lang}/f1': lang_metrics['f1']
-        })
+    try:
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+                    logger.warning("NaN/Inf detected in gradients")
+                    continue
+                param_norm = p.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+        return float(total_norm ** 0.5)
+    except Exception as e:
+        logger.error(f"Error in gradient norm calculation: {str(e)}")
+        return 0.0
 
 # Custom Dataset
 class ToxicDataset(Dataset):
@@ -1682,10 +1644,10 @@ def train_worker(rank, config, train_dataset, val_dataset):
 # Training Configuration
 TRAINING_CONFIG = {
     # Only override values that differ from TrainingConfig defaults
-    "batch_size": 32,  # Specific value for this training setup
-    "grad_accum_steps": 2,  # Specific value for this training setup
+    "batch_size": 64,  # Specific value for this training setup
+    "grad_accum_steps": 1,  # Specific value for this training setup
     "mixed_precision": "bf16",  # Specific value for this training setup
-    "num_workers": 12,  # Specific value for this training setup
+    "num_workers": 16,  # Specific value for this training setup
     "activation_checkpointing": True,  # Specific value for this training setup
     "gc_frequency": 500,  # Specific value for this training setup
 }
@@ -1780,3 +1742,52 @@ if __name__ == "__main__":
         print(f"Fatal error: {str(e)}")
         cleanup()
         sys.exit(1)
+
+def evaluate_single_class(model, val_loader, class_idx, threshold=0.5):
+    if model is None or val_loader is None:
+        raise ValueError("Model and val_loader must not be None")
+    if not isinstance(class_idx, int) or class_idx < 0:
+        raise ValueError("class_idx must be a non-negative integer")
+    if not 0 <= threshold <= 1:
+        raise ValueError("threshold must be between 0 and 1")
+    
+    device = next(model.parameters()).device
+    model.eval()
+    y_true = []
+    y_pred = []
+    
+    try:
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=True):
+            for batch in val_loader:
+                # Move tensors to correct device
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch.items()}
+                
+                outputs = model(**batch)
+                probs = torch.sigmoid(outputs['logits'])[:, class_idx]
+                labels = batch['labels'][:, class_idx]
+                
+                # Process in CPU to save GPU memory
+                y_true.extend(labels.cpu().numpy())
+                y_pred.extend((probs > threshold).cpu().numpy())
+                
+                # Clear cache periodically
+                if len(y_true) % 1000 == 0:
+                    torch.cuda.empty_cache()
+    
+    except Exception as e:
+        logger.error(f"Error in evaluate_single_class: {str(e)}")
+        return {'precision': 0.0, 'recall': 0.0, 'support': 0}
+    
+    finally:
+        torch.cuda.empty_cache()
+    
+    try:
+        return {
+            'precision': precision_score(y_true, y_pred, zero_division=0),
+            'recall': recall_score(y_true, y_pred, zero_division=0),
+            'support': len(y_true)
+        }
+    except Exception as e:
+        logger.error(f"Error calculating metrics: {str(e)}")
+        return {'precision': 0.0, 'recall': 0.0, 'support': len(y_true)}

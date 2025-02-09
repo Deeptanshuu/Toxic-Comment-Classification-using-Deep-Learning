@@ -529,45 +529,6 @@ class LanguageAwareTransformer(nn.Module):
         except Exception as e:
             logger.error(f"Error resetting language metrics: {str(e)}")
 
-    def cleanup_memory():
-        gc.collect()
-        torch.cuda.empty_cache()
-        if torch.cuda.is_available():
-            # Force GPU memory cleanup
-            torch.cuda.synchronize()
-
-def enable_gradient_checkpointing(model):
-    try:
-        available_memory = torch.cuda.get_device_properties(0).total_memory
-        if available_memory < 8 * 1024 * 1024 * 1024:  # 8GB
-            model.gradient_checkpointing_enable()
-            return True
-    except Exception as e:
-        logger.warning(f"Gradient checkpointing failed: {e}")
-    return False
-
-def setup_mixed_precision(config):
-    if torch.cuda.is_available():
-        if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
-            return "bf16"
-        elif torch.cuda.is_bf16_supported():
-            return "bf16"
-        else:
-            return "fp16"
-    return "no"
-
-def save_training_state(model, optimizer, epoch, step, metrics):
-    try:
-        torch.save({
-            'epoch': epoch,
-            'step': step,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'metrics': metrics
-        }, 'checkpoints/recovery_checkpoint.pt')
-    except Exception as e:
-        logger.error(f"Failed to save recovery state: {e}")
-
 def evaluate_single_class(model, val_loader, class_idx, threshold=0.5):
     """Evaluate a single class with custom threshold"""
     model.eval()
@@ -588,12 +549,3 @@ def evaluate_single_class(model, val_loader, class_idx, threshold=0.5):
         'recall': recall_score(y_true, y_pred, zero_division=0),
         'support': len(y_true)
     }
-
-def validate_critical_classes(model, val_loader, config):
-    critical_metrics = defaultdict(dict)
-    for cls_name, cls_idx in config.critical_indices.items():
-        metrics = evaluate_single_class(
-            model, val_loader, cls_idx,
-            threshold=config.thresholds[cls_name]
-        )
-        critical_metrics[cls_name] = metrics 

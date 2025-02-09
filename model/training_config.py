@@ -107,8 +107,8 @@ class DynamicClassWeights:
             }
         }
         
-        try:
-            for cls, params in critical_classes.items():
+        for cls, params in critical_classes.items():
+            try:
                 # Get and validate English weight
                 en_weight = self._clamp_weight(float(self.weights['en'][cls]['1']))
                 self.weights['en'][cls]['1'] = str(en_weight)
@@ -147,8 +147,9 @@ class DynamicClassWeights:
                         except (KeyError, ValueError) as e:
                             print(f"Warning: Could not adjust weights for {lang}/{cls}: {str(e)}")
                             continue
-        except Exception as e:
-            print(f"Warning: Could not enforce language priority: {str(e)}")
+            except Exception as e:
+                print(f"Warning: Could not process critical class {cls}: {str(e)}")
+                continue
     
     def calculate_safe_weights(self, total_samples: int, support_1: int, toxicity_type: str) -> float:
         """Calculate weights with safety constraints and validation"""
