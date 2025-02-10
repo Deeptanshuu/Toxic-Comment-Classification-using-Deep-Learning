@@ -396,14 +396,14 @@ class TrainingConfig:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
     hidden_size: int = 1024
-    num_attention_heads: int = 16
+    num_attention_heads: int = 32
     model_dropout: float = 0.1
     freeze_layers: int = 8
     
     # Training parameters
     batch_size: int = 64
     grad_accum_steps: int = 1
-    epochs: int = 8
+    epochs: int = 10
     lr: float = 2e-5
     weight_decay: float = 0.005
     max_grad_norm: float = 1.0
@@ -415,8 +415,8 @@ class TrainingConfig:
     
     # System parameters
     num_workers: int = 16
-    fp16: bool = False
-    mixed_precision: str = "no"
+    fp16: bool = True
+    mixed_precision: str = "fp16"
     device: str = None
     activation_checkpointing: bool = False
     tensor_float_32: bool = True
