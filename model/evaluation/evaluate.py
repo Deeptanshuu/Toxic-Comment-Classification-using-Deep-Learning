@@ -1245,6 +1245,16 @@ def plot_metrics(results, output_dir, toxicity_types=None):
     plots_dir = os.path.join(output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
     
+    # Helper function to check if value is numeric and not None
+    def is_valid_number(v):
+        if v is None:
+            return False
+        try:
+            float_val = float(v)
+            return not np.isnan(float_val)
+        except (TypeError, ValueError):
+            return False
+    
     # Get toxicity types from results if not provided
     if toxicity_types is None:
         toxicity_types = list(results.get('per_class', {}).keys())
@@ -1259,7 +1269,8 @@ def plot_metrics(results, output_dir, toxicity_types=None):
         
         for metric in metrics:
             values = [results['per_class'][c].get(metric, np.nan) for c in toxicity_types]
-            if any(not np.isnan(v) for v in values):  # Only plot if we have valid values
+            valid_values = [v for v in values if is_valid_number(v)]
+            if valid_values:  # Only plot if we have valid values
                 plt.plot(toxicity_types, values, marker='o', label=metric.upper())
         
         plt.title('Per-Class Performance Metrics')
@@ -1287,20 +1298,20 @@ def plot_metrics(results, output_dir, toxicity_types=None):
             values = []
             errors = []
             for lang in languages:
-                # Get metric value with default of 0.0 if None
+                # Get metric value with default of 0.0 if None or invalid
                 metric_value = results['per_language'][lang].get(metric, 0.0)
-                if metric_value is None:
+                if not is_valid_number(metric_value):
                     metric_value = 0.0
                 
-                # Get confidence interval with defaults if None
+                # Get confidence interval with defaults if None or invalid
                 metric_ci = results['per_language'][lang].get(f'{metric}_ci', [metric_value, metric_value])
-                if metric_ci is None or None in metric_ci:
+                if metric_ci is None or not all(is_valid_number(v) for v in metric_ci):
                     metric_ci = [metric_value, metric_value]
                 
-                values.append(metric_value)
+                values.append(float(metric_value))
                 # Calculate error bars, ensuring no None values
-                lower_error = metric_value - metric_ci[0] if metric_ci[0] is not None else 0.0
-                upper_error = metric_ci[1] - metric_value if metric_ci[1] is not None else 0.0
+                lower_error = float(metric_value) - float(metric_ci[0])
+                upper_error = float(metric_ci[1]) - float(metric_value)
                 errors.append((lower_error, upper_error))
             
             # Convert errors to numpy array for proper plotting
@@ -1362,8 +1373,8 @@ def plot_metrics(results, output_dir, toxicity_types=None):
             
             for metric in metric_names:
                 value = metrics.get(metric, np.nan)
-                if isinstance(value, (int, float, np.number)):
-                    lang_values.append(value)
+                if is_valid_number(value):
+                    lang_values.append(float(value))
                     has_valid_metrics = True
                 else:
                     lang_values.append(np.nan)
@@ -1389,45 +1400,6 @@ def plot_metrics(results, output_dir, toxicity_types=None):
                 plt.tight_layout()
                 plt.savefig(os.path.join(plots_dir, 'metric_correlations.png'))
             plt.close()
-        
-        # 2. Class-Language Performance Matrix
-        if results.get('per_class'):
-            class_lang_data = []
-            valid_languages = []
-            
-            for lang in languages:
-                class_metrics = results['per_language'][lang].get('class_metrics', {})
-                lang_values = []
-                has_valid_metrics = False
-                
-                for class_name in toxicity_types:
-                    if class_name in class_metrics:
-                        value = class_metrics[class_name].get('f1', np.nan)
-                        if not np.isnan(value):
-                            has_valid_metrics = True
-                    else:
-                        value = np.nan
-                    lang_values.append(value)
-                
-                if has_valid_metrics:
-                    class_lang_data.append(lang_values)
-                    valid_languages.append(lang)
-            
-            # Only create heatmap if we have valid data
-            if class_lang_data and valid_languages:
-                class_lang_df = pd.DataFrame(class_lang_data, columns=toxicity_types, index=valid_languages)
-                
-                # Remove columns with all NaN values
-                class_lang_df = class_lang_df.dropna(axis=1, how='all')
-                
-                if not class_lang_df.empty and class_lang_df.shape[1] > 0:
-                    plt.figure(figsize=(12, 8))
-                    sns.heatmap(class_lang_df, annot=True, cmap='YlOrRd', center=0.5, fmt='.2f',
-                              cbar_kws={'label': 'F1 Score'})
-                    plt.title('F1 Scores by Class and Language')
-                    plt.tight_layout()
-                    plt.savefig(os.path.join(plots_dir, 'class_language_performance.png'))
-                plt.close()
     
     # Performance Distribution Plots
     plt.figure(figsize=(15, 5))
@@ -1437,9 +1409,9 @@ def plot_metrics(results, output_dir, toxicity_types=None):
     has_metric_data = False
     for metric in ['auc', 'f1', 'precision', 'recall']:
         values = [results['per_language'][lang].get(metric, np.nan) for lang in languages]
-        values = [v for v in values if not np.isnan(v)]
-        if values:
-            sns.kdeplot(data=values, label=metric.upper())
+        valid_values = [float(v) for v in values if is_valid_number(v)]
+        if valid_values:
+            sns.kdeplot(data=valid_values, label=metric.upper())
             has_metric_data = True
     
     if has_metric_data:
@@ -1448,46 +1420,8 @@ def plot_metrics(results, output_dir, toxicity_types=None):
         plt.ylabel('Density')
         plt.legend()
     
-    # Create subplot for class performance distributions
-    plt.subplot(132)
-    class_scores = []
-    class_names = []
-    for class_name in toxicity_types:
-        scores = [results['per_language'][lang].get('class_metrics', {}).get(class_name, {}).get('f1', np.nan) 
-                 for lang in languages]
-        scores = [s for s in scores if not np.isnan(s)]
-        if scores:
-            class_scores.extend(scores)
-            class_names.extend([class_name] * len(scores))
-    
-    if class_scores:
-        sns.boxplot(x=class_names, y=class_scores)
-        plt.title('Class Performance Distribution')
-        plt.xticks(rotation=45)
-        plt.xlabel('Class')
-        plt.ylabel('F1 Score')
-    
-    # Create subplot for language performance distributions
-    plt.subplot(133)
-    lang_scores = []
-    lang_names = []
-    for lang in languages:
-        scores = [metrics.get('f1', np.nan) for metrics in results['per_language'][lang].get('class_metrics', {}).values()]
-        scores = [s for s in scores if not np.isnan(s)]
-        if scores:
-            lang_scores.extend(scores)
-            lang_names.extend([lang] * len(scores))
-    
-    if lang_scores:
-        sns.boxplot(x=lang_names, y=lang_scores)
-        plt.title('Language Performance Distribution')
-        plt.xticks(rotation=45)
-        plt.xlabel('Language')
-        plt.ylabel('F1 Score')
-    
-    if has_metric_data or class_scores or lang_scores:
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'performance_distributions.png'))
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, 'performance_distributions.png'))
     plt.close()
 
 def convert_to_serializable(obj):
