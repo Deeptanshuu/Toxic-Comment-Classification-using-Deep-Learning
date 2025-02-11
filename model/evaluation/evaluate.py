@@ -26,6 +26,9 @@ import multiprocessing as mp
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
 
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+
 class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, max_length=128, cache_dir='cached_dataset'):
         self.texts = df['comment_text'].values
@@ -1284,11 +1287,23 @@ def plot_metrics(results, output_dir, toxicity_types=None):
             values = []
             errors = []
             for lang in languages:
-                metric_value = results['per_language'][lang].get(metric, 0)
+                # Get metric value with default of 0.0 if None
+                metric_value = results['per_language'][lang].get(metric, 0.0)
+                if metric_value is None:
+                    metric_value = 0.0
+                
+                # Get confidence interval with defaults if None
                 metric_ci = results['per_language'][lang].get(f'{metric}_ci', [metric_value, metric_value])
+                if metric_ci is None or None in metric_ci:
+                    metric_ci = [metric_value, metric_value]
+                
                 values.append(metric_value)
-                errors.append((metric_value - metric_ci[0], metric_ci[1] - metric_value))
+                # Calculate error bars, ensuring no None values
+                lower_error = metric_value - metric_ci[0] if metric_ci[0] is not None else 0.0
+                upper_error = metric_ci[1] - metric_value if metric_ci[1] is not None else 0.0
+                errors.append((lower_error, upper_error))
             
+            # Convert errors to numpy array for proper plotting
             errors = np.array(errors).T
             ax1.bar(x + i*width, values, width, label=metric.upper(),
                    yerr=errors, capsize=5)
