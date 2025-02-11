@@ -176,25 +176,12 @@ def evaluate_language(args):
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         
-        # Class-specific configuration based on global statistics
-        PRECISION_THRESHOLDS = {
-            'toxic': 0.85,          # Common class (49.6%)
-            'severe_toxic': 0.90,   # Rare class (4.6%)
-            'obscene': 0.85,        # Medium class (24.2%)
-            'threat': 0.92,         # Very rare class (2.0%)
-            'insult': 0.85,         # Medium class (28.6%)
-            'identity_hate': 0.90    # Rare class (5.3%)
-        }
-        
-        # Adjust minimum recall based on class frequency
-        MIN_RECALL = {
-            'toxic': 0.30,          # Higher for common class
-            'severe_toxic': 0.15,   # Lower for rare class
-            'obscene': 0.25,        # Medium threshold
-            'threat': 0.10,         # Very low for very rare class
-            'insult': 0.25,         # Medium threshold
-            'identity_hate': 0.15    # Lower for rare class
-        }
+        def calculate_dynamic_constraints(pos_ratio):
+            """Calculate dynamic constraints based on class frequency"""
+            min_recall = max(0.1, 0.3 * np.sqrt(pos_ratio))
+            required_precision = max(0.85, 1 - 15*pos_ratio)
+            max_fpr = 0.05 + 0.15 * pos_ratio
+            return min_recall, required_precision, max_fpr
         
         # Print evaluation header with sample count
         print(f"\nEvaluating {lang_name} [{len(lang_labels):,} samples]")
@@ -210,26 +197,25 @@ def evaluate_language(args):
                 pos_count = np.sum(class_labels)
                 if pos_count == 0:
                     print(f"  {class_name}: No positive samples found")
-                    lang_thresholds[class_name] = PRECISION_THRESHOLDS[class_name]
+                    lang_thresholds[class_name] = 0.85  # Default threshold
                     continue
                 
                 pos_ratio = pos_count / len(class_labels)
                 print(f"  {class_name}: Found {pos_count:,} positive samples ({pos_ratio:.2%})")
                 
+                # Calculate dynamic constraints based on class frequency
+                min_recall, required_precision, max_fpr = calculate_dynamic_constraints(pos_ratio)
+                print(f"    Dynamic constraints: min_recall={min_recall:.3f}, "
+                      f"required_precision={required_precision:.3f}, max_fpr={max_fpr:.3f}")
+                
                 # Calculate ROC curve points
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
-                # Calculate class weights with stronger penalty for FP in rare classes
-                pos_weight = 1.0 / (pos_ratio + 1e-7)
+                # Enhanced class weighting based on positive ratio
+                pos_weight = (1 / (pos_ratio + 1e-7)) * (1 - np.clip(pos_ratio, 0, 0.1))**2
                 neg_weight = 1.0
                 
-                # Increase positive weight for rare classes
-                if pos_ratio < 0.01:  # Very rare class
-                    pos_weight *= 2.5
-                elif pos_ratio < 0.05:  # Rare class
-                    pos_weight *= 2.0
-                elif pos_ratio < 0.10:  # Somewhat rare class
-                    pos_weight *= 1.5
+                print(f"    Class weights: positive={pos_weight:.2f}, negative={neg_weight:.2f}")
                 
                 # Create sample weights
                 sample_weights = np.where(class_labels == 1, pos_weight, neg_weight)
@@ -278,17 +264,10 @@ def evaluate_language(args):
                 
                 if not metrics_by_threshold:
                     print(f"  Warning: No valid thresholds found for {class_name}")
-                    lang_thresholds[class_name] = PRECISION_THRESHOLDS[class_name]
+                    lang_thresholds[class_name] = 0.85  # Default threshold
                     continue
                 
-                # Get requirements for this class
-                required_precision = PRECISION_THRESHOLDS[class_name]
-                min_recall = MIN_RECALL[class_name]
-                
-                # Stricter FPR requirements for rare classes
-                max_fpr = 0.05 if pos_ratio < 0.05 else (0.10 if pos_ratio < 0.10 else 0.20)
-                
-                # Find valid thresholds
+                # Find valid thresholds using dynamic constraints
                 valid_thresholds = [
                     m for m in metrics_by_threshold 
                     if m['precision'] >= required_precision and 
@@ -298,20 +277,18 @@ def evaluate_language(args):
                 
                 if valid_thresholds:
                     # Weight metrics based on class frequency
-                    if pos_ratio < 0.05:  # Rare class
-                        weights = {
-                            'precision': 0.60,  # Heavily weight precision
-                            'recall': 0.20,     # Still maintain some recall
-                            'f1': 0.10,         # Less emphasis on F1
-                            'fpr': 0.10         # Consider FPR
-                        }
-                    else:  # Common class
-                        weights = {
-                            'precision': 0.40,  # Balance precision
-                            'recall': 0.30,     # With recall
-                            'f1': 0.20,         # And F1
-                            'fpr': 0.10         # While watching FPR
-                        }
+                    weights = {
+                        'precision': 0.5 + 0.2 * (1 - pos_ratio),  # More precision weight for rare classes
+                        'recall': 0.2 + 0.2 * pos_ratio,           # More recall weight for common classes
+                        'f1': 0.2 * pos_ratio,                     # F1 matters more for common classes
+                        'fpr': 0.1 + 0.1 * (1 - pos_ratio)        # FPR penalty higher for rare classes
+                    }
+                    
+                    # Normalize weights
+                    weight_sum = sum(weights.values())
+                    weights = {k: v/weight_sum for k, v in weights.items()}
+                    
+                    print(f"    Metric weights: {weights}")
                     
                     # Select best threshold
                     best_threshold = max(
@@ -334,23 +311,23 @@ def evaluate_language(args):
                     # Find threshold with best precision while maintaining some predictions
                     valid_predictions = [
                         m for m in metrics_by_threshold
-                        if m['recall'] > 0 and m['fpr'] <= max_fpr
+                        if m['recall'] > min_recall/2 and m['fpr'] <= max_fpr*1.5
                     ]
                     
                     if valid_predictions:
                         best_threshold = max(
                             valid_predictions,
                             key=lambda x: (
-                                x['precision'] * 0.7 +
+                                x['precision'] * 0.6 +
                                 x['recall'] * 0.2 -
-                                x['fpr'] * 0.1
+                                x['fpr'] * 0.2
                             )
                         )
                         lang_thresholds[class_name] = best_threshold['threshold']
                         achieved_metrics = best_threshold
                     else:
                         print(f"  Warning: Using default threshold for {class_name}")
-                        lang_thresholds[class_name] = PRECISION_THRESHOLDS[class_name]
+                        lang_thresholds[class_name] = 0.85  # Default threshold
                         achieved_metrics = {
                             'precision': 0.0,
                             'recall': 0.0,
@@ -360,7 +337,7 @@ def evaluate_language(args):
                         }
                 
                 # Log detailed metrics
-                print(f"  {class_name}:")
+                print(f"  {class_name} results:")
                 print(f"    Threshold: {lang_thresholds[class_name]:.3f}")
                 print(f"    Precision: {achieved_metrics['precision']:.3f}")
                 print(f"    Recall: {achieved_metrics['recall']:.3f}")
@@ -370,7 +347,7 @@ def evaluate_language(args):
                 
             except Exception as e:
                 print(f"  Error evaluating {class_name}: {str(e)}")
-                lang_thresholds[class_name] = PRECISION_THRESHOLDS[class_name]
+                lang_thresholds[class_name] = 0.85  # Default threshold
         
         return lang_id, lang_thresholds
         
