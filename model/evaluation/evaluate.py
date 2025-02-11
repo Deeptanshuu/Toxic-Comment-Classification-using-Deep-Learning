@@ -394,37 +394,76 @@ def evaluate_model(model, test_loader, device, output_dir):
     print("\nRunning predictions on test set...")
     model.eval()  # Ensure model is in eval mode
     
-    # Use optimized inference settings
-    with torch.inference_mode(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-        for batch in tqdm(test_loader, desc="Evaluating"):
-            # Move batch to device efficiently
-            input_ids = batch['input_ids'].to(device, non_blocking=True)
-            attention_mask = batch['attention_mask'].to(device, non_blocking=True)
-            labels = batch['labels'].to(device, non_blocking=True)
-            langs = batch['lang'].to(device, non_blocking=True)
-            
-            # Run prediction with reduced precision
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                lang_ids=langs
-            )
-            
-            # Gather predictions efficiently with reduced precision
-            loss = outputs['loss'].item()
-            predictions = outputs['probabilities'].to(dtype=torch.float16).cpu()
-            labels = labels.to(dtype=torch.float32)  # Keep labels in float32 for accuracy
-            
-            # Store results
-            all_predictions.append(predictions)
-            all_labels.append(labels.cpu())
-            all_langs.append(langs.cpu())
-            all_losses.append(loss)
-            
-            # Clear GPU memory aggressively
-            del input_ids, attention_mask, outputs, labels, langs, predictions
-            torch.cuda.empty_cache()
+    # Use optimized inference settings with proper error handling
+    try:
+        # Try using mixed precision with float16
+        print("Attempting mixed precision inference with float16...")
+        with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+            for batch in tqdm(test_loader, desc="Evaluating"):
+                # Move batch to device efficiently
+                input_ids = batch['input_ids'].to(device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(device, non_blocking=True)
+                labels = batch['labels'].to(device, non_blocking=True)
+                langs = batch['lang'].to(device, non_blocking=True)
+                
+                # Run prediction with reduced precision
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    lang_ids=langs
+                )
+                
+                # Gather predictions efficiently
+                loss = outputs['loss'].item()
+                predictions = outputs['probabilities'].to(dtype=torch.float32).cpu()
+                labels = labels.to(dtype=torch.float32)  # Keep labels in float32 for accuracy
+                
+                # Store results
+                all_predictions.append(predictions)
+                all_labels.append(labels.cpu())
+                all_langs.append(langs.cpu())
+                all_losses.append(loss)
+                
+                # Clear GPU memory aggressively
+                del input_ids, attention_mask, outputs, labels, langs, predictions
+                torch.cuda.empty_cache()
+                
+    except RuntimeError as e:
+        print(f"Mixed precision inference failed: {e}")
+        print("Falling back to full precision inference...")
+        
+        # Clear any partial results
+        all_predictions = []
+        all_labels = []
+        all_langs = []
+        all_losses = []
+        
+        # Fallback to full precision
+        with torch.inference_mode():
+            for batch in tqdm(test_loader, desc="Evaluating"):
+                input_ids = batch['input_ids'].to(device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(device, non_blocking=True)
+                labels = batch['labels'].to(device, non_blocking=True)
+                langs = batch['lang'].to(device, non_blocking=True)
+                
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    lang_ids=langs
+                )
+                
+                loss = outputs['loss'].item()
+                predictions = outputs['probabilities'].cpu()
+                
+                all_predictions.append(predictions)
+                all_labels.append(labels.cpu())
+                all_langs.append(langs.cpu())
+                all_losses.append(loss)
+                
+                del input_ids, attention_mask, outputs, labels, langs, predictions
+                torch.cuda.empty_cache()
     
     # Concatenate results efficiently and ensure float32 for metric calculations
     predictions = torch.cat(all_predictions, dim=0).to(dtype=torch.float32).numpy()
