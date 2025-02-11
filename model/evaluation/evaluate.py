@@ -128,18 +128,25 @@ def evaluate_language(args):
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         print(f"\nEvaluating {lang_name} [{len(lang_labels)} samples]")
         
-        # Precision-focused configuration
+        # Class-specific configuration
         PRECISION_THRESHOLDS = {
             'toxic': 0.85,
             'severe_toxic': 0.90,
             'obscene': 0.85,
-            'threat': 0.90,
+            'threat': 0.92,  # Increased for rare class
             'insult': 0.85,
-            'identity_hate': 0.90
+            'identity_hate': 0.92  # Increased for rare class
         }
         
-        # Minimum recall requirements to prevent extreme precision bias
-        MIN_RECALL = 0.20
+        # Class-specific minimum recall requirements
+        MIN_RECALL = {
+            'toxic': 0.20,
+            'severe_toxic': 0.15,  # Lower for rare class
+            'obscene': 0.20,
+            'threat': 0.10,        # Lower for rare class
+            'insult': 0.20,
+            'identity_hate': 0.15  # Lower for rare class
+        }
         
         # Optimize thresholds for this language
         lang_thresholds = {}
@@ -155,16 +162,23 @@ def evaluate_language(args):
                 pos_ratio = np.mean(class_labels)
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
-                # Calculate metrics with class weights
-                class_weights = compute_class_weight(
-                    class_weight='balanced',
-                    classes=np.unique(class_labels),
-                    y=class_labels
-                )
-                weight_dict = dict(zip(np.unique(class_labels), class_weights))
-                sample_weights = np.array([weight_dict[label] for label in class_labels])
+                # Calculate class weights with stronger penalty for FP in rare classes
+                pos_weight = 1.0 / (pos_ratio + 1e-7)  # Avoid division by zero
+                neg_weight = 1.0
                 
-                # Calculate scores for all thresholds
+                # Increase positive weight for rare classes
+                if pos_ratio < 0.01:  # Very rare class
+                    pos_weight *= 2.0
+                elif pos_ratio < 0.05:  # Rare class
+                    pos_weight *= 1.5
+                
+                # Create sample weights
+                sample_weights = np.where(class_labels == 1, pos_weight, neg_weight)
+                
+                # Normalize weights
+                sample_weights = sample_weights / np.sum(sample_weights) * len(sample_weights)
+                
+                # Calculate scores for all thresholds with class-specific weighting
                 metrics_by_threshold = []
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
@@ -182,41 +196,66 @@ def evaluate_language(args):
                         f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
                         hamming_acc = 1 - hamming_loss(class_labels, binary_preds)
                         
+                        # Calculate false positive rate for this threshold
+                        tn, fp, fn, tp = confusion_matrix(
+                            class_labels, binary_preds,
+                            sample_weight=sample_weights
+                        ).ravel()
+                        fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
+                        
                         metrics_by_threshold.append({
                             'threshold': t,
                             'precision': precision,
                             'recall': recall,
                             'f1': f1,
-                            'hamming_accuracy': hamming_acc
+                            'hamming_accuracy': hamming_acc,
+                            'fpr': fpr
                         })
                     except Exception:
                         continue
                 
                 # Filter thresholds meeting precision and minimum recall requirements
                 required_precision = PRECISION_THRESHOLDS.get(class_name, 0.85)
+                min_recall = MIN_RECALL.get(class_name, 0.20)
+                
+                # For rare classes, also consider FPR in threshold selection
+                max_fpr = 0.1 if pos_ratio < 0.05 else 0.2  # Stricter FPR for rare classes
+                
                 valid_thresholds = [
                     m for m in metrics_by_threshold 
-                    if m['precision'] >= required_precision and m['recall'] >= MIN_RECALL
+                    if m['precision'] >= required_precision and 
+                       m['recall'] >= min_recall and
+                       m['fpr'] <= max_fpr
                 ]
                 
                 if valid_thresholds:
                     # Among valid thresholds, choose one with best balance of metrics
+                    # Weight precision more heavily for rare classes
+                    precision_weight = 0.7 if pos_ratio < 0.05 else 0.5
+                    recall_weight = 0.3 if pos_ratio < 0.05 else 0.2
+                    f1_weight = 0.0 if pos_ratio < 0.05 else 0.2  # Ignore F1 for rare classes
+                    hamming_weight = 0.0 if pos_ratio < 0.05 else 0.1
+                    
                     best_threshold = max(
                         valid_thresholds,
                         key=lambda x: (
-                            x['precision'] * 0.5 +  # Weight precision more
-                            x['recall'] * 0.2 +     # Consider recall
-                            x['f1'] * 0.2 +         # Consider Hamming accuracy
-                            x['hamming_accuracy'] * 0.1
+                            x['precision'] * precision_weight +
+                            x['recall'] * recall_weight +
+                            x['f1'] * f1_weight +
+                            x['hamming_accuracy'] * hamming_weight -
+                            x['fpr'] * 0.1  # Penalize high FPR
                         )
                     )
                     initial_threshold = best_threshold['threshold']
                     achieved_metrics = best_threshold
                 else:
-                    # If no threshold meets all requirements, prioritize precision
+                    # If no threshold meets all requirements, prioritize precision and low FPR
                     best_threshold = max(
                         metrics_by_threshold,
-                        key=lambda x: x['precision']
+                        key=lambda x: (
+                            x['precision'] * 0.7 +
+                            (1 - x['fpr']) * 0.3  # Reward low FPR
+                        )
                     )
                     initial_threshold = best_threshold['threshold']
                     achieved_metrics = best_threshold
@@ -225,7 +264,7 @@ def evaluate_language(args):
                 test_preds = (class_preds > initial_threshold).astype(int)
                 if test_preds.sum() == 0 and pos_ratio > 0:
                     # Try multiple percentiles with precision focus
-                    percentiles = [95, 90, 85, 80, 75]
+                    percentiles = [99, 95, 90, 85, 80] if pos_ratio < 0.05 else [95, 90, 85, 80, 75]
                     best_metrics = None
                     best_threshold = initial_threshold
                     
@@ -243,26 +282,44 @@ def evaluate_language(args):
                                 sample_weight=sample_weights,
                                 zero_division=0
                             )
-                            hamming_acc = 1 - hamming_loss(class_labels, test_preds)
                             
-                            if precision >= required_precision and recall >= MIN_RECALL:
-                                if best_metrics is None or precision > best_metrics['precision']:
-                                    best_threshold = threshold
-                                    best_metrics = {
-                                        'precision': precision,
-                                        'recall': recall,
-                                        'hamming_accuracy': hamming_acc
-                                    }
+                            # Calculate FPR
+                            tn, fp, fn, tp = confusion_matrix(
+                                class_labels, test_preds,
+                                sample_weight=sample_weights
+                            ).ravel()
+                            fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
+                            
+                            # For rare classes, be more strict about precision and FPR
+                            if pos_ratio < 0.05:
+                                if precision >= required_precision and fpr <= max_fpr:
+                                    if best_metrics is None or precision > best_metrics['precision']:
+                                        best_threshold = threshold
+                                        best_metrics = {
+                                            'precision': precision,
+                                            'recall': recall,
+                                            'fpr': fpr
+                                        }
+                            else:
+                                if precision >= required_precision and recall >= min_recall:
+                                    if best_metrics is None or precision > best_metrics['precision']:
+                                        best_threshold = threshold
+                                        best_metrics = {
+                                            'precision': precision,
+                                            'recall': recall,
+                                            'fpr': fpr
+                                        }
                     
                     lang_thresholds[class_name] = max(best_threshold, 0.5)
                     achieved_metrics = best_metrics or achieved_metrics
                 else:
                     lang_thresholds[class_name] = initial_threshold
                 
-                # Log only final metrics in compact format
+                # Log metrics with class ratio information
                 print(f"  {class_name}: t={lang_thresholds[class_name]:.3f} "
                       f"[P={achieved_metrics['precision']:.3f}, R={achieved_metrics['recall']:.3f}, "
-                      f"F1={achieved_metrics['f1']:.3f}, HA={achieved_metrics['hamming_accuracy']:.3f}]")
+                      f"F1={achieved_metrics['f1']:.3f}, FPR={achieved_metrics['fpr']:.3f}] "
+                      f"(pos_ratio={pos_ratio:.3%})")
                 
             except Exception as e:
                 lang_thresholds[class_name] = 0.6
@@ -272,22 +329,47 @@ def evaluate_language(args):
         for i, class_name in enumerate(toxicity_types):
             binary_preds[:, i] = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
         
-        # Calculate metrics
+        # Calculate metrics with class-specific weighting
         metrics = {}
         try:
             if len(np.unique(lang_labels)) > 1:
-                metrics['auc'] = roc_auc_score(lang_labels, lang_preds, average='weighted')
+                # Calculate class weights based on positive ratios
+                class_weights = []
+                for i in range(lang_labels.shape[1]):
+                    pos_ratio = np.mean(lang_labels[:, i])
+                    weight = 1.0 / (pos_ratio + 1e-7)
+                    if pos_ratio < 0.01:  # Very rare class
+                        weight *= 2.0
+                    elif pos_ratio < 0.05:  # Rare class
+                        weight *= 1.5
+                    class_weights.append(weight)
+                
+                # Normalize weights
+                class_weights = np.array(class_weights)
+                class_weights = class_weights / np.sum(class_weights) * len(class_weights)
+                
+                # Calculate AUC with class weights
+                metrics['auc'] = roc_auc_score(
+                    lang_labels, lang_preds,
+                    average='weighted',
+                    sample_weight=class_weights
+                )
             
+            # Calculate other metrics with class weights
             precision, recall, f1, _ = precision_recall_fscore_support(
-                lang_labels, binary_preds, average='weighted',
+                lang_labels, binary_preds,
+                average='weighted',
+                sample_weight=class_weights,
                 zero_division=0
             )
+            
             metrics.update({
                 'precision': precision,
                 'recall': recall,
                 'f1': f1,
                 'hamming_accuracy': 1 - hamming_loss(lang_labels, binary_preds)
             })
+            
         except Exception:
             metrics.update({
                 'auc': None,
@@ -1471,7 +1553,6 @@ def save_results(results, predictions, labels, langs, output_dir):
     print(f"  Weighted-averaged: {results['overall'].get('specificity_weighted', 0.0):.4f}")
     
     print("\nOther Metrics:")
-    print(f"  Hamming Loss: {results['overall'].get('hamming_loss', 1.0):.4f}")
     print(f"  Exact Match: {results['overall'].get('exact_match', 0.0):.4f}")
     
     if 'class_support' in results['overall']:
