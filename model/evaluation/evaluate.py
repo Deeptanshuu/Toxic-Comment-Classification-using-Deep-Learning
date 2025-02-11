@@ -702,16 +702,17 @@ def evaluate_model(model, test_loader, device, output_dir):
     
     # After calculating metrics, add calibration plots
     plot_calibration_curves(
-        labels,
-        predictions,
-        output_dir,
+        y_true=labels,
+        y_pred_raw=predictions,
+        y_pred_calibrated=predictions,  # Using same predictions since we haven't calibrated yet
+        output_dir=output_dir,
         toxicity_types=toxicity_types,
         languages=id_to_lang,
         langs=langs
     )
     
     # Save results and generate visualizations
-    save_results(results, predictions, labels, langs, output_dir)
+    save_results(results, predictions, predictions, labels, langs, output_dir)  # Using same predictions for raw and calibrated
     plot_metrics(results, output_dir, toxicity_types)
     
     return results
