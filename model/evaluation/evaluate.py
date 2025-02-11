@@ -1780,7 +1780,7 @@ def main():
                       help='Path to the trained model')
     parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,  # Increased batch size
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                       help='Base directory to save results')
@@ -1790,6 +1790,8 @@ def main():
                       help='Directory to store cached tokenized data')
     parser.add_argument('--force_retokenize', action='store_true',
                       help='Force retokenization even if cache exists')
+    parser.add_argument('--prefetch_factor', type=int, default=2,
+                      help='Number of batches to prefetch per worker')
     
     args = parser.parse_args()
     
@@ -1806,14 +1808,15 @@ def main():
         'batch_size': args.batch_size,
         'num_workers': args.num_workers,
         'cache_dir': args.cache_dir,
-        'force_retokenize': args.force_retokenize
+        'force_retokenize': args.force_retokenize,
+        'prefetch_factor': args.prefetch_factor
     }
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
     
     # Set number of workers
     if args.num_workers is None:
-        args.num_workers = max(1, multiprocessing.cpu_count() - 1)
+        args.num_workers = min(8, max(1, multiprocessing.cpu_count() - 1))  # Cap at 8 workers
     
     try:
         # Load model
@@ -1841,12 +1844,16 @@ def main():
             cache_dir=args.cache_dir
         )
         
+        # Configure DataLoader with optimized settings
         test_loader = DataLoader(
             test_dataset,
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            prefetch_factor=args.prefetch_factor,
+            persistent_workers=True,
+            drop_last=False
         )
         
         # Evaluate model using the timestamped directory
