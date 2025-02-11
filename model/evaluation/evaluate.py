@@ -59,14 +59,10 @@ class ToxicDataset(Dataset):
     def _load_or_create_cache(self):
         """Load cached tokenized data or create if not exists"""
         if os.path.exists(self.cache_file):
-            print("Loading cached tokenized data...")
             return torch.load(self.cache_file)
         
-        print("Tokenizing dataset and creating cache...")
         encodings = []
-        
-        # Use tqdm for progress bar
-        for text in tqdm(self.texts, desc="Tokenizing"):
+        for text in tqdm(self.texts, desc="Tokenizing", leave=False):
             encoding = self.tokenizer(
                 str(text),
                 max_length=self.max_length,
@@ -79,9 +75,7 @@ class ToxicDataset(Dataset):
                 'attention_mask': encoding['attention_mask'].flatten()
             })
         
-        # Save cache
         torch.save(encodings, self.cache_file)
-        print(f"Cached tokenized data saved to {self.cache_file}")
         return encodings
 
     def __len__(self):
@@ -129,16 +123,10 @@ def load_model(model_path):
         return None, None, None
 
 def evaluate_language(args):
-    """Evaluate model performance for a single language
-    
-    Args:
-        args: Tuple of (lang_id, lang_name, lang_preds, lang_labels, toxicity_types)
-    Returns:
-        Tuple of (lang_id, metrics, thresholds)
-    """
+    """Evaluate model performance for a single language"""
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
-        print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
+        print(f"\nEvaluating {lang_name} [{len(lang_labels)} samples]")
         
         # Precision-focused configuration
         PRECISION_THRESHOLDS = {
@@ -161,17 +149,10 @@ def evaluate_language(args):
                 class_preds = lang_preds[:, i]
                 
                 if len(np.unique(class_labels)) < 2:
-                    print(f"Warning: Only one class present for {class_name} in {lang_name}")
-                    if class_labels[0] == 1:
-                        lang_thresholds[class_name] = 0.6  # More conservative for positive-only
-                    else:
-                        lang_thresholds[class_name] = 0.8  # Very conservative for negative-only
+                    lang_thresholds[class_name] = 0.8 if class_labels[0] == 0 else 0.6
                     continue
                 
-                # Calculate class distribution
                 pos_ratio = np.mean(class_labels)
-                
-                # Find optimal threshold using precision-focused approach
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
                 # Calculate metrics with class weights
@@ -199,8 +180,6 @@ def evaluate_language(args):
                             zero_division=0
                         )
                         f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                        
-                        # Calculate Hamming accuracy for this threshold
                         hamming_acc = 1 - hamming_loss(class_labels, binary_preds)
                         
                         metrics_by_threshold.append({
@@ -227,8 +206,8 @@ def evaluate_language(args):
                         key=lambda x: (
                             x['precision'] * 0.5 +  # Weight precision more
                             x['recall'] * 0.2 +     # Consider recall
-                            x['f1'] * 0.2 +         # Consider F1
-                            x['hamming_accuracy'] * 0.1  # Consider Hamming accuracy
+                            x['f1'] * 0.2 +         # Consider Hamming accuracy
+                            x['hamming_accuracy'] * 0.1
                         )
                     )
                     initial_threshold = best_threshold['threshold']
@@ -241,74 +220,52 @@ def evaluate_language(args):
                     )
                     initial_threshold = best_threshold['threshold']
                     achieved_metrics = best_threshold
-                    print(f"Warning: Could not meet precision requirement ({required_precision:.2f}) "
-                          f"for {class_name} while maintaining minimum recall ({MIN_RECALL:.2f})")
                 
                 # Test and adjust the threshold if needed
                 test_preds = (class_preds > initial_threshold).astype(int)
-                if test_preds.sum() == 0:
-                    print(f"Warning: No positive predictions for {class_name}, adjusting threshold")
+                if test_preds.sum() == 0 and pos_ratio > 0:
+                    # Try multiple percentiles with precision focus
+                    percentiles = [95, 90, 85, 80, 75]
+                    best_metrics = None
+                    best_threshold = initial_threshold
                     
-                    if pos_ratio > 0:
-                        # Try multiple percentiles with precision focus
-                        percentiles = [95, 90, 85, 80, 75]
-                        best_metrics = None
-                        best_threshold = initial_threshold
-                        
-                        for p in percentiles:
-                            threshold = np.percentile(class_preds, p)
-                            test_preds = (class_preds > threshold).astype(int)
-                            if test_preds.sum() > 0:
-                                precision = precision_score(
-                                    class_labels, test_preds,
-                                    sample_weight=sample_weights,
-                                    zero_division=0
-                                )
-                                recall = recall_score(
-                                    class_labels, test_preds,
-                                    sample_weight=sample_weights,
-                                    zero_division=0
-                                )
-                                hamming_acc = 1 - hamming_loss(class_labels, test_preds)
-                                
-                                # Prioritize precision while maintaining minimum recall
-                                if precision >= required_precision and recall >= MIN_RECALL:
-                                    if best_metrics is None or precision > best_metrics['precision']:
-                                        best_threshold = threshold
-                                        best_metrics = {
-                                            'precision': precision,
-                                            'recall': recall,
-                                            'hamming_accuracy': hamming_acc
-                                        }
-                        
-                        # Set final threshold
-                        lang_thresholds[class_name] = max(best_threshold, 0.5)
-                        achieved_metrics = best_metrics or achieved_metrics
-                    else:
-                        lang_thresholds[class_name] = 0.8
+                    for p in percentiles:
+                        threshold = np.percentile(class_preds, p)
+                        test_preds = (class_preds > threshold).astype(int)
+                        if test_preds.sum() > 0:
+                            precision = precision_score(
+                                class_labels, test_preds,
+                                sample_weight=sample_weights,
+                                zero_division=0
+                            )
+                            recall = recall_score(
+                                class_labels, test_preds,
+                                sample_weight=sample_weights,
+                                zero_division=0
+                            )
+                            hamming_acc = 1 - hamming_loss(class_labels, test_preds)
+                            
+                            if precision >= required_precision and recall >= MIN_RECALL:
+                                if best_metrics is None or precision > best_metrics['precision']:
+                                    best_threshold = threshold
+                                    best_metrics = {
+                                        'precision': precision,
+                                        'recall': recall,
+                                        'hamming_accuracy': hamming_acc
+                                    }
+                    
+                    lang_thresholds[class_name] = max(best_threshold, 0.5)
+                    achieved_metrics = best_metrics or achieved_metrics
                 else:
                     lang_thresholds[class_name] = initial_threshold
                 
-                # Log detailed metrics
-                print(f"  {class_name}:")
-                print(f"    Threshold: {lang_thresholds[class_name]:.4f}")
-                print(f"    Precision: {achieved_metrics['precision']:.4f}")
-                print(f"    Recall: {achieved_metrics['recall']:.4f}")
-                print(f"    F1: {achieved_metrics['f1']:.4f}")
-                print(f"    Hamming Accuracy: {achieved_metrics['hamming_accuracy']:.4f}")
+                # Log only final metrics in compact format
+                print(f"  {class_name}: t={lang_thresholds[class_name]:.3f} "
+                      f"[P={achieved_metrics['precision']:.3f}, R={achieved_metrics['recall']:.3f}, "
+                      f"F1={achieved_metrics['f1']:.3f}, HA={achieved_metrics['hamming_accuracy']:.3f}]")
                 
             except Exception as e:
-                print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                # Use conservative default thresholds
-                default_thresholds = {
-                    'toxic': 0.6,
-                    'severe_toxic': 0.45,
-                    'obscene': 0.65,
-                    'threat': 0.55,
-                    'insult': 0.6,
-                    'identity_hate': 0.45
-                }
-                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.6)
+                lang_thresholds[class_name] = 0.6
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
@@ -317,15 +274,10 @@ def evaluate_language(args):
         
         # Calculate metrics
         metrics = {}
-        
         try:
             if len(np.unique(lang_labels)) > 1:
                 metrics['auc'] = roc_auc_score(lang_labels, lang_preds, average='weighted')
-        except Exception as e:
-            print(f"Warning: Could not calculate AUC: {str(e)}")
-            metrics['auc'] = None
-        
-        try:
+            
             precision, recall, f1, _ = precision_recall_fscore_support(
                 lang_labels, binary_preds, average='weighted',
                 zero_division=0
@@ -336,9 +288,9 @@ def evaluate_language(args):
                 'f1': f1,
                 'hamming_accuracy': 1 - hamming_loss(lang_labels, binary_preds)
             })
-        except Exception as e:
-            print(f"Warning: Could not calculate metrics: {str(e)}")
+        except Exception:
             metrics.update({
+                'auc': None,
                 'precision': 0.0,
                 'recall': 0.0,
                 'f1': 0.0,
@@ -347,8 +299,7 @@ def evaluate_language(args):
         
         return lang_id, metrics, lang_thresholds
         
-    except Exception as e:
-        print(f"Warning: Could not evaluate language {lang_name}: {str(e)}")
+    except Exception:
         return None
 
 def evaluate_model(model, test_loader, device, output_dir):
