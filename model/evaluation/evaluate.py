@@ -391,36 +391,62 @@ def evaluate_model(model, test_loader, device, output_dir):
     all_langs = []
     all_losses = []
     
+    # Enable inference optimizations
+    torch.backends.cudnn.benchmark = True
+    
+    # Enable mixed precision inference
+    scaler = torch.cuda.amp.GradScaler()
+    
+    # Compile model if torch 2.0+ is available
+    if hasattr(torch, 'compile'):
+        try:
+            model = torch.compile(model)
+            print("Using torch.compile() for faster inference")
+        except Exception as e:
+            print(f"Could not compile model: {e}")
+    
     print("\nRunning predictions on test set...")
-    with torch.no_grad():
+    model.eval()  # Ensure model is in eval mode
+    
+    with torch.no_grad(), torch.cuda.amp.autocast():
         for batch in tqdm(test_loader, desc="Evaluating"):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
-            langs = batch['lang'].to(device)
+            # Move batch to device efficiently
+            input_ids = batch['input_ids'].to(device, non_blocking=True)
+            attention_mask = batch['attention_mask'].to(device, non_blocking=True)
+            labels = batch['labels'].to(device, non_blocking=True)
+            langs = batch['lang'].to(device, non_blocking=True)
             
+            # Run prediction
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 labels=labels,
                 lang_ids=langs
             )
-            loss = outputs['loss'].item()
-            predictions = outputs['probabilities'].cpu().numpy()
             
-            all_predictions.extend(predictions)
-            all_labels.extend(labels.cpu().numpy())
-            all_langs.extend(langs.cpu().numpy())
+            # Gather predictions efficiently
+            loss = outputs['loss'].item()
+            predictions = outputs['probabilities'].cpu()
+            
+            # Store results
+            all_predictions.append(predictions)
+            all_labels.append(labels.cpu())
+            all_langs.append(langs.cpu())
             all_losses.append(loss)
             
-            # Clear GPU memory
-            del input_ids, attention_mask, outputs, labels
+            # Clear GPU memory aggressively
+            del input_ids, attention_mask, outputs, labels, langs, predictions
             torch.cuda.empty_cache()
     
-    predictions = np.array(all_predictions)
-    labels = np.array(all_labels)
-    langs = np.array(all_langs)
+    # Concatenate results efficiently
+    predictions = torch.cat(all_predictions, dim=0).numpy()
+    labels = torch.cat(all_labels, dim=0).numpy()  
+    langs = torch.cat(all_langs, dim=0).numpy()
     avg_loss = np.mean(all_losses)
+    
+    # Clear temporary lists
+    del all_predictions, all_labels, all_langs, all_losses
+    torch.cuda.empty_cache()
     
     # Initialize results dictionary
     results = {
