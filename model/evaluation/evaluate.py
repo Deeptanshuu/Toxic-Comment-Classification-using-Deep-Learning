@@ -394,9 +394,6 @@ def evaluate_model(model, test_loader, device, output_dir):
     # Enable inference optimizations
     torch.backends.cudnn.benchmark = True
     
-    # Enable mixed precision inference
-    scaler = torch.cuda.amp.GradScaler()
-    
     # Compile model if torch 2.0+ is available
     if hasattr(torch, 'compile'):
         try:
@@ -408,7 +405,8 @@ def evaluate_model(model, test_loader, device, output_dir):
     print("\nRunning predictions on test set...")
     model.eval()  # Ensure model is in eval mode
     
-    with torch.no_grad(), torch.cuda.amp.autocast():
+    # Use new AMP API
+    with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
         for batch in tqdm(test_loader, desc="Evaluating"):
             # Move batch to device efficiently
             input_ids = batch['input_ids'].to(device, non_blocking=True)
@@ -424,9 +422,10 @@ def evaluate_model(model, test_loader, device, output_dir):
                 lang_ids=langs
             )
             
-            # Gather predictions efficiently
+            # Gather predictions efficiently and ensure float32
             loss = outputs['loss'].item()
-            predictions = outputs['probabilities'].cpu()
+            predictions = outputs['probabilities'].to(dtype=torch.float32).cpu()
+            labels = labels.to(dtype=torch.float32)
             
             # Store results
             all_predictions.append(predictions)
@@ -438,9 +437,9 @@ def evaluate_model(model, test_loader, device, output_dir):
             del input_ids, attention_mask, outputs, labels, langs, predictions
             torch.cuda.empty_cache()
     
-    # Concatenate results efficiently
-    predictions = torch.cat(all_predictions, dim=0).numpy()
-    labels = torch.cat(all_labels, dim=0).numpy()  
+    # Concatenate results efficiently and ensure float32
+    predictions = torch.cat(all_predictions, dim=0).numpy().astype(np.float32)
+    labels = torch.cat(all_labels, dim=0).numpy().astype(np.float32)
     langs = torch.cat(all_langs, dim=0).numpy()
     avg_loss = np.mean(all_losses)
     
@@ -1592,43 +1591,57 @@ def save_results(results, predictions, labels, langs, output_dir):
         print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
         
         # Print AUC with CI if available
-        if 'auc' in metrics:
+        if 'auc' in metrics and metrics['auc'] is not None:
             auc_str = f"{metrics['auc']:.4f}"
             if 'auc_ci' in metrics:
                 auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
             print(f"  AUC: {auc_str}")
+        else:
+            print("  AUC: N/A")
         
         # Print F1 with CI if available
-        if 'f1' in metrics:
+        if 'f1' in metrics and metrics['f1'] is not None:
             f1_str = f"{metrics['f1']:.4f}"
             if 'f1_ci' in metrics:
                 f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
             print(f"  F1: {f1_str}")
+        else:
+            print("  F1: N/A")
         
         # Handle Hamming Loss
-        if 'hamming_loss' in metrics:
+        if 'hamming_loss' in metrics and metrics['hamming_loss'] is not None:
             h_loss_str = f"{metrics['hamming_loss']:.4f}"
             if 'hamming_loss_ci' in metrics:
                 h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
             print(f"  Hamming Loss: {h_loss_str}")
+        else:
+            print("  Hamming Loss: N/A")
         
         # Handle Exact Match
-        if 'exact_match' in metrics:
+        if 'exact_match' in metrics and metrics['exact_match'] is not None:
             e_match_str = f"{metrics['exact_match']:.4f}"
             if 'exact_match_ci' in metrics:
                 e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
             print(f"  Exact Match: {e_match_str}")
+        else:
+            print("  Exact Match: N/A")
     
     print("\nPer-Class Performance:")
     for class_name, metrics in results.get('per_class', {}).items():
         print(f"\n{class_name}:")
-        print(f"  AUC: {metrics.get('auc', 0.0):.4f}")
-        print(f"  F1: {metrics.get('f1', 0.0):.4f}")
-        print(f"  Precision: {metrics.get('precision', 0.0):.4f}")
-        print(f"  Recall: {metrics.get('recall', 0.0):.4f}")
-        print(f"  Specificity: {metrics.get('specificity', 0.0):.4f}")
-        print(f"  NPV: {metrics.get('npv', 0.0):.4f}")
-        print(f"  Threshold: {metrics.get('threshold', 0.0):.4f}")
+        
+        # Print metrics with None checks
+        def format_metric(name, format_str='.4f'):
+            value = metrics.get(name)
+            return f"{value:{format_str}}" if value is not None else "N/A"
+        
+        print(f"  AUC: {format_metric('auc')}")
+        print(f"  F1: {format_metric('f1')}")
+        print(f"  Precision: {format_metric('precision')}")
+        print(f"  Recall: {format_metric('recall')}")
+        print(f"  Specificity: {format_metric('specificity')}")
+        print(f"  NPV: {format_metric('npv')}")
+        print(f"  Threshold: {format_metric('threshold')}")
         print(f"  Confusion Matrix:")
         print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
         print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
