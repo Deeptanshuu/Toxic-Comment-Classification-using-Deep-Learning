@@ -6,9 +6,9 @@ import numpy as np
 from sklearn.metrics import (
     roc_auc_score, precision_recall_fscore_support, 
     confusion_matrix, roc_curve, hamming_loss, 
-    accuracy_score, precision_score, recall_score
+    accuracy_score, precision_score, recall_score, f1_score
 )
-from sklearn.calibration import calibration_curve
+from sklearn.calibration import calibration_curve, CalibratedClassifierCV
 from sklearn.utils import resample
 from sklearn.utils.class_weight import compute_class_weight
 import seaborn as sns
@@ -177,10 +177,16 @@ def evaluate_language(args):
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         
         def calculate_dynamic_constraints(pos_ratio):
-            """Calculate dynamic constraints based on class frequency"""
-            min_recall = max(0.1, 0.3 * np.sqrt(pos_ratio))
-            required_precision = max(0.85, 1 - 15*pos_ratio)
-            max_fpr = 0.05 + 0.15 * pos_ratio
+            """Calculate dynamic constraints based on class frequency with stronger precision requirements"""
+            # Exponential scaling for min_recall - lower for very rare classes
+            min_recall = max(0.05, 0.3 * np.sqrt(pos_ratio))
+            
+            # Stricter precision requirements for rare classes
+            required_precision = max(0.90, 1 - 10*pos_ratio**2)
+            
+            # Very strict FPR for rare classes, gradually relaxing for common ones
+            max_fpr = min(0.20, 0.02 + 0.18 * pos_ratio**2)
+            
             return min_recall, required_precision, max_fpr
         
         # Print evaluation header with sample count
@@ -197,7 +203,7 @@ def evaluate_language(args):
                 pos_count = np.sum(class_labels)
                 if pos_count == 0:
                     print(f"  {class_name}: No positive samples found")
-                    lang_thresholds[class_name] = 0.85  # Default threshold
+                    lang_thresholds[class_name] = 0.90  # Higher default threshold for safety
                     continue
                 
                 pos_ratio = pos_count / len(class_labels)
@@ -211,7 +217,7 @@ def evaluate_language(args):
                 # Calculate ROC curve points
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
-                # Enhanced class weighting based on positive ratio
+                # Enhanced class weighting with stronger emphasis on precision for rare classes
                 pos_weight = (1 / (pos_ratio + 1e-7)) * (1 - np.clip(pos_ratio, 0, 0.1))**2
                 neg_weight = 1.0
                 
@@ -251,20 +257,26 @@ def evaluate_language(args):
                         
                         fpr = fp / (fp + tn) if (fp + tn) > 0 else 1.0
                         
+                        # Calculate calibration error at this threshold
+                        pred_probs = class_preds[binary_preds == 1].mean() if binary_preds.any() else 0
+                        actual_ratio = precision if precision > 0 else 0
+                        calibration_error = abs(pred_probs - actual_ratio)
+                        
                         metrics_by_threshold.append({
                             'threshold': t,
                             'precision': precision,
                             'recall': recall,
                             'f1': f1,
                             'fpr': fpr,
-                            'support': pos_count
+                            'support': pos_count,
+                            'calibration_error': calibration_error
                         })
                     except Exception as e:
                         continue
                 
                 if not metrics_by_threshold:
                     print(f"  Warning: No valid thresholds found for {class_name}")
-                    lang_thresholds[class_name] = 0.85  # Default threshold
+                    lang_thresholds[class_name] = 0.90  # Higher default threshold
                     continue
                 
                 # Find valid thresholds using dynamic constraints
@@ -276,12 +288,13 @@ def evaluate_language(args):
                 ]
                 
                 if valid_thresholds:
-                    # Weight metrics based on class frequency
+                    # Enhanced metric weighting with stronger precision focus
                     weights = {
-                        'precision': 0.5 + 0.2 * (1 - pos_ratio),  # More precision weight for rare classes
-                        'recall': 0.2 + 0.2 * pos_ratio,           # More recall weight for common classes
-                        'f1': 0.2 * pos_ratio,                     # F1 matters more for common classes
-                        'fpr': 0.1 + 0.1 * (1 - pos_ratio)        # FPR penalty higher for rare classes
+                        'precision': 0.7 + 0.3 * (1 - pos_ratio**0.5),  # Stronger precision weighting
+                        'recall': 0.1 + 0.1 * pos_ratio,                # Limited recall importance
+                        'f1': 0.1 * pos_ratio,                         # F1 matters more for common classes
+                        'fpr': 0.2 * (1 - pos_ratio),                  # Higher FPR penalty for rare classes
+                        'calibration': 0.1 * (1 - pos_ratio**0.5)      # Consider calibration error
                     }
                     
                     # Normalize weights
@@ -290,14 +303,15 @@ def evaluate_language(args):
                     
                     print(f"    Metric weights: {weights}")
                     
-                    # Select best threshold
+                    # Select best threshold with calibration consideration
                     best_threshold = max(
                         valid_thresholds,
                         key=lambda x: (
                             x['precision'] * weights['precision'] +
                             x['recall'] * weights['recall'] +
                             x['f1'] * weights['f1'] -
-                            x['fpr'] * weights['fpr']
+                            x['fpr'] * weights['fpr'] -
+                            x['calibration_error'] * weights['calibration']
                         )
                     )
                     
@@ -308,32 +322,34 @@ def evaluate_language(args):
                     print(f"  Warning: No thresholds meet criteria for {class_name}")
                     print("  Falling back to precision-focused threshold")
                     
-                    # Find threshold with best precision while maintaining some predictions
+                    # Find threshold with best precision while maintaining minimal recall
                     valid_predictions = [
                         m for m in metrics_by_threshold
-                        if m['recall'] > min_recall/2 and m['fpr'] <= max_fpr*1.5
+                        if m['recall'] > min_recall/2 and m['fpr'] <= max_fpr*1.2
                     ]
                     
                     if valid_predictions:
                         best_threshold = max(
                             valid_predictions,
                             key=lambda x: (
-                                x['precision'] * 0.6 +
-                                x['recall'] * 0.2 -
-                                x['fpr'] * 0.2
+                                x['precision'] * 0.8 +
+                                x['recall'] * 0.1 -
+                                x['fpr'] * 0.2 -
+                                x['calibration_error'] * 0.1
                             )
                         )
                         lang_thresholds[class_name] = best_threshold['threshold']
                         achieved_metrics = best_threshold
                     else:
-                        print(f"  Warning: Using default threshold for {class_name}")
-                        lang_thresholds[class_name] = 0.85  # Default threshold
+                        print(f"  Warning: Using conservative default threshold for {class_name}")
+                        lang_thresholds[class_name] = 0.90  # Conservative default
                         achieved_metrics = {
                             'precision': 0.0,
                             'recall': 0.0,
                             'f1': 0.0,
                             'fpr': 1.0,
-                            'support': pos_count
+                            'support': pos_count,
+                            'calibration_error': 1.0
                         }
                 
                 # Log detailed metrics
@@ -343,11 +359,12 @@ def evaluate_language(args):
                 print(f"    Recall: {achieved_metrics['recall']:.3f}")
                 print(f"    F1: {achieved_metrics['f1']:.3f}")
                 print(f"    FPR: {achieved_metrics['fpr']:.3f}")
+                print(f"    Calibration Error: {achieved_metrics['calibration_error']:.3f}")
                 print(f"    Support: {achieved_metrics['support']:,} samples")
                 
             except Exception as e:
                 print(f"  Error evaluating {class_name}: {str(e)}")
-                lang_thresholds[class_name] = 0.85  # Default threshold
+                lang_thresholds[class_name] = 0.90  # Conservative default
         
         return lang_id, lang_thresholds
         
@@ -364,6 +381,7 @@ def evaluate_model(model, test_loader, device, output_dir):
     
     # Enable inference optimizations
     torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 for faster computation
     
     # Compile model if torch 2.0+ is available
     if hasattr(torch, 'compile'):
@@ -376,8 +394,8 @@ def evaluate_model(model, test_loader, device, output_dir):
     print("\nRunning predictions on test set...")
     model.eval()  # Ensure model is in eval mode
     
-    # Use new AMP API
-    with torch.no_grad(), torch.amp.autocast(device_type='cuda' if torch.cuda.is_available() else 'cpu'):
+    # Use optimized inference settings
+    with torch.inference_mode(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
         for batch in tqdm(test_loader, desc="Evaluating"):
             # Move batch to device efficiently
             input_ids = batch['input_ids'].to(device, non_blocking=True)
@@ -385,7 +403,7 @@ def evaluate_model(model, test_loader, device, output_dir):
             labels = batch['labels'].to(device, non_blocking=True)
             langs = batch['lang'].to(device, non_blocking=True)
             
-            # Run prediction
+            # Run prediction with reduced precision
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -393,10 +411,10 @@ def evaluate_model(model, test_loader, device, output_dir):
                 lang_ids=langs
             )
             
-            # Gather predictions efficiently and ensure float32
+            # Gather predictions efficiently with reduced precision
             loss = outputs['loss'].item()
-            predictions = outputs['probabilities'].to(dtype=torch.float32).cpu()
-            labels = labels.to(dtype=torch.float32)
+            predictions = outputs['probabilities'].to(dtype=torch.float16).cpu()
+            labels = labels.to(dtype=torch.float32)  # Keep labels in float32 for accuracy
             
             # Store results
             all_predictions.append(predictions)
@@ -408,13 +426,13 @@ def evaluate_model(model, test_loader, device, output_dir):
             del input_ids, attention_mask, outputs, labels, langs, predictions
             torch.cuda.empty_cache()
     
-    # Concatenate results efficiently and ensure float32
-    predictions = torch.cat(all_predictions, dim=0).numpy().astype(np.float32)
-    labels = torch.cat(all_labels, dim=0).numpy().astype(np.float32)
+    # Concatenate results efficiently and ensure float32 for metric calculations
+    predictions = torch.cat(all_predictions, dim=0).to(dtype=torch.float32).numpy()
+    labels = torch.cat(all_labels, dim=0).numpy()
     langs = torch.cat(all_langs, dim=0).numpy()
     avg_loss = np.mean(all_losses)
     
-    # Clear temporary lists
+    # Clear temporary lists and GPU memory
     del all_predictions, all_labels, all_langs, all_losses
     torch.cuda.empty_cache()
     
@@ -660,7 +678,7 @@ def evaluate_model(model, test_loader, device, output_dir):
     return results
 
 def calculate_metrics(predictions, labels, langs):
-    """Calculate detailed metrics using class-specific thresholds"""
+    """Calculate detailed metrics using class-specific thresholds with both macro and weighted averages"""
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
     # Dynamic threshold calculation based on validation set statistics
@@ -681,97 +699,341 @@ def calculate_metrics(predictions, labels, langs):
         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
-    # Overall metrics
-    results['overall'] = {
-        'auc': roc_auc_score(labels, predictions, average='macro'),
+    # Calculate both macro and weighted AUC
+    results['overall'].update({
+        'auc_macro': roc_auc_score(labels, predictions, average='macro'),
         'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
-    }
+    })
     
     # Binary predictions using dynamic thresholds
     threshold_array = np.array([thresholds[ct] for ct in toxicity_types])
     binary_predictions = (predictions > threshold_array).astype(int)
     
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='macro'
+    # Calculate both macro and weighted metrics
+    precision_macro, recall_macro, f1_macro, support_macro = precision_recall_fscore_support(
+        labels, binary_predictions, average='macro', zero_division=0
+    )
+    precision_weighted, recall_weighted, f1_weighted, support_weighted = precision_recall_fscore_support(
+        labels, binary_predictions, average='weighted', zero_division=0
     )
     
+    # Store both macro and weighted metrics
     results['overall'].update({
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
+        'precision_macro': precision_macro,
+        'precision_weighted': precision_weighted,
+        'recall_macro': recall_macro,
+        'recall_weighted': recall_weighted,
+        'f1_macro': f1_macro,
+        'f1_weighted': f1_weighted
     })
     
-    # Per-language metrics with confidence intervals
+    # Calculate per-class metrics
+    for i, class_name in enumerate(toxicity_types):
+        class_labels = labels[:, i]
+        class_preds = predictions[:, i]
+        class_binary = binary_predictions[:, i]
+        
+        # Calculate metrics for this class
+        try:
+            class_metrics = {
+                'auc': roc_auc_score(class_labels, class_preds),
+                'precision': precision_score(class_labels, class_binary, zero_division=0),
+                'recall': recall_score(class_labels, class_binary, zero_division=0),
+                'f1': f1_score(class_labels, class_binary, zero_division=0),
+                'support': np.sum(class_labels),
+                'threshold': thresholds[class_name]
+            }
+            
+            # Calculate confusion matrix for proper specificity
+            tn, fp, fn, tp = confusion_matrix(class_labels, class_binary).ravel()
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+            class_metrics['specificity'] = specificity
+            
+            # Add confusion matrix metrics
+            class_metrics.update({
+                'true_positives': int(tp),
+                'false_positives': int(fp),
+                'true_negatives': int(tn),
+                'false_negatives': int(fn)
+            })
+            
+            results['per_class'][class_name] = class_metrics
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
+            results['per_class'][class_name] = {
+                'auc': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1': 0.0,
+                'specificity': 0.0, 'support': 0, 'threshold': thresholds[class_name],
+                'true_positives': 0, 'false_positives': 0,
+                'true_negatives': 0, 'false_negatives': 0
+            }
+    
+    # Calculate overall specificity (both macro and weighted)
+    specificities = []
+    weighted_specificities = []
+    class_weights = []
+    
+    for i, class_name in enumerate(toxicity_types):
+        try:
+            tn, fp, fn, tp = confusion_matrix(
+                labels[:, i],
+                binary_predictions[:, i]
+            ).ravel()
+            
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+            specificities.append(specificity)
+            
+            # Weight by class size
+            weight = (tn + fp + fn + tp)
+            weighted_specificities.append(specificity * weight)
+            class_weights.append(weight)
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate specificity for class {i}: {str(e)}")
+            specificities.append(0.0)
+            weighted_specificities.append(0.0)
+            class_weights.append(0.0)
+    
+    # Add macro and weighted specificity to results
+    results['overall'].update({
+        'specificity_macro': np.mean(specificities),
+        'specificity_weighted': (
+            np.sum(weighted_specificities) / np.sum(class_weights)
+            if np.sum(class_weights) > 0 else 0.0
+        )
+    })
+    
+    # Per-language metrics with proper handling of rare classes
     for lang in unique_langs:
         lang_mask = langs == lang
         if lang_mask.sum() > 0:
             try:
-                # Calculate metrics
-                metrics = calculate_language_metrics(
-                    labels[lang_mask],
-                    predictions[lang_mask],
-                    binary_predictions[lang_mask]
+                # Calculate metrics for this language
+                lang_labels = labels[lang_mask]
+                lang_preds = predictions[lang_mask]
+                lang_binary = binary_predictions[lang_mask]
+                
+                # Calculate both macro and weighted metrics for this language
+                lang_metrics = {}
+                
+                # AUC scores
+                lang_metrics['auc_macro'] = roc_auc_score(
+                    lang_labels, lang_preds, average='macro'
                 )
-                results['per_language'][lang] = metrics
+                lang_metrics['auc_weighted'] = roc_auc_score(
+                    lang_labels, lang_preds, average='weighted'
+                )
+                
+                # Precision, recall, F1
+                precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+                    lang_labels, lang_binary, average='macro', zero_division=0
+                )
+                precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+                    lang_labels, lang_binary, average='weighted', zero_division=0
+                )
+                
+                lang_metrics.update({
+                    'precision_macro': precision_macro,
+                    'precision_weighted': precision_weighted,
+                    'recall_macro': recall_macro,
+                    'recall_weighted': recall_weighted,
+                    'f1_macro': f1_macro,
+                    'f1_weighted': f1_weighted,
+                    'sample_count': int(lang_mask.sum())
+                })
+                
+                # Calculate per-class metrics for this language
+                lang_metrics['per_class'] = {}
+                for i, class_name in enumerate(toxicity_types):
+                    class_labels = lang_labels[:, i]
+                    class_preds = lang_preds[:, i]
+                    class_binary = lang_binary[:, i]
+                    
+                    try:
+                        tn, fp, fn, tp = confusion_matrix(
+                            class_labels, class_binary
+                        ).ravel()
+                        
+                        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                        support = np.sum(class_labels)
+                        
+                        lang_metrics['per_class'][class_name] = {
+                            'precision': precision_score(class_labels, class_binary, zero_division=0),
+                            'recall': recall_score(class_labels, class_binary, zero_division=0),
+                            'f1': f1_score(class_labels, class_binary, zero_division=0),
+                            'specificity': specificity,
+                            'support': int(support),
+                            'true_positives': int(tp),
+                            'false_positives': int(fp),
+                            'true_negatives': int(tn),
+                            'false_negatives': int(fn)
+                        }
+                    except Exception as e:
+                        print(f"Warning: Could not calculate metrics for {class_name} in language {lang}: {str(e)}")
+                
+                results['per_language'][str(lang)] = lang_metrics
+                
             except Exception as e:
                 print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
-    
-    # Per-class metrics with detailed statistics
-    for i, class_name in enumerate(toxicity_types):
-        try:
-            metrics = calculate_class_metrics(
-                labels[:, i],
-                predictions[:, i],
-                binary_predictions[:, i],
-                thresholds[class_name]
-            )
-            results['per_class'][class_name] = metrics
-        except Exception as e:
-            print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
-    
+                
     return results
 
 def bootstrap_sample(y_true, y_pred):
-    """Preserve label relationships during bootstrap sampling"""
+    """Preserve label relationships during bootstrap sampling for multi-label data
+    
+    Args:
+        y_true: True labels (n_samples, n_classes) or (n_samples,)
+        y_pred: Predicted probabilities (n_samples, n_classes) or (n_samples,)
+        
+    Returns:
+        Tuple of bootstrapped true labels and predictions with preserved correlations
+    """
     n_samples = len(y_true)
     
-    # Check if we have any positive samples to stratify on
-    row_sums = y_true.sum(axis=1) if len(y_true.shape) > 1 else y_true
-    if len(np.unique(row_sums)) > 1:
-        # If we have both positive and negative samples, use stratified sampling
-        idx = resample(np.arange(n_samples), stratify=row_sums)
-    else:
-        # If all samples are the same (all positive or all negative), use regular bootstrap
-        idx = resample(np.arange(n_samples))
+    # Handle single-label case
+    if len(y_true.shape) == 1:
+        # Check if we have any positive samples to stratify on
+        if len(np.unique(y_true)) > 1:
+            # If we have both positive and negative samples, use stratified sampling
+            idx = resample(np.arange(n_samples), stratify=y_true)
+        else:
+            # If all samples are the same, use regular bootstrap
+            idx = resample(np.arange(n_samples))
+        return y_true[idx], y_pred[idx]
     
-    return y_true[idx], y_pred[idx]
-
-def calculate_class_weights(labels):
-    """Calculate balanced class weights for each label"""
-    class_weights = {}
-    for i in range(labels.shape[1]):
-        # Get unique classes and their counts
-        unique_classes, class_counts = np.unique(labels[:, i], return_counts=True)
+    # Multi-label case: preserve label correlations
+    # Create label pattern groups to maintain relationships
+    label_patterns = np.apply_along_axis(
+        lambda x: ''.join(x.astype(str)), 
+        axis=1, 
+        arr=y_true
+    )
+    unique_patterns, pattern_counts = np.unique(label_patterns, return_counts=True)
+    
+    # Initialize arrays for stratified sampling
+    sampled_indices = []
+    target_counts = {}
+    
+    # Calculate target counts for each pattern to maintain class distribution
+    for pattern, count in zip(unique_patterns, pattern_counts):
+        # Use Poisson distribution to determine number of samples
+        # This adds some randomness while maintaining approximate proportions
+        target_count = np.random.poisson(count)
+        target_counts[pattern] = max(1, target_count)  # Ensure at least one sample
+    
+    # Perform stratified sampling for each pattern
+    for pattern in unique_patterns:
+        pattern_mask = label_patterns == pattern
+        pattern_indices = np.where(pattern_mask)[0]
         
-        # Handle cases where all samples belong to one class
+        # Sample with replacement from this pattern group
+        if len(pattern_indices) > 0:
+            sampled_pattern_indices = resample(
+                pattern_indices,
+                replace=True,
+                n_samples=target_counts[pattern]
+            )
+            sampled_indices.extend(sampled_pattern_indices)
+    
+    # Convert to numpy array and shuffle
+    sampled_indices = np.array(sampled_indices)
+    np.random.shuffle(sampled_indices)
+    
+    # Ensure we maintain original sample size
+    if len(sampled_indices) > n_samples:
+        sampled_indices = sampled_indices[:n_samples]
+    elif len(sampled_indices) < n_samples:
+        # Add random samples to reach original size if needed
+        additional_samples = resample(
+            np.arange(n_samples),
+            n_samples=n_samples - len(sampled_indices)
+        )
+        sampled_indices = np.concatenate([sampled_indices, additional_samples])
+    
+    return y_true[sampled_indices], y_pred[sampled_indices]
+
+def calculate_class_weights(labels, langs=None):
+    """Calculate balanced class weights with focal weighting and per-language awareness
+    
+    Args:
+        labels: Label matrix (n_samples, n_classes)
+        langs: Optional language IDs for per-language weighting
+    """
+    class_weights = {}
+    
+    # Global class weights
+    for i in range(labels.shape[1]):
+        unique_classes, class_counts = np.unique(labels[:, i], return_counts=True)
+        total_samples = len(labels)
+        
+        # Handle single class case
         if len(unique_classes) == 1:
             class_weights[i] = {int(unique_classes[0]): 1.0}
             continue
-            
+        
         try:
-            weights = compute_class_weight(
-                class_weight='balanced',
-                classes=unique_classes,
-                y=labels[:, i]
-            )
-            # Convert to integer indices and ensure weights are positive
-            class_weights[i] = {int(class_label): max(weight, 0.1) 
-                              for class_label, weight in zip(unique_classes, weights)}
-        except ValueError as e:
-            print(f"Warning: Could not compute class weights for label {i}: {str(e)}")
-            # Fallback to equal weights
-            class_weights[i] = {int(class_label): 1.0 for class_label in unique_classes}
+            # Calculate positive ratio
+            pos_count = np.sum(labels[:, i])
+            pos_ratio = pos_count / total_samples
             
+            # Focal weighting parameters
+            gamma = 2.0  # Focusing parameter
+            alpha = 0.25  # Alpha balancing parameter
+            
+            # Calculate focal weights
+            pos_weight = alpha * (1 - np.clip(pos_ratio, 0.01, 0.99))**gamma
+            neg_weight = (1 - alpha) * (np.clip(pos_ratio, 0.01, 0.99))**gamma
+            
+            # Ensure weights are positive and normalized
+            pos_weight = max(pos_weight, 0.1)
+            neg_weight = max(neg_weight, 0.1)
+            
+            # Store weights
+            class_weights[i] = {
+                1: float(pos_weight),
+                0: float(neg_weight)
+            }
+            
+            # Per-language weighting if languages provided
+            if langs is not None:
+                lang_weights = {}
+                unique_langs = np.unique(langs)
+                
+                for lang in unique_langs:
+                    lang_mask = langs == lang
+                    if not lang_mask.any():
+                        continue
+                    
+                    # Calculate language-specific positive ratio
+                    lang_pos_count = np.sum(labels[lang_mask, i])
+                    lang_total = np.sum(lang_mask)
+                    lang_pos_ratio = lang_pos_count / lang_total if lang_total > 0 else 0
+                    
+                    # Language-specific focal weights
+                    lang_pos_weight = alpha * (1 - np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
+                    lang_neg_weight = (1 - alpha) * (np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
+                    
+                    # Ensure weights are positive
+                    lang_pos_weight = max(lang_pos_weight, 0.1)
+                    lang_neg_weight = max(lang_neg_weight, 0.1)
+                    
+                    # Store language-specific weights
+                    lang_weights[int(lang)] = {
+                        1: float(lang_pos_weight),
+                        0: float(lang_neg_weight)
+                    }
+                
+                # Add language-specific weights
+                class_weights[i] = {
+                    'global': class_weights[i],
+                    'per_language': lang_weights
+                }
+            
+        except Exception as e:
+            print(f"Warning: Error in class weight calculation for label {i}: {str(e)}")
+            # Fallback to balanced weights
+            class_weights[i] = {0: 1.0, 1: 1.0}
+    
     return class_weights
 
 def calculate_specificity(y_true, y_pred, sample_weight=None):
@@ -943,34 +1205,43 @@ def calculate_weighted_hamming_loss(y_true, y_pred, sample_weight=None):
         print(f"Warning: Error in Hamming Loss calculation: {str(e)}")
         return None
 
-def calculate_language_metrics(labels, predictions, binary_predictions):
+def calculate_language_metrics(labels, predictions, binary_predictions, langs=None):
     """Calculate detailed metrics for a specific language with parallel processing"""
     if len(labels) == 0:
         raise ValueError("No samples available for metric calculation")
     
-    # Calculate initial metrics
+    # Calculate class weights with language awareness
     try:
-        class_weights = calculate_class_weights(labels)
+        class_weights = calculate_class_weights(labels, langs)
     except Exception as e:
         print(f"Warning: Using default weights due to error in class weight calculation: {str(e)}")
         class_weights = {i: {0: 1.0, 1: 1.0} for i in range(labels.shape[1])}
     
-    # Calculate weighted metrics
+    # Calculate weighted metrics with language-specific weights
     sample_weights = np.ones(len(labels))
     for i in range(labels.shape[1]):
         label_indices = labels[:, i].astype(int)
-        valid_indices = np.isin(label_indices, list(class_weights[i].keys()))
-        if not valid_indices.all():
-            print(f"Warning: Invalid label indices found for class {i}")
-            continue
-        sample_weights *= np.array([class_weights[i].get(idx, 1.0) for idx in label_indices])
+        
+        if isinstance(class_weights[i], dict) and 'per_language' in class_weights[i]:
+            # Use language-specific weights
+            for j, (label, lang) in enumerate(zip(label_indices, langs)):
+                lang_weights = class_weights[i]['per_language'].get(int(lang), class_weights[i]['global'])
+                sample_weights[j] *= lang_weights.get(label, 1.0)
+        else:
+            # Use global weights
+            weights = class_weights[i]
+            valid_indices = np.isin(label_indices, list(weights.keys()))
+            if not valid_indices.all():
+                print(f"Warning: Invalid label indices found for class {i}")
+                continue
+            sample_weights *= np.array([weights.get(idx, 1.0) for idx in label_indices])
     
-    # Normalize weights
+    # Normalize and clip weights
     sample_weights = np.clip(sample_weights, 0.1, 10.0)
     sample_weights /= sample_weights.sum()
     sample_weights *= len(sample_weights)
     
-    # Calculate base metrics
+    # Rest of the function remains unchanged
     metrics = {}
     
     # Calculate AUC if possible
@@ -1032,34 +1303,8 @@ def calculate_language_metrics(labels, predictions, binary_predictions):
         print(f"Warning: Could not calculate specificity: {str(e)}")
         metrics['specificity'] = 0.0
     
-    # Parallel bootstrap calculations
-    n_bootstrap = 1000
-    n_processes = min(mp.cpu_count(), 8)  # Limit to 8 processes max
-    
-    # Prepare arguments for parallel processing
-    bootstrap_args = [(labels, predictions, binary_predictions, None)] * n_bootstrap
-    
-    # Run bootstrap iterations in parallel
-    with mp.Pool(n_processes) as pool:
-        bootstrap_results = list(filter(None, pool.map(parallel_bootstrap_metrics, bootstrap_args)))
-    
-    # Calculate confidence intervals
-    ci_lower, ci_upper = 2.5, 97.5
-    for metric in ['auc', 'f1', 'hamming_loss', 'exact_match', 'specificity']:
-        values = [r[metric] for r in bootstrap_results if r and r[metric] is not None]
-        if values:
-            metrics[f'{metric}_ci'] = [
-                np.percentile(values, ci_lower),
-                np.percentile(values, ci_upper)
-            ]
-        else:
-            metrics[f'{metric}_ci'] = [0.0, 0.0]
-    
-    metrics.update({
-        'sample_count': len(labels),
-        'bootstrap_samples': len(bootstrap_results),
-        'class_weights': class_weights
-    })
+    # Add class weight information to metrics
+    metrics['class_weights'] = class_weights
     
     return metrics
 
@@ -1407,8 +1652,17 @@ def convert_to_serializable(obj):
         return [convert_to_serializable(item) for item in obj]
     return obj
 
-def save_results(results, predictions, labels, langs, output_dir):
-    """Save evaluation results and plots"""
+def save_results(results, raw_predictions, calibrated_predictions, labels, langs, output_dir):
+    """Save evaluation results and plots
+    
+    Args:
+        results: Dictionary containing evaluation results
+        raw_predictions: Raw model predictions
+        calibrated_predictions: Calibrated model predictions
+        labels: True labels
+        langs: Language IDs
+        output_dir: Directory to save results
+    """
     os.makedirs(output_dir, exist_ok=True)
     
     # Get language name mapping
@@ -1422,34 +1676,35 @@ def save_results(results, predictions, labels, langs, output_dir):
         6: 'Portuguese (pt)'
     }
     
-    # Add global metrics summary to results
-    results['overall']['summary'] = {
-        'auc': {
-            'macro': results['overall'].get('auc_macro', 0.0),
-            'weighted': results['overall'].get('auc_weighted', 0.0)
-        },
-        'f1': {
-            'macro': results['overall'].get('f1_macro', 0.0),
-            'weighted': results['overall'].get('f1_weighted', 0.0)
-        },
-        'precision': {
-            'macro': results['overall'].get('precision_macro', 0.0),
-            'weighted': results['overall'].get('precision_weighted', 0.0)
-        },
-        'recall': {
-            'macro': results['overall'].get('recall_macro', 0.0),
-            'weighted': results['overall'].get('recall_weighted', 0.0)
-        },
-        'specificity': {
-            'macro': results['overall'].get('specificity_macro', 0.0),
-            'weighted': results['overall'].get('specificity_weighted', 0.0)
-        },
-        'other_metrics': {
-            'hamming_loss': results['overall'].get('hamming_loss', 1.0),
-            'exact_match': results['overall'].get('exact_match', 0.0)
-        },
-        'class_support': results['overall'].get('class_support', {})
-    }
+    # Add global metrics summary to results for both raw and calibrated predictions
+    for pred_type in ['raw', 'calibrated']:
+        results[pred_type]['summary'] = {
+            'auc': {
+                'macro': results[pred_type]['overall'].get('auc_macro', 0.0),
+                'weighted': results[pred_type]['overall'].get('auc_weighted', 0.0)
+            },
+            'f1': {
+                'macro': results[pred_type]['overall'].get('f1_macro', 0.0),
+                'weighted': results[pred_type]['overall'].get('f1_weighted', 0.0)
+            },
+            'precision': {
+                'macro': results[pred_type]['overall'].get('precision_macro', 0.0),
+                'weighted': results[pred_type]['overall'].get('precision_weighted', 0.0)
+            },
+            'recall': {
+                'macro': results[pred_type]['overall'].get('recall_macro', 0.0),
+                'weighted': results[pred_type]['overall'].get('recall_weighted', 0.0)
+            },
+            'specificity': {
+                'macro': results[pred_type]['overall'].get('specificity_macro', 0.0),
+                'weighted': results[pred_type]['overall'].get('specificity_weighted', 0.0)
+            },
+            'other_metrics': {
+                'hamming_loss': results[pred_type]['overall'].get('hamming_loss', 1.0),
+                'exact_match': results[pred_type]['overall'].get('exact_match', 0.0)
+            },
+            'class_support': results[pred_type]['overall'].get('class_support', {})
+        }
     
     # Convert results to JSON serializable format
     serializable_results = convert_to_serializable(results)
@@ -1458,119 +1713,135 @@ def save_results(results, predictions, labels, langs, output_dir):
     with open(os.path.join(output_dir, 'evaluation_results.json'), 'w') as f:
         json.dump(serializable_results, f, indent=2)
     
-    # Save raw predictions for further analysis
+    # Save raw and calibrated predictions for further analysis
     np.savez_compressed(
         os.path.join(output_dir, 'predictions.npz'),
-        predictions=predictions,
+        raw_predictions=raw_predictions,
+        calibrated_predictions=calibrated_predictions,
         labels=labels,
         langs=langs
     )
     
-    # Plot confusion matrices
-    plot_confusion_matrices(predictions, labels, langs, output_dir)
+    # Plot confusion matrices for both raw and calibrated predictions
+    plot_confusion_matrices(raw_predictions, labels, langs, 
+                          os.path.join(output_dir, 'raw_predictions'))
+    plot_confusion_matrices(calibrated_predictions, labels, langs, 
+                          os.path.join(output_dir, 'calibrated_predictions'))
     
-    # Print detailed summary with both macro and weighted metrics
+    # Print detailed summary with both raw and calibrated metrics
     print("\nEvaluation Results:")
     print("-" * 80)
-    print(f"Overall Metrics:")
     
-    print("\nAUC Scores:")
-    print(f"  Macro-averaged: {results['overall'].get('auc_macro', 0.0):.4f}")
-    print(f"  Weighted-averaged: {results['overall'].get('auc_weighted', 0.0):.4f}")
-    
-    print("\nF1 Scores:")
-    print(f"  Macro-averaged: {results['overall'].get('f1_macro', 0.0):.4f}")
-    print(f"  Weighted-averaged: {results['overall'].get('f1_weighted', 0.0):.4f}")
-    
-    print("\nPrecision:")
-    print(f"  Macro-averaged: {results['overall'].get('precision_macro', 0.0):.4f}")
-    print(f"  Weighted-averaged: {results['overall'].get('precision_weighted', 0.0):.4f}")
-    
-    print("\nRecall:")
-    print(f"  Macro-averaged: {results['overall'].get('recall_macro', 0.0):.4f}")
-    print(f"  Weighted-averaged: {results['overall'].get('recall_weighted', 0.0):.4f}")
-    
-    print("\nSpecificity:")
-    print(f"  Macro-averaged: {results['overall'].get('specificity_macro', 0.0):.4f}")
-    print(f"  Weighted-averaged: {results['overall'].get('specificity_weighted', 0.0):.4f}")
-    
-    print("\nOther Metrics:")
-    print(f"  Exact Match: {results['overall'].get('exact_match', 0.0):.4f}")
-    
-    if 'class_support' in results['overall']:
-        print("\nClass Support (number of samples):")
-        for class_name, support in results['overall']['class_support'].items():
-            print(f"  {class_name}: {support:,}")
+    for pred_type in ['raw', 'calibrated']:
+        print(f"\n{pred_type.upper()} PREDICTIONS:")
+        print("-" * 40)
+        
+        print("\nAUC Scores:")
+        print(f"  Macro-averaged: {results[pred_type]['overall'].get('auc_macro', 0.0):.4f}")
+        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('auc_weighted', 0.0):.4f}")
+        
+        print("\nF1 Scores:")
+        print(f"  Macro-averaged: {results[pred_type]['overall'].get('f1_macro', 0.0):.4f}")
+        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('f1_weighted', 0.0):.4f}")
+        
+        print("\nPrecision:")
+        print(f"  Macro-averaged: {results[pred_type]['overall'].get('precision_macro', 0.0):.4f}")
+        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('precision_weighted', 0.0):.4f}")
+        
+        print("\nRecall:")
+        print(f"  Macro-averaged: {results[pred_type]['overall'].get('recall_macro', 0.0):.4f}")
+        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('recall_weighted', 0.0):.4f}")
+        
+        print("\nSpecificity:")
+        print(f"  Macro-averaged: {results[pred_type]['overall'].get('specificity_macro', 0.0):.4f}")
+        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('specificity_weighted', 0.0):.4f}")
+        
+        print("\nOther Metrics:")
+        print(f"  Exact Match: {results[pred_type]['overall'].get('exact_match', 0.0):.4f}")
+        
+        if 'class_support' in results[pred_type]['overall']:
+            print("\nClass Support (number of samples):")
+            for class_name, support in results[pred_type]['overall']['class_support'].items():
+                print(f"  {class_name}: {support:,}")
     
     print("\nPer-Language Performance:")
-    for lang_id, metrics in results['per_language'].items():
-        lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
-        print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
+    for pred_type in ['raw', 'calibrated']:
+        print(f"\n{pred_type.upper()} PREDICTIONS:")
+        print("-" * 40)
         
-        # Print AUC with CI if available
-        if 'auc' in metrics and metrics['auc'] is not None:
-            auc_str = f"{metrics['auc']:.4f}"
-            if 'auc_ci' in metrics:
-                auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
-            print(f"  AUC: {auc_str}")
-        else:
-            print("  AUC: N/A")
-        
-        # Print F1 with CI if available
-        if 'f1' in metrics and metrics['f1'] is not None:
-            f1_str = f"{metrics['f1']:.4f}"
-            if 'f1_ci' in metrics:
-                f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
-            print(f"  F1: {f1_str}")
-        else:
-            print("  F1: N/A")
-        
-        # Handle Hamming Loss
-        if 'hamming_loss' in metrics and metrics['hamming_loss'] is not None:
-            h_loss_str = f"{metrics['hamming_loss']:.4f}"
-            if 'hamming_loss_ci' in metrics:
-                h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
-            print(f"  Hamming Loss: {h_loss_str}")
-        else:
-            print("  Hamming Loss: N/A")
-        
-        # Handle Exact Match
-        if 'exact_match' in metrics and metrics['exact_match'] is not None:
-            e_match_str = f"{metrics['exact_match']:.4f}"
-            if 'exact_match_ci' in metrics:
-                e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
-            print(f"  Exact Match: {e_match_str}")
-        else:
-            print("  Exact Match: N/A")
+        for lang_id, metrics in results[pred_type]['per_language'].items():
+            lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
+            print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
+            
+            # Print AUC with CI if available
+            if 'auc' in metrics and metrics['auc'] is not None:
+                auc_str = f"{metrics['auc']:.4f}"
+                if 'auc_ci' in metrics:
+                    auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
+                print(f"  AUC: {auc_str}")
+            else:
+                print("  AUC: N/A")
+            
+            # Print F1 with CI if available
+            if 'f1' in metrics and metrics['f1'] is not None:
+                f1_str = f"{metrics['f1']:.4f}"
+                if 'f1_ci' in metrics:
+                    f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
+                print(f"  F1: {f1_str}")
+            else:
+                print("  F1: N/A")
+            
+            # Handle Hamming Loss
+            if 'hamming_loss' in metrics and metrics['hamming_loss'] is not None:
+                h_loss_str = f"{metrics['hamming_loss']:.4f}"
+                if 'hamming_loss_ci' in metrics:
+                    h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
+                print(f"  Hamming Loss: {h_loss_str}")
+            else:
+                print("  Hamming Loss: N/A")
+            
+            # Handle Exact Match
+            if 'exact_match' in metrics and metrics['exact_match'] is not None:
+                e_match_str = f"{metrics['exact_match']:.4f}"
+                if 'exact_match_ci' in metrics:
+                    e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
+                print(f"  Exact Match: {e_match_str}")
+            else:
+                print("  Exact Match: N/A")
     
     print("\nPer-Class Performance:")
-    for class_name, metrics in results.get('per_class', {}).items():
-        print(f"\n{class_name}:")
+    for pred_type in ['raw', 'calibrated']:
+        print(f"\n{pred_type.upper()} PREDICTIONS:")
+        print("-" * 40)
         
-        # Print metrics with None checks
-        def format_metric(name, format_str='.4f'):
-            value = metrics.get(name)
-            return f"{value:{format_str}}" if value is not None else "N/A"
-        
-        print(f"  AUC: {format_metric('auc')}")
-        print(f"  F1: {format_metric('f1')}")
-        print(f"  Precision: {format_metric('precision')}")
-        print(f"  Recall: {format_metric('recall')}")
-        print(f"  Specificity: {format_metric('specificity')}")
-        print(f"  NPV: {format_metric('npv')}")
-        print(f"  Threshold: {format_metric('threshold')}")
-        print(f"  Confusion Matrix:")
-        print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
-        print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
-        if 'support' in metrics:
-            print(f"  Support: {metrics['support']:,}")
+        for class_name, metrics in results[pred_type].get('per_class', {}).items():
+            print(f"\n{class_name}:")
+            
+            # Print metrics with None checks
+            def format_metric(name, format_str='.4f'):
+                value = metrics.get(name)
+                return f"{value:{format_str}}" if value is not None else "N/A"
+            
+            print(f"  AUC: {format_metric('auc')}")
+            print(f"  F1: {format_metric('f1')}")
+            print(f"  Precision: {format_metric('precision')}")
+            print(f"  Recall: {format_metric('recall')}")
+            print(f"  Specificity: {format_metric('specificity')}")
+            print(f"  NPV: {format_metric('npv')}")
+            print(f"  Threshold: {format_metric('threshold')}")
+            print(f"  Confusion Matrix:")
+            print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
+            print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
+            if 'support' in metrics:
+                print(f"  Support: {metrics['support']:,}")
 
-def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, languages=None, langs=None):
-    """Plot calibration curves for model predictions
+def plot_calibration_curves(y_true, y_pred_raw, y_pred_calibrated, output_dir, toxicity_types=None, languages=None, langs=None):
+    """Plot calibration curves comparing raw and calibrated predictions
     
     Args:
         y_true: True labels (n_samples, n_classes)
-        y_pred: Predicted probabilities (n_samples, n_classes)
+        y_pred_raw: Raw predicted probabilities (n_samples, n_classes)
+        y_pred_calibrated: Calibrated predicted probabilities (n_samples, n_classes)
         output_dir: Directory to save plots
         toxicity_types: List of toxicity class names
         languages: Dictionary mapping language IDs to names
@@ -1581,15 +1852,28 @@ def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, lan
     
     # Overall calibration curve
     plt.figure(figsize=(10, 6))
-    prob_true, prob_pred = calibration_curve(
-        y_true.flatten(),
-        y_pred.flatten(),
-        n_bins=10,
-        strategy='quantile'  # Use quantile-based binning for better visualization
-    )
     
-    plt.plot(prob_pred, prob_true, marker='o', label="Calibration Curve")
-    plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect Calibration")
+    # Plot raw predictions
+    prob_true_raw, prob_pred_raw = calibration_curve(
+        y_true.flatten(),
+        y_pred_raw.flatten(),
+        n_bins=10,
+        strategy='quantile'
+    )
+    plt.plot(prob_pred_raw, prob_true_raw, marker='o', label="Raw Predictions", color='red', alpha=0.7)
+    
+    # Plot calibrated predictions
+    prob_true_cal, prob_pred_cal = calibration_curve(
+        y_true.flatten(),
+        y_pred_calibrated.flatten(),
+        n_bins=10,
+        strategy='quantile'
+    )
+    plt.plot(prob_pred_cal, prob_true_cal, marker='s', label="Calibrated", color='blue', alpha=0.7)
+    
+    # Add perfect calibration line
+    plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect Calibration", color='gray')
+    
     plt.xlabel("Mean Predicted Probability")
     plt.ylabel("Observed Frequency")
     plt.title("Overall Probability Calibration")
@@ -1604,15 +1888,28 @@ def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, lan
         plt.figure(figsize=(15, 10))
         for i, class_name in enumerate(toxicity_types):
             plt.subplot(2, 3, i + 1)
-            prob_true, prob_pred = calibration_curve(
+            
+            # Raw predictions
+            prob_true_raw, prob_pred_raw = calibration_curve(
                 y_true[:, i],
-                y_pred[:, i],
+                y_pred_raw[:, i],
                 n_bins=10,
                 strategy='quantile'
             )
+            plt.plot(prob_pred_raw, prob_true_raw, marker='o', label="Raw", color='red', alpha=0.7)
             
-            plt.plot(prob_pred, prob_true, marker='o', label="Calibration")
-            plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect")
+            # Calibrated predictions
+            prob_true_cal, prob_pred_cal = calibration_curve(
+                y_true[:, i],
+                y_pred_calibrated[:, i],
+                n_bins=10,
+                strategy='quantile'
+            )
+            plt.plot(prob_pred_cal, prob_true_cal, marker='s', label="Calibrated", color='blue', alpha=0.7)
+            
+            # Perfect calibration line
+            plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect", color='gray')
+            
             plt.title(f"{class_name}")
             plt.xlabel("Predicted Probability")
             plt.ylabel("Observed Frequency")
@@ -1633,15 +1930,27 @@ def plot_calibration_curves(y_true, y_pred, output_dir, toxicity_types=None, lan
                 for i, class_name in enumerate(toxicity_types):
                     plt.subplot(2, 3, i + 1)
                     try:
-                        prob_true, prob_pred = calibration_curve(
+                        # Raw predictions
+                        prob_true_raw, prob_pred_raw = calibration_curve(
                             y_true[lang_mask, i],
-                            y_pred[lang_mask, i],
+                            y_pred_raw[lang_mask, i],
                             n_bins=10,
                             strategy='quantile'
                         )
+                        plt.plot(prob_pred_raw, prob_true_raw, marker='o', label="Raw", color='red', alpha=0.7)
                         
-                        plt.plot(prob_pred, prob_true, marker='o', label="Calibration")
-                        plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect")
+                        # Calibrated predictions
+                        prob_true_cal, prob_pred_cal = calibration_curve(
+                            y_true[lang_mask, i],
+                            y_pred_calibrated[lang_mask, i],
+                            n_bins=10,
+                            strategy='quantile'
+                        )
+                        plt.plot(prob_pred_cal, prob_true_cal, marker='s', label="Calibrated", color='blue', alpha=0.7)
+                        
+                        # Perfect calibration line
+                        plt.plot([0, 1], [0, 1], linestyle="--", label="Perfect", color='gray')
+                        
                         plt.title(f"{class_name}")
                         plt.xlabel("Predicted Probability")
                         plt.ylabel("Observed Frequency")
