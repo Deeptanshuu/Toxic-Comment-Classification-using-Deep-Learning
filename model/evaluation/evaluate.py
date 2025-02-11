@@ -27,7 +27,7 @@ import multiprocessing as mp
 plt.switch_backend('agg')
 
 class ToxicDataset(Dataset):
-    def __init__(self, df, tokenizer, max_length=128):
+    def __init__(self, df, tokenizer, max_length=128, cache_dir='cached_dataset'):
         self.texts = df['comment_text'].values
         self.labels = df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values
         
@@ -45,23 +45,54 @@ class ToxicDataset(Dataset):
         
         self.tokenizer = tokenizer
         self.max_length = max_length
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_file = os.path.join(
+            cache_dir, 
+            f'tokenized_data_{max_length}_{tokenizer.__class__.__name__}.pt'
+        )
+        
+        # Try to load cached tokenized data
+        self.cached_encodings = self._load_or_create_cache()
+
+    def _load_or_create_cache(self):
+        """Load cached tokenized data or create if not exists"""
+        if os.path.exists(self.cache_file):
+            print("Loading cached tokenized data...")
+            return torch.load(self.cache_file)
+        
+        print("Tokenizing dataset and creating cache...")
+        encodings = []
+        
+        # Use tqdm for progress bar
+        for text in tqdm(self.texts, desc="Tokenizing"):
+            encoding = self.tokenizer(
+                str(text),
+                max_length=self.max_length,
+                padding='max_length',
+                truncation=True,
+                return_tensors='pt'
+            )
+            encodings.append({
+                'input_ids': encoding['input_ids'].flatten(),
+                'attention_mask': encoding['attention_mask'].flatten()
+            })
+        
+        # Save cache
+        torch.save(encodings, self.cache_file)
+        print(f"Cached tokenized data saved to {self.cache_file}")
+        return encodings
 
     def __len__(self):
         return len(self.texts)
 
     def __getitem__(self, idx):
-        text = str(self.texts[idx])
-        encoding = self.tokenizer(
-            text,
-            max_length=self.max_length,
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
-        
+        # Use cached encodings
+        encoding = self.cached_encodings[idx]
         return {
-            'input_ids': encoding['input_ids'].flatten(),
-            'attention_mask': encoding['attention_mask'].flatten(),
+            'input_ids': encoding['input_ids'],
+            'attention_mask': encoding['attention_mask'],
             'labels': torch.FloatTensor(self.labels[idx]),
             'lang': torch.tensor(self.langs[idx], dtype=torch.long)
         }
@@ -1215,14 +1246,24 @@ def plot_metrics(results, output_dir, toxicity_types=None):
         # Plot 2: Sample distribution
         sample_counts = [results['per_language'][lang].get('sample_count', 0) for lang in languages]
         total_samples = sum(sample_counts)
-        percentages = [count/total_samples * 100 for count in sample_counts]
+        
+        # Handle zero division case
+        if total_samples > 0:
+            percentages = [count/total_samples * 100 for count in sample_counts]
+        else:
+            print("Warning: No samples found in results")
+            percentages = [0] * len(languages)
         
         bars = ax2.bar(x, percentages, width*2)
         
         # Add value labels on the bars
         for i, (count, percentage) in enumerate(zip(sample_counts, percentages)):
-            ax2.text(i, percentage, f'{count:,}\n({percentage:.1f}%)', 
-                    ha='center', va='bottom')
+            if total_samples > 0:
+                ax2.text(i, percentage, f'{count:,}\n({percentage:.1f}%)', 
+                        ha='center', va='bottom')
+            else:
+                ax2.text(i, 0, f'{count:,}\n(0.0%)', 
+                        ha='center', va='bottom')
         
         # Customize second subplot
         ax2.set_ylabel('Sample Distribution (%)')
@@ -1687,6 +1728,10 @@ def main():
                       help='Base directory to save results')
     parser.add_argument('--num_workers', type=int, default=None,
                       help='Number of workers for data loading (default: CPU count - 1)')
+    parser.add_argument('--cache_dir', type=str, default='cached_data',
+                      help='Directory to store cached tokenized data')
+    parser.add_argument('--force_retokenize', action='store_true',
+                      help='Force retokenization even if cache exists')
     
     args = parser.parse_args()
     
@@ -1701,7 +1746,9 @@ def main():
         'model_path': args.model_path,
         'test_file': args.test_file,
         'batch_size': args.batch_size,
-        'num_workers': args.num_workers
+        'num_workers': args.num_workers,
+        'cache_dir': args.cache_dir,
+        'force_retokenize': args.force_retokenize
     }
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
@@ -1718,13 +1765,24 @@ def main():
         if model is None:
             return
         
+        # If force_retokenize, delete existing cache
+        if args.force_retokenize and os.path.exists(args.cache_dir):
+            print("Forcing retokenization - removing existing cache...")
+            import shutil
+            shutil.rmtree(args.cache_dir)
+        
         # Load test data
         print("\nLoading test dataset...")
         test_df = pd.read_csv(args.test_file)
         print(f"Loaded {len(test_df):,} test samples")
         
-        # Create test dataset and dataloader
-        test_dataset = ToxicDataset(test_df, tokenizer)
+        # Create test dataset with caching
+        test_dataset = ToxicDataset(
+            test_df, 
+            tokenizer, 
+            cache_dir=args.cache_dir
+        )
+        
         test_loader = DataLoader(
             test_dataset,
             batch_size=args.batch_size,
