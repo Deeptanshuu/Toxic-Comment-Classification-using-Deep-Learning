@@ -109,6 +109,19 @@ def evaluate_language(args):
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         print(f"\nProcessing {lang_name} with {len(lang_labels)} samples...")
         
+        # Precision-focused configuration
+        PRECISION_THRESHOLDS = {
+            'toxic': 0.85,
+            'severe_toxic': 0.90,
+            'obscene': 0.85,
+            'threat': 0.90,
+            'insult': 0.85,
+            'identity_hate': 0.90
+        }
+        
+        # Minimum recall requirements to prevent extreme precision bias
+        MIN_RECALL = 0.20
+        
         # Optimize thresholds for this language
         lang_thresholds = {}
         for i, class_name in enumerate(toxicity_types):
@@ -118,26 +131,19 @@ def evaluate_language(args):
                 
                 if len(np.unique(class_labels)) < 2:
                     print(f"Warning: Only one class present for {class_name} in {lang_name}")
-                    # Use a more conservative threshold when only one class is present
-                    if class_labels[0] == 1:  # If all samples are positive
-                        lang_thresholds[class_name] = 0.5
-                    else:  # If all samples are negative
-                        lang_thresholds[class_name] = 0.7
+                    if class_labels[0] == 1:
+                        lang_thresholds[class_name] = 0.6  # More conservative for positive-only
+                    else:
+                        lang_thresholds[class_name] = 0.8  # Very conservative for negative-only
                     continue
                 
-                # Calculate class distribution for adaptive thresholding
+                # Calculate class distribution
                 pos_ratio = np.mean(class_labels)
                 
                 # Find optimal threshold using precision-focused approach
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
-                # Calculate precision scores with minimum precision constraint
-                MIN_PRECISION = 0.8  # Minimum required precision
-                precision_scores = []
-                f1_scores = []
-                recall_scores = []
-                
-                # Calculate class weights for weighted metrics
+                # Calculate metrics with class weights
                 class_weights = compute_class_weight(
                     class_weight='balanced',
                     classes=np.unique(class_labels),
@@ -146,125 +152,141 @@ def evaluate_language(args):
                 weight_dict = dict(zip(np.unique(class_labels), class_weights))
                 sample_weights = np.array([weight_dict[label] for label in class_labels])
                 
+                # Calculate scores for all thresholds
+                metrics_by_threshold = []
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
                     try:
-                        # Calculate precision
                         precision = precision_score(
                             class_labels, binary_preds,
                             sample_weight=sample_weights,
                             zero_division=0
                         )
-                        precision_scores.append(precision)
+                        recall = recall_score(
+                            class_labels, binary_preds,
+                            sample_weight=sample_weights,
+                            zero_division=0
+                        )
+                        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
                         
-                        # Calculate recall and F1 only if precision meets minimum requirement
-                        if precision >= MIN_PRECISION:
-                            recall = recall_score(
-                                class_labels, binary_preds,
-                                sample_weight=sample_weights,
-                                zero_division=0
-                            )
-                            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                        else:
-                            recall = 0
-                            f1 = 0
-                            
-                        recall_scores.append(recall)
-                        f1_scores.append(f1)
+                        # Calculate Hamming accuracy for this threshold
+                        hamming_acc = 1 - hamming_loss(class_labels, binary_preds)
                         
+                        metrics_by_threshold.append({
+                            'threshold': t,
+                            'precision': precision,
+                            'recall': recall,
+                            'f1': f1,
+                            'hamming_accuracy': hamming_acc
+                        })
                     except Exception:
-                        precision_scores.append(0.0)
-                        recall_scores.append(0.0)
-                        f1_scores.append(0.0)
+                        continue
                 
-                # Find threshold that maximizes F1 while meeting precision constraint
-                valid_indices = [i for i, p in enumerate(precision_scores) if p >= MIN_PRECISION]
+                # Filter thresholds meeting precision and minimum recall requirements
+                required_precision = PRECISION_THRESHOLDS.get(class_name, 0.85)
+                valid_thresholds = [
+                    m for m in metrics_by_threshold 
+                    if m['precision'] >= required_precision and m['recall'] >= MIN_RECALL
+                ]
                 
-                if valid_indices:
-                    # Among thresholds meeting precision constraint, choose one with highest F1
-                    best_idx = valid_indices[np.argmax([f1_scores[i] for i in valid_indices])]
-                    initial_threshold = thresh[best_idx]
-                    achieved_precision = precision_scores[best_idx]
-                    achieved_recall = recall_scores[best_idx]
+                if valid_thresholds:
+                    # Among valid thresholds, choose one with best balance of metrics
+                    best_threshold = max(
+                        valid_thresholds,
+                        key=lambda x: (
+                            x['precision'] * 0.5 +  # Weight precision more
+                            x['recall'] * 0.2 +     # Consider recall
+                            x['f1'] * 0.2 +         # Consider F1
+                            x['hamming_accuracy'] * 0.1  # Consider Hamming accuracy
+                        )
+                    )
+                    initial_threshold = best_threshold['threshold']
+                    achieved_metrics = best_threshold
                 else:
-                    # If no threshold meets precision constraint, find highest precision threshold
-                    best_idx = np.argmax(precision_scores)
-                    initial_threshold = thresh[best_idx]
-                    achieved_precision = precision_scores[best_idx]
-                    achieved_recall = recall_scores[best_idx]
-                    print(f"Warning: Could not meet minimum precision requirement for {class_name}")
+                    # If no threshold meets all requirements, prioritize precision
+                    best_threshold = max(
+                        metrics_by_threshold,
+                        key=lambda x: x['precision']
+                    )
+                    initial_threshold = best_threshold['threshold']
+                    achieved_metrics = best_threshold
+                    print(f"Warning: Could not meet precision requirement ({required_precision:.2f}) "
+                          f"for {class_name} while maintaining minimum recall ({MIN_RECALL:.2f})")
                 
-                # Test the initial threshold
+                # Test and adjust the threshold if needed
                 test_preds = (class_preds > initial_threshold).astype(int)
                 if test_preds.sum() == 0:
-                    print(f"Warning: No positive predictions for {class_name} in {lang_name}, adjusting threshold")
+                    print(f"Warning: No positive predictions for {class_name}, adjusting threshold")
                     
-                    # Use adaptive thresholding based on class distribution
-                    if pos_ratio > 0:  # If we have positive samples in ground truth
-                        # Try multiple percentiles and pick the one that gives best precision
-                        percentiles = [90, 85, 80, 75, 70]
+                    if pos_ratio > 0:
+                        # Try multiple percentiles with precision focus
+                        percentiles = [95, 90, 85, 80, 75]
+                        best_metrics = None
                         best_threshold = initial_threshold
-                        best_precision = 0
                         
                         for p in percentiles:
                             threshold = np.percentile(class_preds, p)
                             test_preds = (class_preds > threshold).astype(int)
-                            if test_preds.sum() > 0:  # Only consider thresholds that give positive predictions
+                            if test_preds.sum() > 0:
                                 precision = precision_score(
                                     class_labels, test_preds,
                                     sample_weight=sample_weights,
                                     zero_division=0
                                 )
-                                if precision > best_precision:
-                                    best_precision = precision
-                                    best_threshold = threshold
+                                recall = recall_score(
+                                    class_labels, test_preds,
+                                    sample_weight=sample_weights,
+                                    zero_division=0
+                                )
+                                hamming_acc = 1 - hamming_loss(class_labels, test_preds)
+                                
+                                # Prioritize precision while maintaining minimum recall
+                                if precision >= required_precision and recall >= MIN_RECALL:
+                                    if best_metrics is None or precision > best_metrics['precision']:
+                                        best_threshold = threshold
+                                        best_metrics = {
+                                            'precision': precision,
+                                            'recall': recall,
+                                            'hamming_accuracy': hamming_acc
+                                        }
                         
-                        # Set a minimum threshold to prevent too many false positives
-                        lang_thresholds[class_name] = max(best_threshold, 0.4)
+                        # Set final threshold
+                        lang_thresholds[class_name] = max(best_threshold, 0.5)
+                        achieved_metrics = best_metrics or achieved_metrics
                     else:
-                        # If no positive samples, use a conservative threshold
-                        lang_thresholds[class_name] = 0.7
+                        lang_thresholds[class_name] = 0.8
                 else:
                     lang_thresholds[class_name] = initial_threshold
                 
-                # Validate final threshold
-                final_preds = (class_preds > lang_thresholds[class_name]).astype(int)
-                final_precision = precision_score(
-                    class_labels, final_preds,
-                    sample_weight=sample_weights,
-                    zero_division=0
-                )
-                final_recall = recall_score(
-                    class_labels, final_preds,
-                    sample_weight=sample_weights,
-                    zero_division=0
-                )
-                
-                print(f"  {class_name}: threshold={lang_thresholds[class_name]:.4f}, "
-                      f"precision={final_precision:.4f}, recall={final_recall:.4f}")
+                # Log detailed metrics
+                print(f"  {class_name}:")
+                print(f"    Threshold: {lang_thresholds[class_name]:.4f}")
+                print(f"    Precision: {achieved_metrics['precision']:.4f}")
+                print(f"    Recall: {achieved_metrics['recall']:.4f}")
+                print(f"    F1: {achieved_metrics['f1']:.4f}")
+                print(f"    Hamming Accuracy: {achieved_metrics['hamming_accuracy']:.4f}")
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                # Use class-specific default thresholds based on typical values with high precision
+                # Use conservative default thresholds
                 default_thresholds = {
-                    'toxic': 0.5,
-                    'severe_toxic': 0.35,
-                    'obscene': 0.55,
-                    'threat': 0.45,
-                    'insult': 0.5,
-                    'identity_hate': 0.35
+                    'toxic': 0.6,
+                    'severe_toxic': 0.45,
+                    'obscene': 0.65,
+                    'threat': 0.55,
+                    'insult': 0.6,
+                    'identity_hate': 0.45
                 }
-                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.5)
+                lang_thresholds[class_name] = default_thresholds.get(class_name, 0.6)
         
         # Calculate metrics using optimized thresholds
         binary_preds = np.zeros_like(lang_preds)
         for i, class_name in enumerate(toxicity_types):
             binary_preds[:, i] = (lang_preds[:, i] > lang_thresholds[class_name]).astype(int)
         
-        # Calculate metrics without parallel processing
+        # Calculate metrics
         metrics = {}
         
-        # Calculate AUC if possible
         try:
             if len(np.unique(lang_labels)) > 1:
                 metrics['auc'] = roc_auc_score(lang_labels, lang_preds, average='weighted')
@@ -272,7 +294,6 @@ def evaluate_language(args):
             print(f"Warning: Could not calculate AUC: {str(e)}")
             metrics['auc'] = None
         
-        # Calculate precision, recall, F1
         try:
             precision, recall, f1, _ = precision_recall_fscore_support(
                 lang_labels, binary_preds, average='weighted',
@@ -281,61 +302,17 @@ def evaluate_language(args):
             metrics.update({
                 'precision': precision,
                 'recall': recall,
-                'f1': f1
+                'f1': f1,
+                'hamming_accuracy': 1 - hamming_loss(lang_labels, binary_preds)
             })
         except Exception as e:
-            print(f"Warning: Could not calculate precision/recall/F1: {str(e)}")
+            print(f"Warning: Could not calculate metrics: {str(e)}")
             metrics.update({
                 'precision': 0.0,
                 'recall': 0.0,
-                'f1': 0.0
+                'f1': 0.0,
+                'hamming_accuracy': 0.0
             })
-        
-        # Calculate Hamming Loss
-        try:
-            metrics['hamming_loss'] = hamming_loss(lang_labels, binary_preds)
-        except Exception as e:
-            print(f"Warning: Could not calculate Hamming Loss: {str(e)}")
-            metrics['hamming_loss'] = 1.0  # Worst case
-        
-        # Calculate Exact Match
-        try:
-            metrics['exact_match'] = accuracy_score(lang_labels, binary_preds)
-        except Exception as e:
-            print(f"Warning: Could not calculate Exact Match: {str(e)}")
-            metrics['exact_match'] = 0.0  # Worst case
-        
-        # Calculate specificity
-        try:
-            metrics['specificity'] = calculate_specificity(lang_labels, binary_preds)
-        except Exception as e:
-            print(f"Warning: Could not calculate specificity: {str(e)}")
-            metrics['specificity'] = 0.0
-        
-        # Calculate per-class metrics
-        class_metrics = {}
-        for i, class_name in enumerate(toxicity_types):
-            try:
-                class_metrics[class_name] = calculate_class_metrics(
-                    lang_labels[:, i],
-                    lang_preds[:, i],
-                    binary_preds[:, i],
-                    lang_thresholds[class_name]
-                )
-            except Exception as e:
-                print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
-                class_metrics[class_name] = {
-                    'auc': 0.0,
-                    'precision': 0.0,
-                    'recall': 0.0,
-                    'f1': 0.0,
-                    'specificity': 0.0,
-                    'npv': 0.0,
-                    'threshold': lang_thresholds[class_name]
-                }
-        
-        metrics['class_metrics'] = class_metrics
-        metrics['sample_count'] = len(lang_labels)
         
         return lang_id, metrics, lang_thresholds
         
