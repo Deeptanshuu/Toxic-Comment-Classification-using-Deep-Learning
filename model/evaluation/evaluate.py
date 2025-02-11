@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.metrics import (
     roc_auc_score, precision_recall_fscore_support, 
     confusion_matrix, roc_curve, hamming_loss, 
-    accuracy_score
+    accuracy_score, precision_score, recall_score
 )
 from sklearn.calibration import calibration_curve
 from sklearn.utils import resample
@@ -22,7 +22,6 @@ from torch.utils.data import Dataset, DataLoader
 import gc
 import multiprocessing
 import multiprocessing as mp
-from functools import partial
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -129,11 +128,16 @@ def evaluate_language(args):
                 # Calculate class distribution for adaptive thresholding
                 pos_ratio = np.mean(class_labels)
                 
-                # Find optimal threshold using F1 score with class weights
+                # Find optimal threshold using precision-focused approach
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
-                f1_scores = []
                 
-                # Calculate weighted F1 score for each threshold
+                # Calculate precision scores with minimum precision constraint
+                MIN_PRECISION = 0.8  # Minimum required precision
+                precision_scores = []
+                f1_scores = []
+                recall_scores = []
+                
+                # Calculate class weights for weighted metrics
                 class_weights = compute_class_weight(
                     class_weight='balanced',
                     classes=np.unique(class_labels),
@@ -145,19 +149,50 @@ def evaluate_language(args):
                 for t in thresh:
                     binary_preds = (class_preds > t).astype(int)
                     try:
-                        _, _, f1, _ = precision_recall_fscore_support(
+                        # Calculate precision
+                        precision = precision_score(
                             class_labels, binary_preds,
-                            average='binary',
                             sample_weight=sample_weights,
                             zero_division=0
                         )
+                        precision_scores.append(precision)
+                        
+                        # Calculate recall and F1 only if precision meets minimum requirement
+                        if precision >= MIN_PRECISION:
+                            recall = recall_score(
+                                class_labels, binary_preds,
+                                sample_weight=sample_weights,
+                                zero_division=0
+                            )
+                            f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                        else:
+                            recall = 0
+                            f1 = 0
+                            
+                        recall_scores.append(recall)
                         f1_scores.append(f1)
+                        
                     except Exception:
+                        precision_scores.append(0.0)
+                        recall_scores.append(0.0)
                         f1_scores.append(0.0)
                 
-                # Select threshold that maximizes F1 score
-                best_idx = np.argmax(f1_scores)
-                initial_threshold = thresh[best_idx]
+                # Find threshold that maximizes F1 while meeting precision constraint
+                valid_indices = [i for i, p in enumerate(precision_scores) if p >= MIN_PRECISION]
+                
+                if valid_indices:
+                    # Among thresholds meeting precision constraint, choose one with highest F1
+                    best_idx = valid_indices[np.argmax([f1_scores[i] for i in valid_indices])]
+                    initial_threshold = thresh[best_idx]
+                    achieved_precision = precision_scores[best_idx]
+                    achieved_recall = recall_scores[best_idx]
+                else:
+                    # If no threshold meets precision constraint, find highest precision threshold
+                    best_idx = np.argmax(precision_scores)
+                    initial_threshold = thresh[best_idx]
+                    achieved_precision = precision_scores[best_idx]
+                    achieved_recall = recall_scores[best_idx]
+                    print(f"Warning: Could not meet minimum precision requirement for {class_name}")
                 
                 # Test the initial threshold
                 test_preds = (class_preds > initial_threshold).astype(int)
@@ -166,22 +201,26 @@ def evaluate_language(args):
                     
                     # Use adaptive thresholding based on class distribution
                     if pos_ratio > 0:  # If we have positive samples in ground truth
-                        # Try multiple percentiles and pick the one that gives closest positive ratio
+                        # Try multiple percentiles and pick the one that gives best precision
                         percentiles = [90, 85, 80, 75, 70]
                         best_threshold = initial_threshold
-                        min_ratio_diff = float('inf')
+                        best_precision = 0
                         
                         for p in percentiles:
                             threshold = np.percentile(class_preds, p)
-                            pred_ratio = np.mean(class_preds > threshold)
-                            ratio_diff = abs(pred_ratio - pos_ratio)
-                            
-                            if ratio_diff < min_ratio_diff:
-                                min_ratio_diff = ratio_diff
-                                best_threshold = threshold
+                            test_preds = (class_preds > threshold).astype(int)
+                            if test_preds.sum() > 0:  # Only consider thresholds that give positive predictions
+                                precision = precision_score(
+                                    class_labels, test_preds,
+                                    sample_weight=sample_weights,
+                                    zero_division=0
+                                )
+                                if precision > best_precision:
+                                    best_precision = precision
+                                    best_threshold = threshold
                         
                         # Set a minimum threshold to prevent too many false positives
-                        lang_thresholds[class_name] = max(best_threshold, 0.2)
+                        lang_thresholds[class_name] = max(best_threshold, 0.4)
                     else:
                         # If no positive samples, use a conservative threshold
                         lang_thresholds[class_name] = 0.7
@@ -190,20 +229,30 @@ def evaluate_language(args):
                 
                 # Validate final threshold
                 final_preds = (class_preds > lang_thresholds[class_name]).astype(int)
-                pred_ratio = np.mean(final_preds)
+                final_precision = precision_score(
+                    class_labels, final_preds,
+                    sample_weight=sample_weights,
+                    zero_division=0
+                )
+                final_recall = recall_score(
+                    class_labels, final_preds,
+                    sample_weight=sample_weights,
+                    zero_division=0
+                )
+                
                 print(f"  {class_name}: threshold={lang_thresholds[class_name]:.4f}, "
-                      f"pred_ratio={pred_ratio:.4f}, true_ratio={pos_ratio:.4f}")
+                      f"precision={final_precision:.4f}, recall={final_recall:.4f}")
                 
             except Exception as e:
                 print(f"Warning: Could not optimize threshold for {class_name} in {lang_name}: {str(e)}")
-                # Use class-specific default thresholds based on typical values
+                # Use class-specific default thresholds based on typical values with high precision
                 default_thresholds = {
-                    'toxic': 0.4,
-                    'severe_toxic': 0.25,
-                    'obscene': 0.45,
-                    'threat': 0.35,
-                    'insult': 0.4,
-                    'identity_hate': 0.25
+                    'toxic': 0.5,
+                    'severe_toxic': 0.35,
+                    'obscene': 0.55,
+                    'threat': 0.45,
+                    'insult': 0.5,
+                    'identity_hate': 0.35
                 }
                 lang_thresholds[class_name] = default_thresholds.get(class_name, 0.5)
         
@@ -533,8 +582,10 @@ def evaluate_model(model, test_loader, device, output_dir):
         # Calculate macro and weighted specificity
         results['overall'].update({
             'specificity_macro': np.mean(specificities),
-            'specificity_weighted': (np.sum(weighted_specificities) / np.sum(class_weights) 
-                                   if np.sum(class_weights) > 0 else 0.0)
+            'specificity_weighted': (
+                np.sum(weighted_specificities) / np.sum(class_weights) 
+                if np.sum(class_weights) > 0 else 0.0
+            )
         })
         
         # Add per-class specificity
