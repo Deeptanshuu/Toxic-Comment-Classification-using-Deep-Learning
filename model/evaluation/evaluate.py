@@ -43,8 +43,36 @@ class ToxicDataset(Dataset):
         # Add reverse mapping
         self.id_to_lang = {v: k for k, v in self.lang_to_id.items()}
         
-        # Convert language strings to IDs, default to English (0) if language not found
-        self.langs = np.array([self.lang_to_id.get(str(lang).lower(), 0) for lang in df['lang'].values])
+        # Print language distribution before conversion
+        print("\nLanguage distribution in dataset:")
+        if 'lang' in df.columns:
+            lang_counts = df['lang'].value_counts()
+            for lang, count in lang_counts.items():
+                print(f"  {lang}: {count:,} samples")
+        else:
+            print("Warning: No 'lang' column found in dataset")
+            
+        # Convert language strings to IDs with better error handling
+        if 'lang' in df.columns:
+            self.langs = []
+            for lang in df['lang'].values:
+                lang_str = str(lang).lower().strip()
+                if lang_str in self.lang_to_id:
+                    self.langs.append(self.lang_to_id[lang_str])
+                else:
+                    print(f"Warning: Unknown language '{lang}', defaulting to English (en)")
+                    self.langs.append(0)  # Default to English
+            self.langs = np.array(self.langs)
+        else:
+            print("Warning: No language column found, assuming all samples are English")
+            self.langs = np.zeros(len(df), dtype=int)
+        
+        # Print language ID distribution after conversion
+        print("\nLanguage ID distribution after conversion:")
+        unique_ids, counts = np.unique(self.langs, return_counts=True)
+        for lang_id, count in zip(unique_ids, counts):
+            lang_code = self.id_to_lang.get(lang_id, 'unknown')
+            print(f"  {lang_code} (ID: {lang_id}): {count:,} samples")
         
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -1742,7 +1770,7 @@ def main():
                       help='Path to the trained model')
     parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
-    parser.add_argument('--batch_size', type=int, default=64,  # Increased batch size
+    parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                       help='Base directory to save results')
@@ -1778,7 +1806,7 @@ def main():
     
     # Set number of workers
     if args.num_workers is None:
-        args.num_workers = min(8, max(1, multiprocessing.cpu_count() - 1))  # Cap at 8 workers
+        args.num_workers = min(16, max(1, multiprocessing.cpu_count() - 1))
     
     try:
         # Load model
@@ -1798,6 +1826,19 @@ def main():
         print("\nLoading test dataset...")
         test_df = pd.read_csv(args.test_file)
         print(f"Loaded {len(test_df):,} test samples")
+        
+        # Print test dataset information
+        print("\nTest dataset columns:", test_df.columns.tolist())
+        print("\nTest dataset info:")
+        print(test_df.info())
+        
+        if 'lang' in test_df.columns:
+            print("\nLanguage distribution in test set:")
+            print(test_df['lang'].value_counts())
+        else:
+            print("\nWarning: No language column in test dataset")
+            print("Adding 'lang' column with default value 'en'")
+            test_df['lang'] = 'en'
         
         # Create test dataset with caching
         test_dataset = ToxicDataset(
