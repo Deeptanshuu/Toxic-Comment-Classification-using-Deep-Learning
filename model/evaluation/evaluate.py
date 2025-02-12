@@ -25,6 +25,7 @@ import multiprocessing
 import multiprocessing as mp
 from sklearn.model_selection import train_test_split
 import warnings
+from sklearn.dummy import DummyClassifier
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -214,17 +215,13 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                     lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
                 )
                 
-                # Create a dummy classifier that just returns the input probabilities
-                class DummyClassifier:
-                    def predict_proba(self, X):
-                        return np.vstack([1-X.ravel(), X.ravel()]).T
-                    
-                    def fit(self, X, y):
-                        return self
+                # Create and fit the dummy classifier
+                dummy = DummyClassifier()
+                dummy.fit(calib_preds.reshape(-1, 1), calib_labels)
                 
                 # Initialize and fit isotonic calibration
                 calibrator = CalibratedClassifierCV(
-                    estimator=DummyClassifier(),
+                    estimator=dummy,
                     method='isotonic',
                     cv='prefit'
                 )
@@ -1264,7 +1261,6 @@ def calculate_language_metrics(labels, predictions, binary_predictions, langs=No
     sample_weights /= sample_weights.sum()
     sample_weights *= len(sample_weights)
     
-    # Rest of the function remains unchanged
     metrics = {}
     
     # Calculate AUC if possible
