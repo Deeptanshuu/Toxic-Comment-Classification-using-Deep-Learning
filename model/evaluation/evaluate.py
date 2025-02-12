@@ -197,20 +197,39 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
         
         class FrozenClassifier(BaseEstimator):
             """Custom classifier wrapper that preserves predict_proba functionality"""
-            def __init__(self, predictions):
-                self.predictions = predictions.reshape(-1, 1)
+            def __init__(self, predictions=None):
+                self.predictions = predictions
             
             def fit(self, X, y):
+                if self.predictions is None:
+                    self.predictions = X
                 return self
             
             def predict(self, X):
                 return (self.predictions >= 0.5).astype(int)
             
             def predict_proba(self, X):
-                return np.hstack([1 - self.predictions, self.predictions])
+                # Ensure predictions are 2D
+                if self.predictions is None:
+                    self.predictions = X
+                probs = np.array(self.predictions).reshape(-1, 1)
+                return np.hstack([1 - probs, probs])
             
             def decision_function(self, X):
-                return self.predictions
+                if self.predictions is None:
+                    self.predictions = X
+                return np.array(self.predictions).ravel()
+            
+            def get_params(self, deep=True):
+                return {"predictions": self.predictions}
+            
+            def set_params(self, **parameters):
+                for parameter, value in parameters.items():
+                    setattr(self, parameter, value)
+                return self
+            
+            def __sklearn_clone__(self):
+                return FrozenClassifier(predictions=None)
         
         n_classes = raw_predictions.shape[1]
         calibrated_predictions = np.zeros_like(raw_predictions)
@@ -238,14 +257,15 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                     )
                     
                     # Create classifier wrapper
-                    base_classifier = FrozenClassifier(calib_preds)
+                    base_classifier = FrozenClassifier(predictions=calib_preds.reshape(-1, 1))
                     
                     # Initialize and fit isotonic calibration
                     calibrator = CalibratedClassifierCV(
                         base_classifier,
                         method='isotonic',
                         cv=5,
-                        n_jobs=-1
+                        n_jobs=-1,
+                        ensemble=True
                     )
                     
                     # Reshape predictions for sklearn compatibility
