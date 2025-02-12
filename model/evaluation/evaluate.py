@@ -26,6 +26,8 @@ import multiprocessing as mp
 from sklearn.model_selection import train_test_split
 import warnings
 from sklearn.dummy import DummyClassifier
+from sklearn.base import BaseEstimator, clone
+from sklearn.preprocessing import FunctionTransformer
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -190,66 +192,91 @@ def load_model(model_path):
 
 def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
     """Calibrate model predictions using isotonic regression with proper data splitting"""
-    n_classes = raw_predictions.shape[1]
-    calibrated_predictions = np.zeros_like(raw_predictions)
-    unique_langs = np.unique(langs)
-    
-    for class_idx in range(n_classes):
-        print(f"\nCalibrating class {class_idx}...")
-        for lang in unique_langs:
-            lang_mask = langs == lang
-            if not lang_mask.any():
-                continue
+    try:
+        print("\nApplying probability calibration...")
+        
+        # Import FrozenEstimator if not already imported
+        from sklearn.base import BaseEstimator, clone
+        from sklearn.preprocessing import FunctionTransformer
+        
+        class FrozenEstimator(BaseEstimator):
+            def __init__(self, estimator):
+                self.estimator = estimator
             
-            lang_preds = raw_predictions[lang_mask, class_idx]
-            lang_labels = labels[lang_mask, class_idx]
+            def fit(self, X, y):
+                return self
             
-            if not lang_labels.any():
-                print(f"  Skipping language {lang} - no positive samples")
-                calibrated_predictions[lang_mask, class_idx] = lang_preds
-                continue
+            def predict(self, X):
+                return self.estimator.predict(X)
             
-            try:
-                # Split data for calibration
-                calib_preds, val_preds, calib_labels, val_labels = train_test_split(
-                    lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
-                )
+            def predict_proba(self, X):
+                return self.estimator.predict_proba(X)
+        
+        n_classes = raw_predictions.shape[1]
+        calibrated_predictions = np.zeros_like(raw_predictions)
+        unique_langs = np.unique(langs)
+        
+        for class_idx in range(n_classes):
+            print(f"\nCalibrating class {class_idx}...")
+            for lang in unique_langs:
+                lang_mask = langs == lang
+                if not lang_mask.any():
+                    continue
                 
-                # Create and fit the dummy classifier
-                dummy = DummyClassifier()
-                dummy.fit(calib_preds.reshape(-1, 1), calib_labels)
+                lang_preds = raw_predictions[lang_mask, class_idx]
+                lang_labels = labels[lang_mask, class_idx]
                 
-                # Initialize and fit isotonic calibration
-                calibrator = CalibratedClassifierCV(
-                    estimator=dummy,
-                    method='isotonic',
-                    cv='prefit'
-                )
+                if not lang_labels.any():
+                    print(f"  Skipping language {lang} - no positive samples")
+                    calibrated_predictions[lang_mask, class_idx] = lang_preds
+                    continue
                 
-                # Reshape predictions for sklearn compatibility
-                calib_preds_reshaped = calib_preds.reshape(-1, 1)
-                calibrator.fit(calib_preds_reshaped, calib_labels)
-                
-                # Apply calibration to all predictions for this language/class
-                lang_preds_reshaped = lang_preds.reshape(-1, 1)
-                calibrated_lang_preds = calibrator.predict_proba(lang_preds_reshaped)[:, 1]
-                calibrated_predictions[lang_mask, class_idx] = calibrated_lang_preds
-                
-                # Validate calibration quality
-                val_preds_reshaped = val_preds.reshape(-1, 1)
-                prob_true, prob_pred = calibration_curve(
-                    val_labels,
-                    calibrator.predict_proba(val_preds_reshaped)[:, 1],
-                    n_bins=10
-                )
-                calib_error = np.mean(np.abs(prob_true - prob_pred))
-                print(f"  Language {lang} calibration error: {calib_error:.4f}")
-                
-            except Exception as e:
-                print(f"  Warning: Calibration failed for language {lang}, class {class_idx}: {str(e)}")
-                calibrated_predictions[lang_mask, class_idx] = lang_preds
-    
-    return calibrated_predictions
+                try:
+                    # Split data for calibration
+                    calib_preds, val_preds, calib_labels, val_labels = train_test_split(
+                        lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
+                    )
+                    
+                    # Create dummy classifier wrapped in FrozenEstimator
+                    dummy = DummyClassifier()
+                    dummy.fit(calib_preds.reshape(-1, 1), calib_labels)
+                    frozen_dummy = FrozenEstimator(dummy)
+                    
+                    # Initialize and fit isotonic calibration
+                    calibrator = CalibratedClassifierCV(
+                        estimator=frozen_dummy,
+                        method='isotonic',
+                        cv=5  # Use 5-fold cross-validation instead of 'prefit'
+                    )
+                    
+                    # Reshape predictions for sklearn compatibility
+                    calib_preds_reshaped = calib_preds.reshape(-1, 1)
+                    calibrator.fit(calib_preds_reshaped, calib_labels)
+                    
+                    # Apply calibration
+                    lang_preds_reshaped = lang_preds.reshape(-1, 1)
+                    calibrated_lang_preds = calibrator.predict_proba(lang_preds_reshaped)[:, 1]
+                    calibrated_predictions[lang_mask, class_idx] = calibrated_lang_preds
+                    
+                    # Validate calibration quality
+                    val_preds_reshaped = val_preds.reshape(-1, 1)
+                    prob_true, prob_pred = calibration_curve(
+                        val_labels,
+                        calibrator.predict_proba(val_preds_reshaped)[:, 1],
+                        n_bins=10
+                    )
+                    calib_error = np.mean(np.abs(prob_true - prob_pred))
+                    print(f"  Language {lang} calibration error: {calib_error:.4f}")
+                    
+                except Exception as e:
+                    print(f"  Warning: Calibration failed for language {lang}, class {class_idx}: {str(e)}")
+                    calibrated_predictions[lang_mask, class_idx] = lang_preds
+        
+        return calibrated_predictions
+        
+    except Exception as e:
+        print(f"Warning: Calibration failed: {str(e)}")
+        return raw_predictions
 
 def apply_calibration(raw_predictions, labels, langs, model, val_dataset, device):
     """Apply calibration transformations with proper error handling"""
@@ -2106,6 +2133,12 @@ def parallel_bootstrap_metrics(args):
     except Exception as e:
         print(f"Warning: Bootstrap iteration failed: {str(e)}")
         return None
+
+def ensemble_calibration(predictions, labels, val_predictions):
+    """Combine multiple calibration methods"""
+    isotonic_pred = isotonic_calibration(predictions, labels, val_predictions)
+    platt_pred = platt_scaling(predictions, labels, val_predictions)
+    return (isotonic_pred + platt_pred) / 2
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
