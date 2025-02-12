@@ -440,15 +440,15 @@ def main():
         
         try:
             tokenizer = XLMRobertaTokenizer.from_pretrained(TrainingConfig.model_name)
-            train_dataset = ToxicDataset(train_df, tokenizer, config)
-            val_dataset = ToxicDataset(val_df, tokenizer, config)
+            train_dataset = ToxicDataset(train_df, tokenizer, TrainingConfig.config)
+            val_dataset = ToxicDataset(val_df, tokenizer, TrainingConfig.config)
         except Exception as e:
             print(f"Error creating datasets: {str(e)}")
             raise
         
-        train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, config)
-        model = init_model(config)
-        train(model, train_loader, config)
+        train_loader = create_dataloaders(train_dataset, val_dataset, TrainingConfig.config)
+        model = init_model(TrainingConfig.config)
+        train(model, train_loader, TrainingConfig.config)
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
