@@ -6,7 +6,8 @@ import numpy as np
 from sklearn.metrics import (
     roc_auc_score, precision_recall_fscore_support, 
     confusion_matrix, roc_curve, hamming_loss, 
-    accuracy_score, precision_score, recall_score, f1_score
+    accuracy_score, precision_score, recall_score, f1_score,
+    brier_score_loss
 )
 from sklearn.calibration import calibration_curve, CalibratedClassifierCV
 from sklearn.utils import resample
@@ -22,6 +23,8 @@ from torch.utils.data import Dataset, DataLoader
 import gc
 import multiprocessing
 import multiprocessing as mp
+from sklearn.model_selection import train_test_split
+import warnings
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -43,54 +46,67 @@ class ToxicDataset(Dataset):
         # Add reverse mapping
         self.id_to_lang = {v: k for k, v in self.lang_to_id.items()}
         
+        # Validate language column
+        if 'lang' not in df.columns:
+            raise ValueError("Language column 'lang' is required for evaluation")
+        
         # Print language distribution before conversion
         print("\nLanguage distribution in dataset:")
-        if 'lang' in df.columns:
-            lang_counts = df['lang'].value_counts()
-            total_samples = len(df)
-            for lang, count in lang_counts.items():
+        lang_counts = df['lang'].value_counts()
+        total_samples = len(df)
+        for lang, count in lang_counts.items():
+            percentage = (count / total_samples) * 100
+            print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
+        
+        # Convert language strings to IDs with validation
+        self.langs = np.zeros(len(df), dtype=int)
+        unknown_langs = set()
+        valid_langs = set()
+        
+        for idx, lang in enumerate(df['lang'].values):
+            lang_str = str(lang).lower().strip()
+            if lang_str in self.lang_to_id:
+                self.langs[idx] = self.lang_to_id[lang_str]
+                valid_langs.add(lang_str)
+            else:
+                unknown_langs.add(lang_str)
+                self.langs[idx] = 0  # Default to English
+        
+        # Print warnings for unknown languages
+        if unknown_langs:
+            print("\nWarning: Found unknown languages:")
+            for lang in sorted(unknown_langs):
+                mask = df['lang'].str.lower().str.strip() == lang
+                count = mask.sum()
                 percentage = (count / total_samples) * 100
-                print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
-        else:
-            print("Warning: No 'lang' column found in dataset")
-            
-        # Convert language strings to IDs with better error handling
-        if 'lang' in df.columns:
-            self.langs = []
-            unknown_langs = set()
-            for lang in df['lang'].values:
-                lang_str = str(lang).lower().strip()
-                if lang_str in self.lang_to_id:
-                    self.langs.append(self.lang_to_id[lang_str])
-                else:
-                    unknown_langs.add(lang_str)
-                    self.langs.append(0)  # Default to English
-            
-            if unknown_langs:
-                print(f"\nWarning: Found unknown languages: {unknown_langs}")
-                print("These will be treated as English (en)")
-            
-            self.langs = np.array(self.langs)
-        else:
-            print("Warning: No language column found, assuming all samples are English")
-            self.langs = np.zeros(len(df), dtype=int)
+                print(f"  {lang}: {count:,} samples ({percentage:.2f}%) - Will be treated as English (en)")
         
         # Print language ID distribution after conversion
         print("\nLanguage ID distribution after conversion:")
         unique_ids, counts = np.unique(self.langs, return_counts=True)
-        total_converted = len(self.langs)
         for lang_id, count in zip(unique_ids, counts):
             lang_code = self.id_to_lang.get(lang_id, 'unknown')
-            percentage = (count / total_converted) * 100
+            percentage = (count / total_samples) * 100
             print(f"  {lang_code} (ID: {lang_id}): {count:,} samples ({percentage:.2f}%)")
         
-        # Print label distribution
-        print("\nLabel distribution:")
-        label_sums = np.sum(self.labels, axis=0)
-        label_names = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-        for name, count in zip(label_names, label_sums):
-            percentage = (count / len(self.labels)) * 100
-            print(f"  {name}: {int(count):,} samples ({percentage:.2f}%)")
+        # Validate that we have at least one valid language
+        if not valid_langs:
+            raise ValueError("No valid language codes found in dataset. "
+                           f"Expected one of: {', '.join(sorted(self.lang_to_id.keys()))}")
+        
+        # Print label distribution by language
+        print("\nLabel distribution by language:")
+        for lang_id in unique_ids:
+            lang_code = self.id_to_lang.get(lang_id, 'unknown')
+            lang_mask = self.langs == lang_id
+            lang_labels = self.labels[lang_mask]
+            
+            print(f"\n{lang_code.upper()} (ID: {lang_id}, {counts[unique_ids == lang_id][0]:,} samples):")
+            label_sums = np.sum(lang_labels, axis=0)
+            label_names = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+            for name, count in zip(label_names, label_sums):
+                percentage = (count / len(lang_labels)) * 100 if len(lang_labels) > 0 else 0
+                print(f"  {name}: {int(count):,} samples ({percentage:.2f}%)")
         
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -171,23 +187,138 @@ def load_model(model_path):
         print(f"Error loading model: {str(e)}")
         return None, None, None
 
+def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
+    """Calibrate model predictions using isotonic regression with proper data splitting"""
+    n_classes = raw_predictions.shape[1]
+    calibrated_predictions = np.zeros_like(raw_predictions)
+    unique_langs = np.unique(langs)
+    
+    for class_idx in range(n_classes):
+        print(f"\nCalibrating class {class_idx}...")
+        for lang in unique_langs:
+            lang_mask = langs == lang
+            if not lang_mask.any():
+                continue
+            
+            lang_preds = raw_predictions[lang_mask, class_idx]
+            lang_labels = labels[lang_mask, class_idx]
+            
+            if not lang_labels.any():
+                print(f"  Skipping language {lang} - no positive samples")
+                calibrated_predictions[lang_mask, class_idx] = lang_preds
+                continue
+            
+            try:
+                # Split data for calibration
+                calib_preds, val_preds, calib_labels, val_labels = train_test_split(
+                    lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
+                )
+                
+                # Fit isotonic regression on calibration set
+                calibrator = CalibratedClassifierCV(
+                    base_estimator=None,
+                    method='isotonic',
+                    cv='prefit'
+                )
+                calibrator.fit(calib_preds.reshape(-1, 1), calib_labels)
+                
+                # Apply calibration to all predictions for this language/class
+                calibrated_lang_preds = calibrator.predict_proba(lang_preds.reshape(-1, 1))[:, 1]
+                calibrated_predictions[lang_mask, class_idx] = calibrated_lang_preds
+                
+                # Validate calibration quality
+                prob_true, prob_pred = calibration_curve(
+                    val_labels,
+                    calibrator.predict_proba(val_preds.reshape(-1, 1))[:, 1],
+                    n_bins=10
+                )
+                calib_error = np.mean(np.abs(prob_true - prob_pred))
+                print(f"  Language {lang} calibration error: {calib_error:.4f}")
+                
+            except Exception as e:
+                print(f"  Warning: Calibration failed for language {lang}, class {class_idx}: {str(e)}")
+                calibrated_predictions[lang_mask, class_idx] = lang_preds
+    
+    return calibrated_predictions
+
+def apply_calibration(raw_predictions, labels, langs, model, val_dataset, device):
+    """Apply calibration transformations with proper error handling"""
+    try:
+        print("\nApplying probability calibration...")
+        calibrated_predictions = calibrate_predictions(
+            model, val_dataset, raw_predictions, labels, langs, device
+        )
+        
+        # Validate calibration results
+        if not np.all(np.isfinite(calibrated_predictions)):
+            print("Warning: Invalid values in calibrated predictions")
+            return raw_predictions
+            
+        if not (0 <= calibrated_predictions).all() or not (calibrated_predictions <= 1).all():
+            print("Warning: Calibrated predictions outside [0,1] range")
+            calibrated_predictions = np.clip(calibrated_predictions, 0, 1)
+        
+        # Compare calibration with raw predictions using Brier score
+        raw_brier = np.mean([
+            brier_score_loss(labels[:, i], raw_predictions[:, i])
+            for i in range(labels.shape[1])
+        ])
+        cal_brier = np.mean([
+            brier_score_loss(labels[:, i], calibrated_predictions[:, i])
+            for i in range(labels.shape[1])
+        ])
+        
+        print(f"\nBrier scores:")
+        print(f"  Raw predictions: {raw_brier:.4f}")
+        print(f"  Calibrated predictions: {cal_brier:.4f}")
+        
+        # Only use calibrated predictions if they improve or don't significantly degrade performance
+        if cal_brier > raw_brier * 1.1:  # Allow 10% degradation
+            print("Warning: Calibration significantly increased Brier score")
+            return raw_predictions
+        
+        return calibrated_predictions
+        
+    except Exception as e:
+        print(f"Warning: Calibration failed: {str(e)}")
+        return raw_predictions
+
 def evaluate_language(args):
     """Evaluate model performance for a single language"""
     try:
         lang_id, lang_name, lang_preds, lang_labels, toxicity_types = args
         
-        def calculate_dynamic_constraints(pos_ratio):
-            """Calculate dynamic constraints based on class frequency with stronger precision requirements"""
-            # Exponential scaling for min_recall - lower for very rare classes
-            min_recall = max(0.05, 0.3 * np.sqrt(pos_ratio))
+        def dynamic_constraints(pos_ratio):
+            """Calculate dynamic constraints with better balance between precision and recall
             
-            # Stricter precision requirements for rare classes
-            required_precision = max(0.90, 1 - 10*pos_ratio**2)
+            Args:
+                pos_ratio: Positive class ratio (0 to 1)
+                
+            Returns:
+                Tuple of (recall_req, precision_req, fpr_limit)
+            """
+            # Base requirements
+            base_precision = 0.85
+            base_recall = 0.10
+            base_fpr = 0.01
             
-            # Very strict FPR for rare classes, gradually relaxing for common ones
-            max_fpr = min(0.20, 0.02 + 0.18 * pos_ratio**2)
+            # Dynamic scaling based on class frequency
+            precision_req = base_precision - 0.4 * pos_ratio  # Relax precision for rare classes
+            recall_req = base_recall + 0.3 * np.sqrt(pos_ratio)  # Increase recall requirement gradually
+            fpr_limit = base_fpr + 0.1 * pos_ratio  # Allow slightly higher FPR for common classes
             
-            return min_recall, required_precision, max_fpr
+            # Ensure reasonable bounds
+            precision_req = np.clip(precision_req, 0.60, 0.95)  # Min 60%, max 95% precision
+            recall_req = np.clip(recall_req, 0.10, 0.80)       # Min 10%, max 80% recall
+            fpr_limit = np.clip(fpr_limit, 0.01, 0.15)         # Min 1%, max 15% FPR
+            
+            # Print constraint values for debugging
+            print(f"    Dynamic constraints for pos_ratio={pos_ratio:.4f}:")
+            print(f"      Precision requirement: {precision_req:.4f}")
+            print(f"      Recall requirement: {recall_req:.4f}")
+            print(f"      FPR limit: {fpr_limit:.4f}")
+            
+            return recall_req, precision_req, fpr_limit
         
         # Print evaluation header with sample count
         print(f"\nEvaluating {lang_name} [{len(lang_labels):,} samples]")
@@ -210,15 +341,14 @@ def evaluate_language(args):
                 print(f"  {class_name}: Found {pos_count:,} positive samples ({pos_ratio:.2%})")
                 
                 # Calculate dynamic constraints based on class frequency
-                min_recall, required_precision, max_fpr = calculate_dynamic_constraints(pos_ratio)
-                print(f"    Dynamic constraints: min_recall={min_recall:.3f}, "
-                      f"required_precision={required_precision:.3f}, max_fpr={max_fpr:.3f}")
+                min_recall, required_precision, max_fpr = dynamic_constraints(pos_ratio)
                 
                 # Calculate ROC curve points
                 fpr, tpr, thresh = roc_curve(class_labels, class_preds)
                 
-                # Enhanced class weighting with stronger emphasis on precision for rare classes
-                pos_weight = (1 / (pos_ratio + 1e-7)) * (1 - np.clip(pos_ratio, 0, 0.1))**2
+                # Enhanced class weighting with balanced emphasis
+                pos_weight = 1.0 / (pos_ratio + 1e-7)  # Inverse frequency weighting
+                pos_weight = np.clip(pos_weight, 1.0, 10.0)  # Limit maximum weight
                 neg_weight = 1.0
                 
                 print(f"    Class weights: positive={pos_weight:.2f}, negative={neg_weight:.2f}")
@@ -288,13 +418,13 @@ def evaluate_language(args):
                 ]
                 
                 if valid_thresholds:
-                    # Enhanced metric weighting with stronger precision focus
+                    # Enhanced metric weighting with balanced focus
                     weights = {
-                        'precision': 0.7 + 0.3 * (1 - pos_ratio**0.5),  # Stronger precision weighting
-                        'recall': 0.1 + 0.1 * pos_ratio,                # Limited recall importance
-                        'f1': 0.1 * pos_ratio,                         # F1 matters more for common classes
-                        'fpr': 0.2 * (1 - pos_ratio),                  # Higher FPR penalty for rare classes
-                        'calibration': 0.1 * (1 - pos_ratio**0.5)      # Consider calibration error
+                        'precision': 0.4 + 0.2 * (1 - pos_ratio),  # Higher weight for rare classes
+                        'recall': 0.3 + 0.2 * pos_ratio,          # Higher weight for common classes
+                        'f1': 0.2,                                # Consistent F1 importance
+                        'fpr': 0.1 * (1 - pos_ratio),            # FPR penalty for rare classes
+                        'calibration': 0.1                        # Consistent calibration importance
                     }
                     
                     # Normalize weights
@@ -303,7 +433,7 @@ def evaluate_language(args):
                     
                     print(f"    Metric weights: {weights}")
                     
-                    # Select best threshold with calibration consideration
+                    # Select best threshold with balanced consideration
                     best_threshold = max(
                         valid_thresholds,
                         key=lambda x: (
@@ -320,37 +450,22 @@ def evaluate_language(args):
                     
                 else:
                     print(f"  Warning: No thresholds meet criteria for {class_name}")
-                    print("  Falling back to precision-focused threshold")
+                    print("  Falling back to balanced threshold selection")
                     
-                    # Find threshold with best precision while maintaining minimal recall
-                    valid_predictions = [
-                        m for m in metrics_by_threshold
-                        if m['recall'] > min_recall/2 and m['fpr'] <= max_fpr*1.2
-                    ]
-                    
-                    if valid_predictions:
-                        best_threshold = max(
-                            valid_predictions,
-                            key=lambda x: (
-                                x['precision'] * 0.8 +
-                                x['recall'] * 0.1 -
-                                x['fpr'] * 0.2 -
-                                x['calibration_error'] * 0.1
-                            )
+                    # Find threshold with balanced precision-recall trade-off
+                    best_threshold = max(
+                        metrics_by_threshold,
+                        key=lambda x: (
+                            x['f1'] * 0.4 +                    # Emphasize F1 score
+                            x['precision'] * 0.3 +             # Maintain reasonable precision
+                            x['recall'] * 0.2 -                # Consider recall
+                            x['fpr'] * 0.1 -                   # Limit false positives
+                            x['calibration_error'] * 0.1       # Consider calibration
                         )
-                        lang_thresholds[class_name] = best_threshold['threshold']
-                        achieved_metrics = best_threshold
-                    else:
-                        print(f"  Warning: Using conservative default threshold for {class_name}")
-                        lang_thresholds[class_name] = 0.90  # Conservative default
-                        achieved_metrics = {
-                            'precision': 0.0,
-                            'recall': 0.0,
-                            'f1': 0.0,
-                            'fpr': 1.0,
-                            'support': pos_count,
-                            'calibration_error': 1.0
-                        }
+                    )
+                    
+                    lang_thresholds[class_name] = best_threshold['threshold']
+                    achieved_metrics = best_threshold
                 
                 # Log detailed metrics
                 print(f"  {class_name} results:")
@@ -372,350 +487,80 @@ def evaluate_language(args):
         print(f"Error in evaluate_language: {str(e)}")
         return None
 
-def evaluate_model(model, test_loader, device, output_dir):
-    """Evaluate model performance with parallel language-specific evaluation"""
+def evaluate_model(model, val_loader, device, output_dir):
+    """Evaluate model performance on validation set with proper calibration"""
+    model.eval()
     all_predictions = []
     all_labels = []
     all_langs = []
-    all_losses = []
     
-    # Enable inference optimizations
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 for faster computation
-    
-    # Compile model if torch 2.0+ is available
-    if hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model)
-            print("Using torch.compile() for faster inference")
-        except Exception as e:
-            print(f"Could not compile model: {e}")
-    
-    print("\nRunning predictions on test set...")
-    model.eval()  # Ensure model is in eval mode
-    
-    # Use optimized inference settings with proper error handling
-    try:
-        # Try using mixed precision with float16
-        print("Attempting mixed precision inference with float16...")
-        with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-            for batch in tqdm(test_loader, desc="Evaluating"):
-                # Move batch to device efficiently
-                input_ids = batch['input_ids'].to(device, non_blocking=True)
-                attention_mask = batch['attention_mask'].to(device, non_blocking=True)
-                labels = batch['labels'].to(device, non_blocking=True)
-                langs = batch['lang'].to(device, non_blocking=True)
-                
-                # Run prediction with reduced precision
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                    lang_ids=langs
-                )
-                
-                # Gather predictions efficiently
-                loss = outputs['loss'].item()
-                predictions = outputs['probabilities'].to(dtype=torch.float32).cpu()
-                labels = labels.to(dtype=torch.float32)  # Keep labels in float32 for accuracy
-                
-                # Store results
-                all_predictions.append(predictions)
-                all_labels.append(labels.cpu())
-                all_langs.append(langs.cpu())
-                all_losses.append(loss)
-                
-                # Clear GPU memory aggressively
-                del input_ids, attention_mask, outputs, labels, langs, predictions
-                torch.cuda.empty_cache()
-                
-    except RuntimeError as e:
-        print(f"Mixed precision inference failed: {e}")
-        print("Falling back to full precision inference...")
-        
-        # Clear any partial results
-        all_predictions = []
-        all_labels = []
-        all_langs = []
-        all_losses = []
-        
-        # Fallback to full precision
-        with torch.inference_mode():
-            for batch in tqdm(test_loader, desc="Evaluating"):
-                input_ids = batch['input_ids'].to(device, non_blocking=True)
-                attention_mask = batch['attention_mask'].to(device, non_blocking=True)
-                labels = batch['labels'].to(device, non_blocking=True)
-                langs = batch['lang'].to(device, non_blocking=True)
-                
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                    lang_ids=langs
-                )
-                
-                loss = outputs['loss'].item()
-                predictions = outputs['probabilities'].cpu()
-                
-                all_predictions.append(predictions)
-                all_labels.append(labels.cpu())
-                all_langs.append(langs.cpu())
-                all_losses.append(loss)
-                
-                del input_ids, attention_mask, outputs, labels, langs, predictions
-                torch.cuda.empty_cache()
-    
-    # Concatenate results efficiently and ensure float32 for metric calculations
-    predictions = torch.cat(all_predictions, dim=0).to(dtype=torch.float32).numpy()
-    labels = torch.cat(all_labels, dim=0).numpy()
-    langs = torch.cat(all_langs, dim=0).numpy()
-    avg_loss = np.mean(all_losses)
-    
-    # Clear temporary lists and GPU memory
-    del all_predictions, all_labels, all_langs, all_losses
-    torch.cuda.empty_cache()
-    
-    # Initialize results dictionary
-    results = {
-        'overall': {'loss': avg_loss},
-        'per_language': {},
-        'per_class': {},
-        'thresholds': {}
-    }
-    
-    # Get language name mapping for logging
-    id_to_lang = {
-        0: 'English (en)',
-        1: 'Russian (ru)',
-        2: 'Turkish (tr)',
-        3: 'Spanish (es)',
-        4: 'French (fr)',
-        5: 'Italian (it)',
-        6: 'Portuguese (pt)'
-    }
-    
-    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    
-    # Default thresholds in case evaluation fails
-    default_thresholds = {
-        'toxic': 0.3991,
-        'severe_toxic': 0.2350,
-        'obscene': 0.47,
-        'threat': 0.3614,
-        'insult': 0.3906,
-        'identity_hate': 0.2533
-    }
-    
-    # Prepare arguments for parallel processing
-    eval_args = []
-    unique_langs = np.unique(langs)
-    
-    for lang in unique_langs:
-        lang_mask = langs == lang
-        if not lang_mask.any():
-            continue
+    print("\nGathering predictions...")
+    with torch.inference_mode():
+        for batch in val_loader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].cpu().numpy()
+            langs = batch['lang'].cpu().numpy()
             
-        lang_preds = predictions[lang_mask]
-        lang_labels = labels[lang_mask]
-        
-        if len(lang_labels) == 0:
-            continue
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                lang_ids=batch['lang'].to(device)
+            )
             
-        eval_args.append((
-            lang,
-            id_to_lang.get(int(lang), f'Unknown ({lang})'),
-            lang_preds,
-            lang_labels,
-            toxicity_types
-        ))
+            predictions = outputs['probabilities'].cpu().numpy()
+            
+            all_predictions.append(predictions)
+            all_labels.append(labels)
+            all_langs.append(langs)
     
-    # Process languages in parallel
-    n_processes = min(len(eval_args), mp.cpu_count())
-    with mp.Pool(processes=n_processes) as pool:
-        lang_results = list(filter(None, pool.map(evaluate_language, eval_args)))
+    # Concatenate all batches
+    predictions = np.vstack(all_predictions)
+    labels = np.vstack(all_labels)
+    langs = np.concatenate(all_langs)
     
-    # Collect results and ensure each language has thresholds
-    for lang in unique_langs:
-        # Find the result for this language
-        lang_result = next((r for r in lang_results if r[0] == lang), None)
-        
-        if lang_result:
-            lang_id, lang_thresholds = lang_result
-            results['per_language'][str(lang_id)] = lang_thresholds
-            results['thresholds'][str(lang_id)] = lang_thresholds
-        else:
-            # If evaluation failed, use default thresholds
-            results['thresholds'][str(lang)] = default_thresholds
-            print(f"Warning: Using default thresholds for language {id_to_lang.get(int(lang), f'Unknown ({lang})')}")
+    print(f"\nTotal samples: {len(predictions):,}")
     
-    # Calculate overall metrics using language-specific thresholds
-    overall_binary_preds = np.zeros_like(predictions)
-    for i, lang in enumerate(langs):
-        lang_thresholds = results['thresholds'].get(str(lang), default_thresholds)
-        for j, class_name in enumerate(toxicity_types):
-            threshold = lang_thresholds.get(class_name, default_thresholds[class_name])
-            overall_binary_preds[i, j] = (predictions[i, j] > threshold).astype(int)
+    # Apply calibration with proper validation split
+    calibrated_predictions = apply_calibration(
+        predictions, labels, langs, model, val_loader.dataset, device
+    )
     
-    # Calculate AUC scores with both averaging methods
-    try:
-        results['overall'].update({
-            'auc_macro': roc_auc_score(labels, predictions, average='macro'),
-            'auc_weighted': roc_auc_score(labels, predictions, average='weighted')
-        })
-    except Exception as e:
-        print(f"Warning: Could not calculate AUC scores: {str(e)}")
-        results['overall'].update({
-            'auc_macro': 0.0,
-            'auc_weighted': 0.0
-        })
+    # Calculate metrics and save results
+    results = calculate_metrics(
+        predictions, calibrated_predictions, labels, langs
+    )
     
-    try:
-        # Calculate both macro and weighted averages for precision, recall, and F1
-        precision_macro, recall_macro, f1_macro, support_macro = precision_recall_fscore_support(
-            labels, overall_binary_preds, average='macro', zero_division=0
-        )
-        precision_weighted, recall_weighted, f1_weighted, support_weighted = precision_recall_fscore_support(
-            labels, overall_binary_preds, average='weighted', zero_division=0
-        )
-        
-        # Calculate per-class metrics and support
-        per_class_precision, per_class_recall, per_class_f1, class_support = precision_recall_fscore_support(
-            labels, overall_binary_preds, average=None, zero_division=0
-        )
-        
-        # Update results with both macro and weighted metrics
-        results['overall'].update({
-            'precision_macro': precision_macro,
-            'precision_weighted': precision_weighted,
-            'recall_macro': recall_macro,
-            'recall_weighted': recall_weighted,
-            'f1_macro': f1_macro,
-            'f1_weighted': f1_weighted
-        })
-        
-        # Add per-class support information
-        results['overall']['class_support'] = {
-            class_name: int(support) for class_name, support in zip(toxicity_types, class_support)
-        }
-        
-        # Add per-class metrics
-        results['overall']['per_class_metrics'] = {
-            class_name: {
-                'precision': float(prec),
-                'recall': float(rec),
-                'f1': float(f1),
-                'support': int(support)
-            } for class_name, prec, rec, f1, support in zip(
-                toxicity_types, per_class_precision, per_class_recall, per_class_f1, class_support
-            )
-        }
-        
-        # Calculate class weights based on support
-        total_samples = sum(class_support)
-        class_weights = class_support / total_samples if total_samples > 0 else np.zeros_like(class_support)
-        results['overall']['class_weights'] = {
-            class_name: float(weight) for class_name, weight in zip(toxicity_types, class_weights)
-        }
-        
-    except Exception as e:
-        print(f"Warning: Could not calculate precision/recall/F1 scores: {str(e)}")
-        # Set default values for all metrics
-        default_metrics = {
-            'precision_macro': 0.0,
-            'precision_weighted': 0.0,
-            'recall_macro': 0.0,
-            'recall_weighted': 0.0,
-            'f1_macro': 0.0,
-            'f1_weighted': 0.0,
-            'class_support': {class_name: 0 for class_name in toxicity_types},
-            'per_class_metrics': {
-                class_name: {
-                    'precision': 0.0,
-                    'recall': 0.0,
-                    'f1': 0.0,
-                    'support': 0
-                } for class_name in toxicity_types
-            },
-            'class_weights': {class_name: 0.0 for class_name in toxicity_types}
-        }
-        results['overall'].update(default_metrics)
+    # Save evaluation results
+    save_results(
+        results=results,
+        raw_predictions=predictions,
+        calibrated_predictions=calibrated_predictions,
+        labels=labels,
+        langs=langs,
+        output_dir=output_dir
+    )
     
-    # Calculate additional overall metrics with both averaging methods
-    try:
-        # Hamming Loss (already normalized by nature)
-        results['overall']['hamming_loss'] = hamming_loss(labels, overall_binary_preds)
-        
-        # Exact Match (already normalized)
-        results['overall']['exact_match'] = accuracy_score(labels, overall_binary_preds)
-        
-        # Calculate specificity with both averaging methods
-        specificities = []
-        weighted_specificities = []
-        class_weights = []
-        
-        for i in range(labels.shape[1]):
-            try:
-                tn, fp, fn, tp = confusion_matrix(
-                    labels[:, i],
-                    overall_binary_preds[:, i]
-                ).ravel()
-                
-                specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-                specificities.append(specificity)
-                
-                # Weight by class size
-                weight = (tn + fp + fn + tp)
-                weighted_specificities.append(specificity * weight)
-                class_weights.append(weight)
-            except Exception as e:
-                print(f"Warning: Could not calculate specificity for class {i}: {str(e)}")
-                specificities.append(0.0)
-                weighted_specificities.append(0.0)
-                class_weights.append(0.0)
-        
-        # Calculate macro and weighted specificity
-        results['overall'].update({
-            'specificity_macro': np.mean(specificities),
-            'specificity_weighted': (
-                np.sum(weighted_specificities) / np.sum(class_weights) 
-                if np.sum(class_weights) > 0 else 0.0
-            )
-        })
-        
-        # Add per-class specificity
-        for i, class_name in enumerate(toxicity_types):
-            if class_name in results['overall']['per_class_metrics']:
-                results['overall']['per_class_metrics'][class_name]['specificity'] = specificities[i]
-        
-    except Exception as e:
-        print(f"Warning: Could not calculate additional metrics: {str(e)}")
-        results['overall'].update({
-            'hamming_loss': 1.0,
-            'exact_match': 0.0,
-            'specificity_macro': 0.0,
-            'specificity_weighted': 0.0
-        })
-        # Add default specificity to per-class metrics
-        for class_name in toxicity_types:
-            if class_name in results['overall']['per_class_metrics']:
-                results['overall']['per_class_metrics'][class_name]['specificity'] = 0.0
-    
-    # After calculating metrics, add calibration plots
+    # Plot calibration curves
     plot_calibration_curves(
         y_true=labels,
         y_pred_raw=predictions,
-        y_pred_calibrated=predictions,  # Using same predictions since we haven't calibrated yet
+        y_pred_calibrated=calibrated_predictions,
         output_dir=output_dir,
-        toxicity_types=toxicity_types,
-        languages=id_to_lang,
+        toxicity_types=['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'],
+        languages={
+            0: 'English',
+            1: 'Russian',
+            2: 'Turkish',
+            3: 'Spanish',
+            4: 'French',
+            5: 'Italian',
+            6: 'Portuguese'
+        },
         langs=langs
     )
     
-    # Save results and generate visualizations
-    save_results(results, predictions, predictions, labels, langs, output_dir)  # Using same predictions for raw and calibrated
-    plot_metrics(results, output_dir, toxicity_types)
-    
-    return results
+    return results, predictions, calibrated_predictions
 
 def calculate_metrics(predictions, labels, langs):
     """Calculate detailed metrics using class-specific thresholds with both macro and weighted averages"""
@@ -999,32 +844,41 @@ def calculate_class_weights(labels, langs=None):
         labels: Label matrix (n_samples, n_classes)
         langs: Optional language IDs for per-language weighting
     """
+    # Define focal loss parameters
+    gamma = 2.0  # Focusing parameter for hard examples
+    
+    # Class-specific alpha values for balancing positive/negative samples
+    alpha = {
+        'toxic': 0.1,        # Common class, lower alpha
+        'severe_toxic': 0.7,  # Rare class, higher alpha
+        'obscene': 0.3,      # Moderately common
+        'threat': 0.8,       # Very rare class, highest alpha
+        'insult': 0.4,       # Moderately common
+        'identity_hate': 0.6  # Rare class
+    }
+    
+    # Default alpha for unknown classes
+    default_alpha = 0.25
+    
+    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     class_weights = {}
     
-    # Global class weights
-    for i in range(labels.shape[1]):
-        unique_classes, class_counts = np.unique(labels[:, i], return_counts=True)
-        total_samples = len(labels)
-        
-        # Handle single class case
-        if len(unique_classes) == 1:
-            class_weights[i] = {int(unique_classes[0]): 1.0}
-            continue
-        
+    # Calculate global class weights
+    for i, class_name in enumerate(toxicity_types):
         try:
             # Calculate positive ratio
             pos_count = np.sum(labels[:, i])
-            pos_ratio = pos_count / total_samples
+            total_samples = len(labels)
+            pos_ratio = pos_count / total_samples if total_samples > 0 else 0
             
-            # Focal weighting parameters
-            gamma = 2.0  # Focusing parameter
-            alpha = 0.25  # Alpha balancing parameter
+            # Get class-specific alpha value
+            class_alpha = alpha.get(class_name, default_alpha)
             
             # Calculate focal weights
-            pos_weight = alpha * (1 - np.clip(pos_ratio, 0.01, 0.99))**gamma
-            neg_weight = (1 - alpha) * (np.clip(pos_ratio, 0.01, 0.99))**gamma
+            pos_weight = class_alpha * (1 - np.clip(pos_ratio, 0.01, 0.99))**gamma
+            neg_weight = (1 - class_alpha) * (np.clip(pos_ratio, 0.01, 0.99))**gamma
             
-            # Ensure weights are positive and normalized
+            # Ensure minimum weight values
             pos_weight = max(pos_weight, 0.1)
             neg_weight = max(neg_weight, 0.1)
             
@@ -1050,10 +904,10 @@ def calculate_class_weights(labels, langs=None):
                     lang_pos_ratio = lang_pos_count / lang_total if lang_total > 0 else 0
                     
                     # Language-specific focal weights
-                    lang_pos_weight = alpha * (1 - np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
-                    lang_neg_weight = (1 - alpha) * (np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
+                    lang_pos_weight = class_alpha * (1 - np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
+                    lang_neg_weight = (1 - class_alpha) * (np.clip(lang_pos_ratio, 0.01, 0.99))**gamma
                     
-                    # Ensure weights are positive
+                    # Ensure minimum weights
                     lang_pos_weight = max(lang_pos_weight, 0.1)
                     lang_neg_weight = max(lang_neg_weight, 0.1)
                     
@@ -1069,8 +923,15 @@ def calculate_class_weights(labels, langs=None):
                     'per_language': lang_weights
                 }
             
+            # Print weight information for debugging
+            print(f"\nClass weights for {class_name}:")
+            print(f"  Positive ratio: {pos_ratio:.4f}")
+            print(f"  Alpha: {class_alpha:.4f}")
+            print(f"  Positive weight: {pos_weight:.4f}")
+            print(f"  Negative weight: {neg_weight:.4f}")
+            
         except Exception as e:
-            print(f"Warning: Error in class weight calculation for label {i}: {str(e)}")
+            print(f"Warning: Error in class weight calculation for {class_name}: {str(e)}")
             # Fallback to balanced weights
             class_weights[i] = {0: 1.0, 1: 1.0}
     
