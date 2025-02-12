@@ -190,46 +190,46 @@ def load_model(model_path):
         print(f"Error loading model: {str(e)}")
         return None, None, None
 
+class FrozenClassifier(BaseEstimator):
+    """Custom classifier wrapper that preserves predict_proba functionality"""
+    def __init__(self, predictions=None):
+        self.predictions = predictions
+    
+    def fit(self, X, y):
+        if self.predictions is None:
+            self.predictions = X
+        return self
+    
+    def predict(self, X):
+        return (self.predictions >= 0.5).astype(int)
+    
+    def predict_proba(self, X):
+        # Ensure predictions are 2D
+        if self.predictions is None:
+            self.predictions = X
+        probs = np.array(self.predictions).reshape(-1, 1)
+        return np.hstack([1 - probs, probs])
+    
+    def decision_function(self, X):
+        if self.predictions is None:
+            self.predictions = X
+        return np.array(self.predictions).ravel()
+    
+    def get_params(self, deep=True):
+        return {"predictions": self.predictions}
+    
+    def set_params(self, **parameters):
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
+    
+    def __sklearn_clone__(self):
+        return FrozenClassifier(predictions=None)
+
 def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
     """Calibrate model predictions using isotonic regression with proper data splitting"""
     try:
         print("\nApplying probability calibration...")
-        
-        class FrozenClassifier(BaseEstimator):
-            """Custom classifier wrapper that preserves predict_proba functionality"""
-            def __init__(self, predictions=None):
-                self.predictions = predictions
-            
-            def fit(self, X, y):
-                if self.predictions is None:
-                    self.predictions = X
-                return self
-            
-            def predict(self, X):
-                return (self.predictions >= 0.5).astype(int)
-            
-            def predict_proba(self, X):
-                # Ensure predictions are 2D
-                if self.predictions is None:
-                    self.predictions = X
-                probs = np.array(self.predictions).reshape(-1, 1)
-                return np.hstack([1 - probs, probs])
-            
-            def decision_function(self, X):
-                if self.predictions is None:
-                    self.predictions = X
-                return np.array(self.predictions).ravel()
-            
-            def get_params(self, deep=True):
-                return {"predictions": self.predictions}
-            
-            def set_params(self, **parameters):
-                for parameter, value in parameters.items():
-                    setattr(self, parameter, value)
-                return self
-            
-            def __sklearn_clone__(self):
-                return FrozenClassifier(predictions=None)
         
         n_classes = raw_predictions.shape[1]
         calibrated_predictions = np.zeros_like(raw_predictions)
@@ -2155,8 +2155,25 @@ def parallel_bootstrap_metrics(args):
 
 def ensemble_calibration(predictions, labels, val_predictions):
     """Combine multiple calibration methods"""
-    isotonic_pred = isotonic_calibration(predictions, labels, val_predictions)
-    platt_pred = platt_scaling(predictions, labels, val_predictions)
+    # Use CalibratedClassifierCV directly with different methods
+    isotonic_calibrator = CalibratedClassifierCV(
+        FrozenClassifier(predictions=predictions),
+        method='isotonic',
+        cv=5,
+        n_jobs=-1
+    )
+    platt_calibrator = CalibratedClassifierCV(
+        FrozenClassifier(predictions=predictions),
+        method='sigmoid',
+        cv=5,
+        n_jobs=-1
+    )
+    
+    # Fit and predict with both calibrators
+    isotonic_pred = isotonic_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
+    platt_pred = platt_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
+    
+    # Return ensemble average
     return (isotonic_pred + platt_pred) / 2
 
 def main():
