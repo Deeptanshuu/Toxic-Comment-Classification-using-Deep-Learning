@@ -30,7 +30,9 @@ class ToxicDataset(Dataset):
         self.texts = df['comment_text'].values
         self.labels = df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values
         self.tokenizer = tokenizer
-        self.max_length = config.max_length  # Extract max_length from config
+        
+        # Handle config max_length with fallback
+        self.max_length = getattr(config, 'max_length', 128)  # Default to 128 if not specified
         
         # Define language mapping
         self.lang_to_id = {
@@ -104,7 +106,7 @@ class ToxicDataset(Dataset):
                 print(f"  {name}: {int(count):,} samples ({percentage:.2f}%)")
         
         # Create cache directory if it doesn't exist
-        cache_dir = config.cache_dir
+        cache_dir = getattr(config, 'cache_dir', 'cached_data')  # Default to 'cached_data' if not specified
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_file = os.path.join(
             cache_dir, 
@@ -384,6 +386,8 @@ def main():
                       help='Force retokenization even if cache exists')
     parser.add_argument('--prefetch_factor', type=int, default=2,
                       help='Number of batches to prefetch per worker')
+    parser.add_argument('--max_length', type=int, default=128,
+                      help='Maximum sequence length for tokenization')
     
     args = parser.parse_args()
     
@@ -401,7 +405,8 @@ def main():
         'num_workers': args.num_workers,
         'cache_dir': args.cache_dir,
         'force_retokenize': args.force_retokenize,
-        'prefetch_factor': args.prefetch_factor
+        'prefetch_factor': args.prefetch_factor,
+        'max_length': args.max_length
     }
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
