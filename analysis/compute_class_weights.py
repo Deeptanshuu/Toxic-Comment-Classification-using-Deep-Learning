@@ -30,7 +30,9 @@ def calculate_safe_weights(
     toxicity_type: str = None
 ) -> Dict[str, float]:
     """
-    Calculate class weights with controlled scaling and safety limits.
+    Calculate class weights with adaptive scaling and controlled limits.
+    Uses logarithmic scaling for better numerical stability while preserving
+    language-specific adjustments.
     
     Args:
         support_0: Number of negative samples
@@ -42,7 +44,37 @@ def calculate_safe_weights(
         lang: Language code for language-specific constraints
         toxicity_type: Type of toxicity for class-specific constraints
     """
-    total = support_0 + support_1
+    # Input validation with detailed error messages
+    if support_0 < 0 or support_1 < 0:
+        raise ValueError(f"Negative sample counts: support_0={support_0}, support_1={support_1}")
+    if support_0 + support_1 == 0:
+        logging.warning(f"Empty dataset for {toxicity_type} in {lang}")
+        return {
+            "0": 1.0,
+            "1": 1.0,
+            "support_0": support_0,
+            "support_1": support_1,
+            "raw_weight_1": 1.0,
+            "calculation_metadata": {
+                "formula": "default_weights_empty_dataset",
+                "constraints_applied": ["empty_dataset_fallback"]
+            }
+        }
+    
+    # Handle zero support cases safely
+    if support_1 == 0:
+        logging.warning(f"No positive samples for {toxicity_type} in {lang}")
+        return {
+            "0": 1.0,
+            "1": max_weight,  # Use max weight for extremely rare positives
+            "support_0": support_0,
+            "support_1": support_1,
+            "raw_weight_1": max_weight,
+            "calculation_metadata": {
+                "formula": "max_weight_no_positives",
+                "constraints_applied": ["no_positives_fallback"]
+            }
+        }
     
     # Determine effective maximum weight based on class and language
     if lang == 'en' and toxicity_type == 'threat':
@@ -52,25 +84,54 @@ def calculate_safe_weights(
     else:
         effective_max = max_weight
     
-    # Calculate raw weights with boost factor
-    raw_weight_1 = (total / (num_classes * support_1)) * boost_factor
-    raw_weight_0 = total / (num_classes * support_0)
+    try:
+        # Calculate base weights using logarithmic scaling for better stability
+        total = support_0 + support_1
+        log_ratio = np.log1p(support_0) / np.log1p(max(1, support_1))
+        
+        # Scale the log ratio to match the expected weight range
+        scale_factor = total / (num_classes * max(1, support_1))
+        raw_weight_1 = (log_ratio * scale_factor * boost_factor)
+        raw_weight_0 = 1.0 / max(raw_weight_1, 1e-6)  # Prevent division by zero
+        
+        # Apply adaptive scaling based on class distribution
+        if toxicity_type in ['threat', 'identity_hate']:
+            # More aggressive scaling for severe classes
+            raw_weight_1 *= (1 + np.log1p(total) / np.log1p(support_1)) / 2
+        
+        # Detect potential numerical instability
+        if not np.isfinite(raw_weight_1) or not np.isfinite(raw_weight_0):
+            logging.error(f"Numerical instability detected for {toxicity_type} in {lang}")
+            raw_weight_1 = effective_max
+            raw_weight_0 = min_weight
+    except Exception as e:
+        logging.error(f"Weight calculation error: {str(e)}")
+        raw_weight_1 = effective_max
+        raw_weight_0 = min_weight
     
     # Apply safety limits with effective maximum
     weight_1 = min(effective_max, max(min_weight, raw_weight_1))
     weight_0 = min(effective_max, max(min_weight, raw_weight_0))
     
+    # Round weights for consistency and to prevent floating point issues
+    weight_1 = round(float(weight_1), 3)
+    weight_0 = round(float(weight_0), 3)
+    
     return {
-        "0": round(weight_0, 2),
-        "1": round(weight_1, 2),
+        "0": weight_0,
+        "1": weight_1,
         "support_0": support_0,
         "support_1": support_1,
-        "raw_weight_1": round(raw_weight_1, 2),
+        "raw_weight_1": round(float(raw_weight_1), 3),
         "calculation_metadata": {
-            "formula": f"({total}/(6*{support_1}))*{boost_factor}",
+            "formula": "log_scaled_inverse_freq",
+            "raw_log_ratio": round(float(log_ratio), 3),
+            "scale_factor": round(float(scale_factor), 3),
             "constraints_applied": [
                 f"max_weight={effective_max}",
-                f"boost={boost_factor}"
+                f"boost={boost_factor}",
+                f"numerical_stability=enforced",
+                f"adaptive_scaling={'enabled' if toxicity_type in ['threat', 'identity_hate'] else 'disabled'}"
             ]
         }
     }
@@ -217,7 +278,7 @@ def main():
             "total_samples": len(df),
             "language_distribution": df['lang'].value_counts().to_dict(),
             "weight_calculation": {
-                "method": "controlled_inverse_frequency",
+                "method": "log_inverse_frequency",
                 "parameters": {
                     "default_max_weight": 15.0,
                     "default_min_weight": 0.5,
