@@ -194,19 +194,22 @@ class FrozenClassifier(BaseEstimator):
     """Custom classifier wrapper that preserves predict_proba functionality"""
     def __init__(self, predictions=None):
         self.predictions = predictions
-    
+        self._estimator_type = "classifier"
+        
     def fit(self, X, y):
         if self.predictions is None:
             self.predictions = X
         return self
     
     def predict(self, X):
+        if self.predictions is None:
+            self.predictions = X
         return (self.predictions >= 0.5).astype(int)
     
     def predict_proba(self, X):
-        # Ensure predictions are 2D
         if self.predictions is None:
             self.predictions = X
+        # Ensure predictions are 2D
         probs = np.array(self.predictions).reshape(-1, 1)
         return np.hstack([1 - probs, probs])
     
@@ -223,8 +226,14 @@ class FrozenClassifier(BaseEstimator):
             setattr(self, parameter, value)
         return self
     
+    def score(self, X, y):
+        return accuracy_score(y, self.predict(X))
+    
     def __sklearn_clone__(self):
         return FrozenClassifier(predictions=None)
+    
+    def __sklearn_is_fitted__(self):
+        return True
 
 def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
     """Calibrate model predictions using isotonic regression with proper data splitting"""
