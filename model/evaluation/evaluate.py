@@ -1716,35 +1716,67 @@ def save_results(results, raw_predictions, calibrated_predictions, labels, langs
         6: 'Portuguese (pt)'
     }
     
-    # Add global metrics summary to results for both raw and calibrated predictions
-    for pred_type in ['raw', 'calibrated']:
-        results[pred_type]['summary'] = {
+    # Create summary dictionaries for raw and calibrated predictions
+    summary = {
+        'raw': {
             'auc': {
-                'macro': results[pred_type]['overall'].get('auc_macro', 0.0),
-                'weighted': results[pred_type]['overall'].get('auc_weighted', 0.0)
+                'macro': results['overall'].get('auc_macro', 0.0),
+                'weighted': results['overall'].get('auc_weighted', 0.0)
             },
             'f1': {
-                'macro': results[pred_type]['overall'].get('f1_macro', 0.0),
-                'weighted': results[pred_type]['overall'].get('f1_weighted', 0.0)
+                'macro': results['overall'].get('f1_macro', 0.0),
+                'weighted': results['overall'].get('f1_weighted', 0.0)
             },
             'precision': {
-                'macro': results[pred_type]['overall'].get('precision_macro', 0.0),
-                'weighted': results[pred_type]['overall'].get('precision_weighted', 0.0)
+                'macro': results['overall'].get('precision_macro', 0.0),
+                'weighted': results['overall'].get('precision_weighted', 0.0)
             },
             'recall': {
-                'macro': results[pred_type]['overall'].get('recall_macro', 0.0),
-                'weighted': results[pred_type]['overall'].get('recall_weighted', 0.0)
+                'macro': results['overall'].get('recall_macro', 0.0),
+                'weighted': results['overall'].get('recall_weighted', 0.0)
             },
             'specificity': {
-                'macro': results[pred_type]['overall'].get('specificity_macro', 0.0),
-                'weighted': results[pred_type]['overall'].get('specificity_weighted', 0.0)
+                'macro': results['overall'].get('specificity_macro', 0.0),
+                'weighted': results['overall'].get('specificity_weighted', 0.0)
             },
             'other_metrics': {
-                'hamming_loss': results[pred_type]['overall'].get('hamming_loss', 1.0),
-                'exact_match': results[pred_type]['overall'].get('exact_match', 0.0)
+                'hamming_loss': results['overall'].get('hamming_loss', 1.0),
+                'exact_match': results['overall'].get('exact_match', 0.0)
             },
-            'class_support': results[pred_type]['overall'].get('class_support', {})
+            'class_support': results['overall'].get('class_support', {})
+        },
+        'calibrated': {
+            'auc': {
+                'macro': results['overall'].get('auc_macro', 0.0),
+                'weighted': results['overall'].get('auc_weighted', 0.0)
+            },
+            'f1': {
+                'macro': results['overall'].get('f1_macro', 0.0),
+                'weighted': results['overall'].get('f1_weighted', 0.0)
+            },
+            'precision': {
+                'macro': results['overall'].get('precision_macro', 0.0),
+                'weighted': results['overall'].get('precision_weighted', 0.0)
+            },
+            'recall': {
+                'macro': results['overall'].get('recall_macro', 0.0),
+                'weighted': results['overall'].get('recall_weighted', 0.0)
+            },
+            'specificity': {
+                'macro': results['overall'].get('specificity_macro', 0.0),
+                'weighted': results['overall'].get('specificity_weighted', 0.0)
+            },
+            'other_metrics': {
+                'hamming_loss': results['overall'].get('hamming_loss', 1.0),
+                'exact_match': results['overall'].get('exact_match', 0.0)
+            },
+            'class_support': results['overall'].get('class_support', {})
         }
+    }
+    
+    # Add summaries to results
+    results['raw'] = summary['raw']
+    results['calibrated'] = summary['calibrated']
     
     # Convert results to JSON serializable format
     serializable_results = convert_to_serializable(results)
@@ -1768,7 +1800,7 @@ def save_results(results, raw_predictions, calibrated_predictions, labels, langs
     plot_confusion_matrices(calibrated_predictions, labels, langs, 
                           os.path.join(output_dir, 'calibrated_predictions'))
     
-    # Print detailed summary with both raw and calibrated metrics
+    # Print detailed summary
     print("\nEvaluation Results:")
     print("-" * 80)
     
@@ -1776,104 +1808,98 @@ def save_results(results, raw_predictions, calibrated_predictions, labels, langs
         print(f"\n{pred_type.upper()} PREDICTIONS:")
         print("-" * 40)
         
+        metrics = summary[pred_type]
+        
         print("\nAUC Scores:")
-        print(f"  Macro-averaged: {results[pred_type]['overall'].get('auc_macro', 0.0):.4f}")
-        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('auc_weighted', 0.0):.4f}")
+        print(f"  Macro-averaged: {metrics['auc']['macro']:.4f}")
+        print(f"  Weighted-averaged: {metrics['auc']['weighted']:.4f}")
         
         print("\nF1 Scores:")
-        print(f"  Macro-averaged: {results[pred_type]['overall'].get('f1_macro', 0.0):.4f}")
-        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('f1_weighted', 0.0):.4f}")
+        print(f"  Macro-averaged: {metrics['f1']['macro']:.4f}")
+        print(f"  Weighted-averaged: {metrics['f1']['weighted']:.4f}")
         
         print("\nPrecision:")
-        print(f"  Macro-averaged: {results[pred_type]['overall'].get('precision_macro', 0.0):.4f}")
-        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('precision_weighted', 0.0):.4f}")
+        print(f"  Macro-averaged: {metrics['precision']['macro']:.4f}")
+        print(f"  Weighted-averaged: {metrics['precision']['weighted']:.4f}")
         
         print("\nRecall:")
-        print(f"  Macro-averaged: {results[pred_type]['overall'].get('recall_macro', 0.0):.4f}")
-        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('recall_weighted', 0.0):.4f}")
+        print(f"  Macro-averaged: {metrics['recall']['macro']:.4f}")
+        print(f"  Weighted-averaged: {metrics['recall']['weighted']:.4f}")
         
         print("\nSpecificity:")
-        print(f"  Macro-averaged: {results[pred_type]['overall'].get('specificity_macro', 0.0):.4f}")
-        print(f"  Weighted-averaged: {results[pred_type]['overall'].get('specificity_weighted', 0.0):.4f}")
+        print(f"  Macro-averaged: {metrics['specificity']['macro']:.4f}")
+        print(f"  Weighted-averaged: {metrics['specificity']['weighted']:.4f}")
         
         print("\nOther Metrics:")
-        print(f"  Exact Match: {results[pred_type]['overall'].get('exact_match', 0.0):.4f}")
+        print(f"  Exact Match: {metrics['other_metrics']['exact_match']:.4f}")
         
-        if 'class_support' in results[pred_type]['overall']:
+        if metrics['class_support']:
             print("\nClass Support (number of samples):")
-            for class_name, support in results[pred_type]['overall']['class_support'].items():
+            for class_name, support in metrics['class_support'].items():
                 print(f"  {class_name}: {support:,}")
     
     print("\nPer-Language Performance:")
-    for pred_type in ['raw', 'calibrated']:
-        print(f"\n{pred_type.upper()} PREDICTIONS:")
-        print("-" * 40)
+    for lang_id, metrics in results.get('per_language', {}).items():
+        lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
+        print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
         
-        for lang_id, metrics in results[pred_type]['per_language'].items():
-            lang_name = id_to_lang.get(int(lang_id), f'Unknown ({lang_id})')
-            print(f"\n{lang_name} (n={metrics.get('sample_count', 0)}):")
-            
-            # Print AUC with CI if available
-            if 'auc' in metrics and metrics['auc'] is not None:
-                auc_str = f"{metrics['auc']:.4f}"
-                if 'auc_ci' in metrics:
-                    auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
-                print(f"  AUC: {auc_str}")
-            else:
-                print("  AUC: N/A")
-            
-            # Print F1 with CI if available
-            if 'f1' in metrics and metrics['f1'] is not None:
-                f1_str = f"{metrics['f1']:.4f}"
-                if 'f1_ci' in metrics:
-                    f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
-                print(f"  F1: {f1_str}")
-            else:
-                print("  F1: N/A")
-            
-            # Handle Hamming Loss
-            if 'hamming_loss' in metrics and metrics['hamming_loss'] is not None:
-                h_loss_str = f"{metrics['hamming_loss']:.4f}"
-                if 'hamming_loss_ci' in metrics:
-                    h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
-                print(f"  Hamming Loss: {h_loss_str}")
-            else:
-                print("  Hamming Loss: N/A")
-            
-            # Handle Exact Match
-            if 'exact_match' in metrics and metrics['exact_match'] is not None:
-                e_match_str = f"{metrics['exact_match']:.4f}"
-                if 'exact_match_ci' in metrics:
-                    e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
-                print(f"  Exact Match: {e_match_str}")
-            else:
-                print("  Exact Match: N/A")
+        # Print AUC with CI if available
+        if 'auc' in metrics and metrics['auc'] is not None:
+            auc_str = f"{metrics['auc']:.4f}"
+            if 'auc_ci' in metrics:
+                auc_str += f" (95% CI: [{metrics['auc_ci'][0]:.4f}, {metrics['auc_ci'][1]:.4f}])"
+            print(f"  AUC: {auc_str}")
+        else:
+            print("  AUC: N/A")
+        
+        # Print F1 with CI if available
+        if 'f1' in metrics and metrics['f1'] is not None:
+            f1_str = f"{metrics['f1']:.4f}"
+            if 'f1_ci' in metrics:
+                f1_str += f" (95% CI: [{metrics['f1_ci'][0]:.4f}, {metrics['f1_ci'][1]:.4f}])"
+            print(f"  F1: {f1_str}")
+        else:
+            print("  F1: N/A")
+        
+        # Handle Hamming Loss
+        if 'hamming_loss' in metrics and metrics['hamming_loss'] is not None:
+            h_loss_str = f"{metrics['hamming_loss']:.4f}"
+            if 'hamming_loss_ci' in metrics:
+                h_loss_str += f" (95% CI: [{metrics['hamming_loss_ci'][0]:.4f}, {metrics['hamming_loss_ci'][1]:.4f}])"
+            print(f"  Hamming Loss: {h_loss_str}")
+        else:
+            print("  Hamming Loss: N/A")
+        
+        # Handle Exact Match
+        if 'exact_match' in metrics and metrics['exact_match'] is not None:
+            e_match_str = f"{metrics['exact_match']:.4f}"
+            if 'exact_match_ci' in metrics:
+                e_match_str += f" (95% CI: [{metrics['exact_match_ci'][0]:.4f}, {metrics['exact_match_ci'][1]:.4f}])"
+            print(f"  Exact Match: {e_match_str}")
+        else:
+            print("  Exact Match: N/A")
     
     print("\nPer-Class Performance:")
-    for pred_type in ['raw', 'calibrated']:
-        print(f"\n{pred_type.upper()} PREDICTIONS:")
-        print("-" * 40)
+    for class_name, metrics in results.get('per_class', {}).items():
+        print(f"\n{class_name}:")
         
-        for class_name, metrics in results[pred_type].get('per_class', {}).items():
-            print(f"\n{class_name}:")
-            
-            # Print metrics with None checks
-            def format_metric(name, format_str='.4f'):
-                value = metrics.get(name)
-                return f"{value:{format_str}}" if value is not None else "N/A"
-            
-            print(f"  AUC: {format_metric('auc')}")
-            print(f"  F1: {format_metric('f1')}")
-            print(f"  Precision: {format_metric('precision')}")
-            print(f"  Recall: {format_metric('recall')}")
-            print(f"  Specificity: {format_metric('specificity')}")
-            print(f"  NPV: {format_metric('npv')}")
-            print(f"  Threshold: {format_metric('threshold')}")
-            print(f"  Confusion Matrix:")
-            print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
-            print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
-            if 'support' in metrics:
-                print(f"  Support: {metrics['support']:,}")
+        # Print metrics with None checks
+        def format_metric(name, format_str='.4f'):
+            value = metrics.get(name)
+            return f"{value:{format_str}}" if value is not None else "N/A"
+        
+        print(f"  AUC: {format_metric('auc')}")
+        print(f"  F1: {format_metric('f1')}")
+        print(f"  Precision: {format_metric('precision')}")
+        print(f"  Recall: {format_metric('recall')}")
+        print(f"  Specificity: {format_metric('specificity')}")
+        print(f"  NPV: {format_metric('npv')}")
+        print(f"  Threshold: {format_metric('threshold')}")
+        print(f"  Confusion Matrix:")
+        print(f"    TP: {metrics.get('true_positives', 0)}, FP: {metrics.get('false_positives', 0)}")
+        print(f"    FN: {metrics.get('false_negatives', 0)}, TN: {metrics.get('true_negatives', 0)}")
+        if 'support' in metrics:
+            print(f"  Support: {metrics['support']:,}")
 
 def plot_calibration_curves(y_true, y_pred_raw, y_pred_calibrated, output_dir, toxicity_types=None, languages=None, langs=None):
     """Plot calibration curves comparing raw and calibrated predictions
