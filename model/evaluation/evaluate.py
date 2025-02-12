@@ -26,9 +26,11 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 
 class ToxicDataset(Dataset):
-    def __init__(self, df, tokenizer, max_length=128, cache_dir='cached_dataset'):
+    def __init__(self, df, tokenizer, config):
         self.texts = df['comment_text'].values
         self.labels = df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values
+        self.tokenizer = tokenizer
+        self.max_length = config.max_length  # Extract max_length from config
         
         # Define language mapping
         self.lang_to_id = {
@@ -101,14 +103,12 @@ class ToxicDataset(Dataset):
                 percentage = (count / len(lang_labels)) * 100 if len(lang_labels) > 0 else 0
                 print(f"  {name}: {int(count):,} samples ({percentage:.2f}%)")
         
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
         # Create cache directory if it doesn't exist
+        cache_dir = config.cache_dir
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_file = os.path.join(
             cache_dir, 
-            f'tokenized_data_{max_length}_{tokenizer.__class__.__name__}.pt'
+            f'tokenized_data_{self.max_length}_{tokenizer.__class__.__name__}.pt'
         )
         
         # Try to load cached tokenized data
@@ -427,7 +427,7 @@ def main():
         test_dataset = ToxicDataset(
             test_df, 
             tokenizer, 
-            cache_dir=args.cache_dir
+            config=args
         )
         
         # Configure DataLoader

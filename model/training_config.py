@@ -163,6 +163,9 @@ class TrainingConfig:
     model_dropout: float = 0.0
     freeze_layers: int = 8
     
+    # Dataset parameters
+    cache_dir: str = 'cached_dataset'
+    
     # Training parameters
     batch_size: int = 64
     grad_accum_steps: int = 1
