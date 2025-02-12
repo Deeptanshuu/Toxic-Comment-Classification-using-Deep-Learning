@@ -439,7 +439,7 @@ def main():
             raise
         
         try:
-            tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
+            tokenizer = XLMRobertaTokenizer.from_pretrained(TrainingConfig.model_name)
             train_dataset = ToxicDataset(train_df, tokenizer, config)
             val_dataset = ToxicDataset(val_df, tokenizer, config)
         except Exception as e:
