@@ -536,10 +536,58 @@ def evaluate_model(model, val_loader, device, output_dir):
         predictions, labels, langs, model, val_loader.dataset, device
     )
     
-    # Calculate metrics and save results
-    results = calculate_metrics(
-        predictions, calibrated_predictions, labels, langs
-    )
+    # Calculate metrics for each language
+    results = {
+        'overall': {},
+        'per_language': {},
+        'per_class': {}
+    }
+    
+    # Calculate overall metrics first
+    results['overall'] = calculate_metrics(predictions, calibrated_predictions, labels, None)
+    
+    # Calculate per-language metrics
+    unique_langs = np.unique(langs)
+    for lang in unique_langs:
+        try:
+            lang_mask = langs == lang
+            if not lang_mask.any():
+                continue
+                
+            lang_preds = predictions[lang_mask]
+            lang_labels = labels[lang_mask]
+            lang_cal_preds = calibrated_predictions[lang_mask]
+            
+            # Calculate metrics for this language
+            lang_metrics = calculate_metrics(
+                lang_preds,
+                lang_cal_preds,
+                lang_labels,
+                None  # No need to pass langs here since we're already filtered
+            )
+            
+            # Add sample count
+            lang_metrics['sample_count'] = int(lang_mask.sum())
+            
+            # Store results
+            results['per_language'][str(lang)] = lang_metrics
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
+    
+    # Calculate per-class metrics
+    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    for i, class_name in enumerate(toxicity_types):
+        try:
+            class_metrics = calculate_class_metrics(
+                labels[:, i],
+                predictions[:, i],
+                (predictions[:, i] > 0.5).astype(int),  # Use 0.5 as default threshold
+                0.5  # Default threshold
+            )
+            results['per_class'][class_name] = class_metrics
+        except Exception as e:
+            print(f"Warning: Could not calculate metrics for class {class_name}: {str(e)}")
     
     # Save evaluation results
     save_results(
@@ -557,7 +605,7 @@ def evaluate_model(model, val_loader, device, output_dir):
         y_pred_raw=predictions,
         y_pred_calibrated=calibrated_predictions,
         output_dir=output_dir,
-        toxicity_types=['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'],
+        toxicity_types=toxicity_types,
         languages={
             0: 'English',
             1: 'Russian',
