@@ -9,9 +9,6 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     brier_score_loss
 )
-from sklearn.utils import resample
-from sklearn.utils.class_weight import compute_class_weight
-import seaborn as sns
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
@@ -21,12 +18,6 @@ import argparse
 from torch.utils.data import Dataset, DataLoader
 import gc
 import multiprocessing
-import multiprocessing as mp
-from sklearn.model_selection import train_test_split
-import warnings
-from sklearn.dummy import DummyClassifier
-from sklearn.base import BaseEstimator, clone
-from sklearn.preprocessing import FunctionTransformer
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -374,14 +365,6 @@ def plot_metrics(results, output_dir):
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
         plt.close()
-    
-    # Plot confusion matrices
-    plot_confusion_matrices(
-        predictions=(predictions > 0.5).astype(int),
-        labels=labels,
-        langs=langs,
-        output_dir=output_dir
-    )
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
