@@ -214,22 +214,35 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                     lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
                 )
                 
-                # Fit isotonic regression on calibration set
+                # Create a dummy classifier that just returns the input probabilities
+                class DummyClassifier:
+                    def predict_proba(self, X):
+                        return np.vstack([1-X.ravel(), X.ravel()]).T
+                    
+                    def fit(self, X, y):
+                        return self
+                
+                # Initialize and fit isotonic calibration
                 calibrator = CalibratedClassifierCV(
-                    base_estimator=None,
+                    estimator=DummyClassifier(),
                     method='isotonic',
                     cv='prefit'
                 )
-                calibrator.fit(calib_preds.reshape(-1, 1), calib_labels)
+                
+                # Reshape predictions for sklearn compatibility
+                calib_preds_reshaped = calib_preds.reshape(-1, 1)
+                calibrator.fit(calib_preds_reshaped, calib_labels)
                 
                 # Apply calibration to all predictions for this language/class
-                calibrated_lang_preds = calibrator.predict_proba(lang_preds.reshape(-1, 1))[:, 1]
+                lang_preds_reshaped = lang_preds.reshape(-1, 1)
+                calibrated_lang_preds = calibrator.predict_proba(lang_preds_reshaped)[:, 1]
                 calibrated_predictions[lang_mask, class_idx] = calibrated_lang_preds
                 
                 # Validate calibration quality
+                val_preds_reshaped = val_preds.reshape(-1, 1)
                 prob_true, prob_pred = calibration_curve(
                     val_labels,
-                    calibrator.predict_proba(val_preds.reshape(-1, 1))[:, 1],
+                    calibrator.predict_proba(val_preds_reshaped)[:, 1],
                     n_bins=10
                 )
                 calib_error = np.mean(np.abs(prob_true - prob_pred))
