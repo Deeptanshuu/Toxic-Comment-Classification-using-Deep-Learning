@@ -396,7 +396,7 @@ class TrainingConfig:
     model_name: str = "xlm-roberta-large"
     max_length: int = 128
     hidden_size: int = 1024
-    num_attention_heads: int = 24
+    num_attention_heads: int = 16
     model_dropout: float = 0.1
     freeze_layers: int = 8
     
