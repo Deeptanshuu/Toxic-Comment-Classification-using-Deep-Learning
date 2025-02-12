@@ -165,7 +165,7 @@ class TrainingConfig:
     
     # Training parameters
     batch_size: int = 64
-    grad_accum_steps: int = 0
+    grad_accum_steps: int = 1
     epochs: int = 10
     lr: float = 2e-5
     weight_decay: float = 0.005
