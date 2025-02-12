@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import warnings
 import json
+from tqdm import tqdm
 
 from transformers import (
     XLMRobertaTokenizer,
@@ -161,225 +162,129 @@ def get_grad_stats(model):
         logger.warning(f"Error calculating gradient stats: {str(e)}")
         return {}
 
-def train(model, train_loader, config):
-    """Training loop with gradient monitoring and class-aware clipping"""
-    try:
-        # Initialize metrics tracker
-        metrics = MetricsTracker()
-        
-        # Create save directory if it doesn't exist
-        save_dir = Path('weights/toxic_classifier_xlm-roberta-large')
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Get parameter groups with language-specific learning rates
-        param_groups = config.get_param_groups(model)
-        
-        # Group parameters by component for class-aware clipping
-        classifier_params = []
-        base_params = []
-        
-        for name, param in model.named_parameters():
-            if not param.requires_grad:
-                continue
-            
-            # Separate classifier parameters for class-aware clipping
-            if 'classifier' in name or 'output' in name:
-                classifier_params.append(param)
-            else:
-                base_params.append(param)
-        
-        # Initialize optimizer with parameter groups
-        optimizer = torch.optim.AdamW(param_groups)
-        
-        # Calculate cycle lengths for cosine restarts
-        total_steps = len(train_loader) * config.epochs
-        first_cycle = int(total_steps / (2 ** (config.num_cycles - 1)))
-        
-        # Initialize cosine scheduler with warm restarts
-        scheduler = CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=first_cycle,  # Length of first cycle
-            T_mult=2,  # Each cycle is twice as long
-            eta_min=config.lr * config.min_lr_ratio  # Minimum learning rate
+def training_step(batch, model, optimizer, scheduler, config):
+    """Execute a single training step"""
+    # Move batch to device
+    batch = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v 
+            for k, v in batch.items()}
+    
+    # Forward pass
+    with config.get_autocast_context():
+        outputs = model(
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
+            labels=batch['labels'],
+            lang_ids=batch['lang']
         )
+        loss = outputs['loss']
+    
+    # Backward pass
+    loss.backward()
+    
+    # Gradient clipping
+    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+    
+    # Optimizer step
+    optimizer.step()
+    optimizer.zero_grad()
+    scheduler.step()
+    
+    return loss.item()
+
+def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
+    """Save model checkpoint"""
+    save_dir = Path('weights/toxic_classifier_xlm-roberta-large')
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save model state
+    model_save_path = save_dir / 'pytorch_model.bin'
+    torch.save(model.state_dict(), model_save_path)
+    
+    # Save config
+    config_save_path = save_dir / 'config.json'
+    with open(config_save_path, 'w') as f:
+        json.dump(config.to_serializable_dict(), f, indent=2)
+
+def train(model, train_loader, config):
+    """Train the model"""
+    global _model, _optimizer, _scheduler
+    _model = model
+    
+    optimizer = torch.optim.AdamW(
+        config.get_param_groups(model),
+        weight_decay=config.weight_decay
+    )
+    _optimizer = optimizer
+    
+    # Calculate total steps for cosine scheduler
+    total_steps = len(train_loader) * config.epochs
+    warmup_steps = int(total_steps * config.warmup_ratio)
+    
+    # Initialize cosine scheduler with warm restarts
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=total_steps // config.num_cycles,  # First cycle length
+        T_mult=1,  # Keep cycle length constant
+        eta_min=config.lr * config.min_lr_ratio  # Minimum LR
+    )
+    _scheduler = scheduler
+    
+    # Initialize metrics tracker
+    metrics = MetricsTracker()
+    
+    # Training loop
+    model.train()
+    for epoch in range(config.epochs):
+        epoch_loss = 0
+        num_batches = 0
         
-        # Initialize gradient scaler for mixed precision
-        scaler = torch.cuda.amp.GradScaler(enabled=config.mixed_precision == "fp16")
+        # Progress bar for batches
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
         
-        # Training loop
-        for epoch in range(config.epochs):
-            model.train()
-            epoch_loss = 0
-            epoch_start = time.time()
-            
-            # Training steps
-            for step, batch in enumerate(train_loader):
+        for batch in progress_bar:
+            try:
+                loss = training_step(batch, model, optimizer, scheduler, config)
+                epoch_loss += loss
+                num_batches += 1
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'loss': f'{loss:.4f}',
+                    'lr': f'{scheduler.get_last_lr()[0]:.2e}'
+                })
+                
+                # Log to wandb
                 try:
-                    # Move all tensors in batch to the correct device
-                    batch = {
-                        k: v.to(config.device) if isinstance(v, torch.Tensor) else v
-                        for k, v in batch.items()
-                    }
-                    
-                    # Forward pass
-                    outputs = model(**batch)
-                    loss = outputs['loss']
-                    
-                    # Scale loss for gradient accumulation
-                    if config.grad_accum_steps > 1:
-                        loss = loss / config.grad_accum_steps
-                    
-                    # Backward pass with gradient monitoring
-                    if config.use_mixed_precision:
-                        scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
-                    
-                    # Monitor gradient flow after backward
-                    if step % 10 == 0:  # Log every 10 steps to avoid overhead
-                        grad_stats = get_grad_stats(model)
-                        wandb.log(grad_stats)
-                    
-                    # Gradient accumulation and optimization step
-                    if (step + 1) % config.grad_accum_steps == 0:
-                        if config.use_mixed_precision:
-                            scaler.unscale_(optimizer)
-                        
-                        # Class-aware gradient clipping
-                        try:
-                            # Validate classifier parameters
-                            if classifier_params:
-                                classifier_grad_norm = torch.nn.utils.clip_grad_norm_(
-                                    classifier_params, 
-                                    config.max_grad_norm * 0.5,  # More aggressive clipping for classifier
-                                    error_if_nonfinite=True
-                                )
-                            else:
-                                classifier_grad_norm = torch.tensor(0.0, device=config.device)
-                                logger.info("No classifier parameters found for gradient clipping")
-                            
-                            # Validate base parameters
-                            if base_params:
-                                base_grad_norm = torch.nn.utils.clip_grad_norm_(
-                                    base_params,
-                                    config.max_grad_norm,
-                                    error_if_nonfinite=True
-                                )
-                            else:
-                                base_grad_norm = torch.tensor(0.0, device=config.device)
-                                logger.info("No base parameters found for gradient clipping")
-                            
-                            # Log gradient norms
-                            if step % 100 == 0:
-                                wandb.log({
-                                    'grad/classifier_norm': classifier_grad_norm.item(),
-                                    'grad/base_norm': base_grad_norm.item()
-                                })
-                        except RuntimeError as e:
-                            if "inf" in str(e).lower() or "nan" in str(e).lower():
-                                logger.error(f"Non-finite gradients detected: {str(e)}")
-                                # Skip this batch to prevent training instability
-                                optimizer.zero_grad()
-                                continue
-                            else:
-                                logger.warning(f"Gradient clipping failed: {str(e)}")
-                                # Fallback to global clipping with non-finite check
-                                try:
-                                    torch.nn.utils.clip_grad_norm_(
-                                        model.parameters(),
-                                        config.max_grad_norm,
-                                        error_if_nonfinite=True
-                                    )
-                                except RuntimeError as clip_error:
-                                    if "inf" in str(clip_error).lower() or "nan" in str(clip_error).lower():
-                                        logger.error(f"Non-finite gradients in fallback clipping: {str(clip_error)}")
-                                        optimizer.zero_grad()
-                                        continue
-                                    else:
-                                        raise
-                        
-                        # Optimization step
-                        if config.use_mixed_precision:
-                            scaler.step(optimizer)
-                            scaler.update()
-                        else:
-                            optimizer.step()
-                        
-                        optimizer.zero_grad()
-                        scheduler.step()
-                    
-                    # Update metrics
-                    epoch_loss += loss.item() * config.grad_accum_steps
-                    
-                    # Log step metrics
-                    if step % 100 == 0:
-                        # Get current learning rate
-                        current_lr = scheduler.get_last_lr()[0]
-                        loss_val = loss.item()
-                        
-                        # Calculate ETA
-                        steps_done = epoch * len(train_loader) + step
-                        total_steps = config.epochs * len(train_loader)
-                        time_elapsed = time.time() - epoch_start
-                        steps_per_sec = (step + 1) / time_elapsed if time_elapsed > 0 else 0
-                        remaining_steps = total_steps - steps_done
-                        eta_seconds = remaining_steps / steps_per_sec if steps_per_sec > 0 else 0
-                        eta = str(timedelta(seconds=int(eta_seconds)))
-                        
-                        # Log to wandb
-                        metrics_dict = {
-                            'train/step_loss': loss_val,
-                            'train/learning_rate': current_lr,
-                            'train/eta': eta
-                        }
-                        wandb.log(metrics_dict)
-                        
-                        # Log to file
-                        logger.info(
-                            f"Epoch [{epoch+1}/{config.epochs}] "
-                            f"Step [{step}/{len(train_loader)}] "
-                            f"Loss: {loss_val:.4f} "
-                            f"LR: {current_lr:.2e} "
-                            f"ETA: {eta}"
-                        )
-                        
+                    wandb.log({
+                        'batch_loss': loss,
+                        'learning_rate': scheduler.get_last_lr()[0]
+                    })
                 except Exception as e:
-                    logger.error(f"Error in training step: {str(e)}")
-                    continue
-            
-            # Calculate epoch metrics
-            epoch_loss = epoch_loss / len(train_loader)
-            epoch_time = time.time() - epoch_start
-            
-            # Log epoch-level metrics
+                    print(f"Warning: Could not log to wandb: {str(e)}")
+                
+            except Exception as e:
+                print(f"Error in training step: {str(e)}")
+                continue
+        
+        # Calculate average epoch loss
+        avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else float('inf')
+        metrics.update_train(avg_epoch_loss)
+        
+        # Save checkpoint
+        try:
+            save_checkpoint(model, optimizer, scheduler, metrics, config, epoch)
+        except Exception as e:
+            print(f"Warning: Could not save checkpoint: {str(e)}")
+        
+        # Log epoch metrics
+        try:
             wandb.log({
-                'train/epoch_loss': epoch_loss,
-                'train/epoch': epoch,
-                'train/epoch_time': epoch_time
+                'epoch': epoch + 1,
+                'epoch_loss': avg_epoch_loss,
+                'best_auc': metrics.best_auc
             })
-            
-            # Save final model
-            if epoch == config.epochs - 1:
-                try:
-                    model_save_path = save_dir / 'pytorch_model.bin'
-                    torch.save(model.state_dict(), model_save_path)
-                    
-                    # Save config
-                    config_save_path = save_dir / 'config.json'
-                    with open(config_save_path, 'w') as f:
-                        json.dump(config.to_serializable_dict(), f, indent=2)
-                        
-                    logger.info(f"Model saved successfully to {save_dir}")
-                except Exception as save_error:
-                    logger.error(f"Error saving model: {str(save_error)}")
-        
-        return {
-            'loss': epoch_loss
-        }
-        
-    except Exception as e:
-        logger.error(f"Fatal error in training: {str(e)}")
-        raise
+        except Exception as e:
+            print(f"Warning: Could not log epoch metrics to wandb: {str(e)}")
 
 def create_dataloaders(train_dataset, val_dataset, config):
     """Create optimized DataLoaders"""
@@ -399,17 +304,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
         persistent_workers=True
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size * 2,
-        shuffle=False,
-        num_workers=config.num_workers,
-        pin_memory=True,
-        prefetch_factor=2,
-        persistent_workers=True
-    )
-    
-    return train_loader, val_loader
+    return train_loader
 
 def main():
     try:
@@ -435,8 +330,7 @@ def main():
         print("Loading datasets...")
         try:
             train_df = pd.read_csv("dataset/split/train.csv")
-            val_df = pd.read_csv("dataset/split/val.csv")
-            print(f"Loaded train ({len(train_df)} samples) and val ({len(val_df)} samples) datasets")
+            print(f"Loaded train ({len(train_df)} samples) dataset")
         except Exception as e:
             print(f"Error loading datasets: {str(e)}")
             raise
@@ -444,12 +338,11 @@ def main():
         try:
             tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
             train_dataset = ToxicDataset(train_df, tokenizer, config)
-            val_dataset = ToxicDataset(val_df, tokenizer, config)
         except Exception as e:
             print(f"Error creating datasets: {str(e)}")
             raise
         
-        train_loader = create_dataloaders(train_dataset, val_dataset, config)
+        train_loader = create_dataloaders(train_dataset, None, config)
         model = init_model(config)
         train(model, train_loader, config)
         
