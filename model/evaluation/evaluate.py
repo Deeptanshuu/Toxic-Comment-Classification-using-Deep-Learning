@@ -2163,27 +2163,69 @@ def parallel_bootstrap_metrics(args):
         return None
 
 def ensemble_calibration(predictions, labels, val_predictions):
-    """Combine multiple calibration methods"""
-    # Use CalibratedClassifierCV directly with different methods
-    isotonic_calibrator = CalibratedClassifierCV(
-        FrozenClassifier(predictions=predictions),
-        method='isotonic',
-        cv=5,
-        n_jobs=-1
-    )
-    platt_calibrator = CalibratedClassifierCV(
-        FrozenClassifier(predictions=predictions),
-        method='sigmoid',
-        cv=5,
-        n_jobs=-1
-    )
+    """Combine multiple calibration methods with proper error handling
     
-    # Fit and predict with both calibrators
-    isotonic_pred = isotonic_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
-    platt_pred = platt_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
-    
-    # Return ensemble average
-    return (isotonic_pred + platt_pred) / 2
+    Args:
+        predictions: Training predictions to fit calibration
+        labels: True labels for training
+        val_predictions: Predictions to calibrate
+        
+    Returns:
+        Calibrated predictions using ensemble of methods
+    """
+    try:
+        # Reshape inputs if needed
+        predictions = np.array(predictions).reshape(-1, 1)
+        val_predictions = np.array(val_predictions).reshape(-1, 1)
+        labels = np.array(labels).ravel()
+        
+        # Create base classifier
+        base_clf = FrozenClassifier(predictions=predictions)
+        
+        # Initialize calibrators with proper parameters
+        isotonic_calibrator = CalibratedClassifierCV(
+            base_clf,
+            method='isotonic',
+            cv=5,
+            n_jobs=-1,
+            ensemble=True
+        )
+        
+        platt_calibrator = CalibratedClassifierCV(
+            base_clf,
+            method='sigmoid',
+            cv=5,
+            n_jobs=-1,
+            ensemble=True
+        )
+        
+        # Fit calibrators with error handling
+        try:
+            isotonic_pred = isotonic_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
+        except Exception as e:
+            print(f"Warning: Isotonic calibration failed: {str(e)}")
+            isotonic_pred = None
+            
+        try:
+            platt_pred = platt_calibrator.fit(predictions, labels).predict_proba(val_predictions)[:, 1]
+        except Exception as e:
+            print(f"Warning: Platt scaling failed: {str(e)}")
+            platt_pred = None
+        
+        # Combine predictions based on what succeeded
+        if isotonic_pred is not None and platt_pred is not None:
+            return (isotonic_pred + platt_pred) / 2
+        elif isotonic_pred is not None:
+            return isotonic_pred
+        elif platt_pred is not None:
+            return platt_pred
+        else:
+            print("Warning: All calibration methods failed, returning original predictions")
+            return val_predictions.ravel()
+            
+    except Exception as e:
+        print(f"Warning: Ensemble calibration failed: {str(e)}")
+        return val_predictions.ravel()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
