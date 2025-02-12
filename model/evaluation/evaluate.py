@@ -26,7 +26,7 @@ import multiprocessing as mp
 from sklearn.model_selection import train_test_split
 import warnings
 from sklearn.dummy import DummyClassifier
-from sklearn.base import BaseEstimator, clone
+from sklearn.base import BaseEstimator, clone, ClassifierMixin
 from sklearn.preprocessing import FunctionTransformer
 
 # Set matplotlib to non-interactive backend
@@ -190,26 +190,25 @@ def load_model(model_path):
         print(f"Error loading model: {str(e)}")
         return None, None, None
 
-class FrozenClassifier(BaseEstimator):
-    """Custom classifier wrapper that preserves predict_proba functionality"""
+class FrozenClassifier(BaseEstimator, ClassifierMixin):
+    """Custom classifier wrapper for probability calibration"""
     def __init__(self, predictions=None):
         self.predictions = predictions
-        self._estimator_type = "classifier"
+        self._estimator_type = 'classifier'
         self.classes_ = np.array([0, 1])  # Binary classification
         
     def fit(self, X, y):
-        """Fit the classifier (basically a no-op since predictions are frozen)"""
+        """Fit the classifier (stores class information)"""
         if self.predictions is None:
             self.predictions = X
-        # Store unique classes
-        self.classes_ = np.unique(y)
+        # Ensure binary classification setup
+        self.classes_ = np.array([0, 1])
         return self
     
     def predict(self, X):
         """Predict class labels"""
-        if self.predictions is None:
-            self.predictions = X
-        return (self.predictions >= 0.5).astype(int)
+        probas = self.predict_proba(X)
+        return self.classes_[np.argmax(probas, axis=1)]
     
     def predict_proba(self, X):
         """Predict class probabilities"""
@@ -238,16 +237,8 @@ class FrozenClassifier(BaseEstimator):
         return self
     
     def score(self, X, y):
-        """Returns the accuracy score"""
-        return accuracy_score(y, self.predict(X))
-    
-    def __sklearn_clone__(self):
-        """Return a deep copy of this estimator"""
-        return FrozenClassifier(predictions=None)
-    
-    def __sklearn_is_fitted__(self):
-        """Indicate if the estimator is fitted"""
-        return True
+        """Returns the mean accuracy"""
+        return np.mean(self.predict(X) == y)
 
 def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
     """Calibrate model predictions using isotonic regression with proper data splitting"""
@@ -268,8 +259,24 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                 lang_preds = raw_predictions[lang_mask, class_idx]
                 lang_labels = labels[lang_mask, class_idx]
                 
+                # Check for sufficient samples
                 if not lang_labels.any():
                     print(f"  Skipping language {lang} - no positive samples")
+                    calibrated_predictions[lang_mask, class_idx] = lang_preds
+                    continue
+                
+                # Validate class distribution
+                unique_classes = np.unique(lang_labels)
+                if len(unique_classes) < 2:
+                    print(f"  Skipping calibration for lang {lang} class {class_idx} - insufficient class variety")
+                    calibrated_predictions[lang_mask, class_idx] = lang_preds
+                    continue
+                
+                # Check class balance
+                class_counts = np.bincount(lang_labels.astype(int))
+                min_class_count = np.min(class_counts)
+                if min_class_count < 10:  # Require at least 10 samples per class
+                    print(f"  Skipping calibration for lang {lang} class {class_idx} - insufficient samples per class (min: {min_class_count})")
                     calibrated_predictions[lang_mask, class_idx] = lang_preds
                     continue
                 
@@ -279,14 +286,21 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                         lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
                     )
                     
+                    # Validate calibration split
+                    if len(np.unique(calib_labels)) < 2 or len(np.unique(val_labels)) < 2:
+                        print(f"  Skipping calibration for lang {lang} class {class_idx} - insufficient class variety after split")
+                        calibrated_predictions[lang_mask, class_idx] = lang_preds
+                        continue
+                    
                     # Ensure predictions are properly scaled
                     calib_preds = np.clip(calib_preds, 1e-7, 1-1e-7)
                     
                     # Create classifier wrapper with proper initialization
                     base_classifier = FrozenClassifier(predictions=calib_preds)
                     base_classifier.fit(calib_preds.reshape(-1, 1), calib_labels)
+                    base_classifier.classes_ = np.array([0, 1])  # Force binary classification setup
                     
-                    # Initialize and fit isotonic calibration
+                    # Initialize and fit isotonic calibration with proper parameters
                     calibrator = CalibratedClassifierCV(
                         base_classifier,
                         method='isotonic',
@@ -313,6 +327,14 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                     )
                     calib_error = np.mean(np.abs(prob_true - prob_pred))
                     print(f"  Language {lang} calibration error: {calib_error:.4f}")
+                    
+                    # Validate calibration improvement
+                    raw_brier = brier_score_loss(lang_labels, lang_preds)
+                    cal_brier = brier_score_loss(lang_labels, calibrated_lang_preds)
+                    if cal_brier > raw_brier * 1.1:  # Allow 10% degradation
+                        print(f"  Warning: Calibration degraded performance for lang {lang} class {class_idx}")
+                        print(f"    Raw Brier: {raw_brier:.4f}, Calibrated Brier: {cal_brier:.4f}")
+                        calibrated_predictions[lang_mask, class_idx] = lang_preds
                     
                 except Exception as e:
                     print(f"  Warning: Calibration failed for language {lang}, class {class_idx}: {str(e)}")
