@@ -627,7 +627,7 @@ def calculate_metrics(predictions, calibrated_predictions, labels, langs):
         predictions: Raw model predictions
         calibrated_predictions: Calibrated model predictions
         labels: True labels
-        langs: Language IDs for each sample
+        langs: Language IDs for each sample (can be None for overall metrics)
     """
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
@@ -639,8 +639,7 @@ def calculate_metrics(predictions, calibrated_predictions, labels, langs):
         optimal_idx = np.argmax(tpr - fpr)
         thresholds[class_name] = thresh[optimal_idx]
     
-    unique_langs = np.unique(langs)
-    
+    # Initialize results dictionary
     results = {
         'overall': {},
         'per_language': {},
@@ -802,131 +801,133 @@ def calculate_metrics(predictions, calibrated_predictions, labels, langs):
     })
     
     # Per-language metrics with proper handling of rare classes
-    for lang in unique_langs:
-        lang_mask = langs == lang
-        if lang_mask.sum() > 0:
-            try:
-                # Calculate metrics for this language
-                lang_labels = labels[lang_mask]
-                lang_preds = predictions[lang_mask]
-                lang_binary = binary_predictions[lang_mask]
-                cal_preds = calibrated_predictions[lang_mask]
-                cal_binary = calibrated_binary[lang_mask]
-                
-                # Calculate both macro and weighted metrics for this language
-                lang_metrics = {}
-                
-                # Raw predictions metrics
-                lang_metrics['raw'] = {}
-                
-                # AUC scores
-                lang_metrics['raw']['auc_macro'] = roc_auc_score(
-                    lang_labels, lang_preds, average='macro'
-                )
-                lang_metrics['raw']['auc_weighted'] = roc_auc_score(
-                    lang_labels, lang_preds, average='weighted'
-                )
-                
-                # Precision, recall, F1
-                precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
-                    lang_labels, lang_binary, average='macro', zero_division=0
-                )
-                precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
-                    lang_labels, lang_binary, average='weighted', zero_division=0
-                )
-                
-                lang_metrics['raw'].update({
-                    'precision_macro': precision_macro,
-                    'precision_weighted': precision_weighted,
-                    'recall_macro': recall_macro,
-                    'recall_weighted': recall_weighted,
-                    'f1_macro': f1_macro,
-                    'f1_weighted': f1_weighted
-                })
-                
-                # Calibrated predictions metrics
-                lang_metrics['calibrated'] = {}
-                
-                # AUC scores for calibrated predictions
-                lang_metrics['calibrated']['auc_macro'] = roc_auc_score(
-                    lang_labels, cal_preds, average='macro'
-                )
-                lang_metrics['calibrated']['auc_weighted'] = roc_auc_score(
-                    lang_labels, cal_preds, average='weighted'
-                )
-                
-                # Precision, recall, F1 for calibrated predictions
-                cal_precision_macro, cal_recall_macro, cal_f1_macro, _ = precision_recall_fscore_support(
-                    lang_labels, cal_binary, average='macro', zero_division=0
-                )
-                cal_precision_weighted, cal_recall_weighted, cal_f1_weighted, _ = precision_recall_fscore_support(
-                    lang_labels, cal_binary, average='weighted', zero_division=0
-                )
-                
-                lang_metrics['calibrated'].update({
-                    'precision_macro': cal_precision_macro,
-                    'precision_weighted': cal_precision_weighted,
-                    'recall_macro': cal_recall_macro,
-                    'recall_weighted': cal_recall_weighted,
-                    'f1_macro': cal_f1_macro,
-                    'f1_weighted': cal_f1_weighted
-                })
-                
-                # Add sample count
-                lang_metrics['sample_count'] = int(lang_mask.sum())
-                
-                # Calculate per-class metrics for this language
-                lang_metrics['per_class'] = {}
-                for i, class_name in enumerate(toxicity_types):
-                    class_labels = lang_labels[:, i]
-                    class_preds = lang_preds[:, i]
-                    class_binary = lang_binary[:, i]
-                    cal_preds = cal_preds[:, i]
-                    cal_binary = cal_binary[:, i]
+    if langs is not None:
+        unique_langs = np.unique(langs)
+        for lang in unique_langs:
+            lang_mask = langs == lang
+            if np.sum(lang_mask) > 0:  # Use np.sum instead of .sum() for boolean array
+                try:
+                    # Calculate metrics for this language
+                    lang_labels = labels[lang_mask]
+                    lang_preds = predictions[lang_mask]
+                    lang_binary = binary_predictions[lang_mask]
+                    cal_preds = calibrated_predictions[lang_mask]
+                    cal_binary = calibrated_binary[lang_mask]
                     
-                    try:
-                        tn, fp, fn, tp = confusion_matrix(
-                            class_labels, class_binary
-                        ).ravel()
+                    # Calculate both macro and weighted metrics for this language
+                    lang_metrics = {}
+                    
+                    # Raw predictions metrics
+                    lang_metrics['raw'] = {}
+                    
+                    # AUC scores
+                    lang_metrics['raw']['auc_macro'] = roc_auc_score(
+                        lang_labels, lang_preds, average='macro'
+                    )
+                    lang_metrics['raw']['auc_weighted'] = roc_auc_score(
+                        lang_labels, lang_preds, average='weighted'
+                    )
+                    
+                    # Precision, recall, F1
+                    precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+                        lang_labels, lang_binary, average='macro', zero_division=0
+                    )
+                    precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+                        lang_labels, lang_binary, average='weighted', zero_division=0
+                    )
+                    
+                    lang_metrics['raw'].update({
+                        'precision_macro': precision_macro,
+                        'precision_weighted': precision_weighted,
+                        'recall_macro': recall_macro,
+                        'recall_weighted': recall_weighted,
+                        'f1_macro': f1_macro,
+                        'f1_weighted': f1_weighted
+                    })
+                    
+                    # Calibrated predictions metrics
+                    lang_metrics['calibrated'] = {}
+                    
+                    # AUC scores for calibrated predictions
+                    lang_metrics['calibrated']['auc_macro'] = roc_auc_score(
+                        lang_labels, cal_preds, average='macro'
+                    )
+                    lang_metrics['calibrated']['auc_weighted'] = roc_auc_score(
+                        lang_labels, cal_preds, average='weighted'
+                    )
+                    
+                    # Precision, recall, F1 for calibrated predictions
+                    cal_precision_macro, cal_recall_macro, cal_f1_macro, _ = precision_recall_fscore_support(
+                        lang_labels, cal_binary, average='macro', zero_division=0
+                    )
+                    cal_precision_weighted, cal_recall_weighted, cal_f1_weighted, _ = precision_recall_fscore_support(
+                        lang_labels, cal_binary, average='weighted', zero_division=0
+                    )
+                    
+                    lang_metrics['calibrated'].update({
+                        'precision_macro': cal_precision_macro,
+                        'precision_weighted': cal_precision_weighted,
+                        'recall_macro': cal_recall_macro,
+                        'recall_weighted': cal_recall_weighted,
+                        'f1_macro': cal_f1_macro,
+                        'f1_weighted': cal_f1_weighted
+                    })
+                    
+                    # Add sample count
+                    lang_metrics['sample_count'] = int(np.sum(lang_mask))
+                    
+                    # Calculate per-class metrics for this language
+                    lang_metrics['per_class'] = {}
+                    for i, class_name in enumerate(toxicity_types):
+                        class_labels = lang_labels[:, i]
+                        class_preds = lang_preds[:, i]
+                        class_binary = lang_binary[:, i]
+                        cal_preds = cal_preds[:, i]
+                        cal_binary = cal_binary[:, i]
                         
-                        cal_tn, cal_fp, cal_fn, cal_tp = confusion_matrix(
-                            class_labels, cal_binary
-                        ).ravel()
-                        
-                        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-                        cal_specificity = cal_tn / (cal_tn + cal_fp) if (cal_tn + cal_fp) > 0 else 0.0
-                        support = np.sum(class_labels)
-                        
-                        lang_metrics['per_class'][class_name] = {
-                            'raw': {
-                                'precision': precision_score(class_labels, class_binary, zero_division=0),
-                                'recall': recall_score(class_labels, class_binary, zero_division=0),
-                                'f1': f1_score(class_labels, class_binary, zero_division=0),
-                                'specificity': specificity,
-                                'support': int(support),
-                                'true_positives': int(tp),
-                                'false_positives': int(fp),
-                                'true_negatives': int(tn),
-                                'false_negatives': int(fn)
-                            },
-                            'calibrated': {
-                                'precision': precision_score(class_labels, cal_binary, zero_division=0),
-                                'recall': recall_score(class_labels, cal_binary, zero_division=0),
-                                'f1': f1_score(class_labels, cal_binary, zero_division=0),
-                                'specificity': cal_specificity,
-                                'true_positives': int(cal_tp),
-                                'false_positives': int(cal_fp),
-                                'true_negatives': int(cal_tn),
-                                'false_negatives': int(cal_fn)
+                        try:
+                            tn, fp, fn, tp = confusion_matrix(
+                                class_labels, class_binary
+                            ).ravel()
+                            
+                            cal_tn, cal_fp, cal_fn, cal_tp = confusion_matrix(
+                                class_labels, cal_binary
+                            ).ravel()
+                            
+                            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                            cal_specificity = cal_tn / (cal_tn + cal_fp) if (cal_tn + cal_fp) > 0 else 0.0
+                            support = np.sum(class_labels)
+                            
+                            lang_metrics['per_class'][class_name] = {
+                                'raw': {
+                                    'precision': precision_score(class_labels, class_binary, zero_division=0),
+                                    'recall': recall_score(class_labels, class_binary, zero_division=0),
+                                    'f1': f1_score(class_labels, class_binary, zero_division=0),
+                                    'specificity': specificity,
+                                    'support': int(support),
+                                    'true_positives': int(tp),
+                                    'false_positives': int(fp),
+                                    'true_negatives': int(tn),
+                                    'false_negatives': int(fn)
+                                },
+                                'calibrated': {
+                                    'precision': precision_score(class_labels, cal_binary, zero_division=0),
+                                    'recall': recall_score(class_labels, cal_binary, zero_division=0),
+                                    'f1': f1_score(class_labels, cal_binary, zero_division=0),
+                                    'specificity': cal_specificity,
+                                    'true_positives': int(cal_tp),
+                                    'false_positives': int(cal_fp),
+                                    'true_negatives': int(cal_tn),
+                                    'false_negatives': int(cal_fn)
+                                }
                             }
-                        }
-                    except Exception as e:
-                        print(f"Warning: Could not calculate metrics for {class_name} in language {lang}: {str(e)}")
-                
-                results['per_language'][str(lang)] = lang_metrics
-                
-            except Exception as e:
-                print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
+                        except Exception as e:
+                            print(f"Warning: Could not calculate metrics for {class_name} in language {lang}: {str(e)}")
+                    
+                    results['per_language'][str(lang)] = lang_metrics
+                    
+                except Exception as e:
+                    print(f"Warning: Could not calculate metrics for language {lang}: {str(e)}")
                 
     return results
 
