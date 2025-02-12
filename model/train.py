@@ -414,7 +414,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
 def main():
     try:
         try:
-            config = TrainingConfig(TrainingConfig.TRAINING_CONFIG)
+            config = TrainingConfig()
             wandb.init(
                 project="toxic-comment-classification",
                 name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
@@ -439,16 +439,16 @@ def main():
             raise
         
         try:
-            tokenizer = XLMRobertaTokenizer.from_pretrained(TrainingConfig.model_name)
-            train_dataset = ToxicDataset(train_df, tokenizer, TrainingConfig.config)
-            val_dataset = ToxicDataset(val_df, tokenizer, TrainingConfig.config)
+            tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
+            train_dataset = ToxicDataset(train_df, tokenizer, config)
+            val_dataset = ToxicDataset(val_df, tokenizer, config)
         except Exception as e:
             print(f"Error creating datasets: {str(e)}")
             raise
         
-        train_loader = create_dataloaders(train_dataset, val_dataset, TrainingConfig.config)
-        model = init_model(TrainingConfig.config)
-        train(model, train_loader, TrainingConfig.config)
+        train_loader = create_dataloaders(train_dataset, val_dataset, config)
+        model = init_model(config)
+        train(model, train_loader, config)
         
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
