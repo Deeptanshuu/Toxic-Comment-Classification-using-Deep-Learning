@@ -195,44 +195,58 @@ class FrozenClassifier(BaseEstimator):
     def __init__(self, predictions=None):
         self.predictions = predictions
         self._estimator_type = "classifier"
+        self.classes_ = np.array([0, 1])  # Binary classification
         
     def fit(self, X, y):
+        """Fit the classifier (basically a no-op since predictions are frozen)"""
         if self.predictions is None:
             self.predictions = X
+        # Store unique classes
+        self.classes_ = np.unique(y)
         return self
     
     def predict(self, X):
+        """Predict class labels"""
         if self.predictions is None:
             self.predictions = X
         return (self.predictions >= 0.5).astype(int)
     
     def predict_proba(self, X):
+        """Predict class probabilities"""
         if self.predictions is None:
             self.predictions = X
-        # Ensure predictions are 2D
-        probs = np.array(self.predictions).reshape(-1, 1)
+        # Ensure predictions are properly shaped and scaled
+        probs = np.clip(np.array(self.predictions).reshape(-1, 1), 0, 1)
         return np.hstack([1 - probs, probs])
     
     def decision_function(self, X):
+        """Decision function returning probability of positive class"""
         if self.predictions is None:
             self.predictions = X
-        return np.array(self.predictions).ravel()
+        # Return log odds for compatibility with CalibratedClassifierCV
+        probs = np.clip(np.array(self.predictions).ravel(), 1e-10, 1-1e-10)
+        return np.log(probs / (1 - probs))
     
     def get_params(self, deep=True):
+        """Get parameters for this estimator"""
         return {"predictions": self.predictions}
     
     def set_params(self, **parameters):
+        """Set the parameters of this estimator"""
         for parameter, value in parameters.items():
             setattr(self, parameter, value)
         return self
     
     def score(self, X, y):
+        """Returns the accuracy score"""
         return accuracy_score(y, self.predict(X))
     
     def __sklearn_clone__(self):
+        """Return a deep copy of this estimator"""
         return FrozenClassifier(predictions=None)
     
     def __sklearn_is_fitted__(self):
+        """Indicate if the estimator is fitted"""
         return True
 
 def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, device):
@@ -265,8 +279,12 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                         lang_preds, lang_labels, test_size=0.3, stratify=lang_labels
                     )
                     
-                    # Create classifier wrapper
-                    base_classifier = FrozenClassifier(predictions=calib_preds.reshape(-1, 1))
+                    # Ensure predictions are properly scaled
+                    calib_preds = np.clip(calib_preds, 1e-7, 1-1e-7)
+                    
+                    # Create classifier wrapper with proper initialization
+                    base_classifier = FrozenClassifier(predictions=calib_preds)
+                    base_classifier.fit(calib_preds.reshape(-1, 1), calib_labels)
                     
                     # Initialize and fit isotonic calibration
                     calibrator = CalibratedClassifierCV(
@@ -277,7 +295,7 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                         ensemble=True
                     )
                     
-                    # Reshape predictions for sklearn compatibility
+                    # Reshape and fit
                     calib_preds_reshaped = calib_preds.reshape(-1, 1)
                     calibrator.fit(calib_preds_reshaped, calib_labels)
                     
@@ -298,12 +316,13 @@ def calibrate_predictions(model, val_dataset, raw_predictions, labels, langs, de
                     
                 except Exception as e:
                     print(f"  Warning: Calibration failed for language {lang}, class {class_idx}: {str(e)}")
+                    print("  Falling back to original predictions")
                     calibrated_predictions[lang_mask, class_idx] = lang_preds
         
         return calibrated_predictions
         
     except Exception as e:
-        print(f"Warning: Calibration failed: {str(e)}")
+        print(f"Warning: Calibration process failed: {str(e)}")
         return raw_predictions
 
 def apply_calibration(raw_predictions, labels, langs, model, val_dataset, device):
