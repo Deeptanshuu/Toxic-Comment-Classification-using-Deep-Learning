@@ -413,8 +413,11 @@ def create_dataloaders(train_dataset, val_dataset, config):
 
 def main():
     try:
+        # Initialize config first
+        config = TrainingConfig()
+        
+        # Initialize wandb
         try:
-            config = TrainingConfig()
             wandb.init(
                 project="toxic-comment-classification",
                 name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
