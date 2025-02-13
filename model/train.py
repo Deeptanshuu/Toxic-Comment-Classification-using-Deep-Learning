@@ -383,47 +383,6 @@ def train(model, train_loader, config):
         except Exception as e:
             logger.error(f"Could not log epoch metrics to wandb: {str(e)}")
 
-def collate_fn(batch, tokenizer):
-    """Custom collate function for toxic comment dataset"""
-    try:
-        logger.debug(f"Collating batch of size {len(batch)}")
-        input_ids = []
-        attention_masks = []
-        labels = []
-        langs = []
-        
-        # Process each item in batch
-        for idx, item in enumerate(batch):
-            try:
-                input_ids.append(item['input_ids'])
-                attention_masks.append(item['attention_mask'])
-                labels.append(item['labels'])
-                langs.append(item['lang'])
-            except Exception as e:
-                logger.error(f"Error processing item {idx} in batch: {str(e)}")
-                logger.error(f"Item keys: {item.keys()}")
-                raise
-        
-        # Pad sequences
-        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
-        attention_masks = torch.nn.utils.rnn.pad_sequence(attention_masks, batch_first=True, padding_value=0)
-        
-        # Stack other tensors
-        labels = torch.stack(labels)
-        langs = torch.tensor(langs, dtype=torch.long)
-        
-        logger.debug("Batch collation successful")
-        return {
-            'input_ids': input_ids,
-            'attention_mask': attention_masks,
-            'labels': labels,
-            'lang': langs
-        }
-    except Exception as e:
-        logger.error(f"Error in collate_fn: {str(e)}")
-        logger.error("Collate function failed with traceback:", exc_info=True)
-        raise
-
 def create_dataloaders(train_dataset, val_dataset, config):
     """Create optimized DataLoaders"""
     logger.info("Creating data loaders...")
@@ -443,68 +402,23 @@ def create_dataloaders(train_dataset, val_dataset, config):
             groups=train_dataset.langs,
             batch_size=config.batch_size
         )
-        expected_batches = len(train_dataset) // config.batch_size + (1 if len(train_dataset) % config.batch_size != 0 else 0)
-        logger.info(f"Expected number of batches: {expected_batches}")
-        logger.info(f"Actual sampler length: {len(train_sampler)}")
         
-        # Validate sampler indices
-        sampler_indices = list(iter(train_sampler))
-        logger.info(f"Number of indices from sampler: {len(sampler_indices)}")
-        logger.info(f"First few indices: {sampler_indices[:10]}")
-        
-        if len(train_sampler) != expected_batches:
-            logger.warning(f"Sampler length mismatch! Expected {expected_batches} but got {len(train_sampler)}")
-            
-    except Exception as e:
-        logger.error(f"Error creating sampler: {str(e)}")
-        logger.error("Sampler creation failed with traceback:", exc_info=True)
-        raise
-    
-    logger.info("Creating DataLoader...")
-    try:
-        # Create DataLoader with worker init function for debugging
-        def worker_init_fn(worker_id):
-            logger.info(f"Initializing worker {worker_id}")
-            worker_info = torch.utils.data.get_worker_info()
-            if worker_info is not None:
-                logger.info(f"Worker {worker_id} info - num workers: {worker_info.num_workers}, "
-                          f"id: {worker_info.id}, dataset: {worker_info.dataset}")
-            
+        logger.info("Creating DataLoader...")
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
             sampler=train_sampler,
             num_workers=config.num_workers,
             pin_memory=True,
-            prefetch_factor=2 if config.num_workers > 0 else None,  # Reduced from 4 to 2
             persistent_workers=True,
-            worker_init_fn=worker_init_fn,
-            collate_fn=lambda x: collate_fn(x, train_dataset.tokenizer)
+            drop_last=False
         )
-        logger.info("DataLoader created successfully")
-        
-        # Try to peek at first batch without consuming it
-        logger.info("Attempting to create iterator...")
-        train_iter = iter(train_loader)
-        logger.info("Iterator created successfully")
-        
-        # Try to get first batch
-        logger.info("Attempting to load first batch...")
-        try:
-            first_batch = next(train_iter)
-            logger.info("Successfully loaded first batch")
-            logger.info(f"First batch shapes: {[(k, v.shape) for k, v in first_batch.items() if isinstance(v, torch.Tensor)]}")
-        except StopIteration:
-            logger.error("DataLoader is empty!")
-            raise
-        except Exception as e:
-            logger.error(f"Error loading first batch: {str(e)}")
-            raise
+        logger.info(f"DataLoader created with {len(train_loader)} batches")
         
         return train_loader
         
     except Exception as e:
-        logger.error(f"Error creating DataLoader: {str(e)}")
+        logger.error(f"Error creating data loader: {str(e)}")
         logger.error("DataLoader creation failed with traceback:", exc_info=True)
         raise
 
