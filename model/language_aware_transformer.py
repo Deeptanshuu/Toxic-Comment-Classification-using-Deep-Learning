@@ -26,6 +26,9 @@ class LanguageAwareClassifier(nn.Module):
         super().__init__()
         self.lang_embed = nn.Embedding(7, 64)  # 7 languages
         
+        # Add language projection layer for residual connection
+        self.lang_projection = nn.Linear(64, hidden_size)
+        
         # Base classifier layers
         self.classifier = nn.ModuleDict({
             'projection': nn.Linear(hidden_size + 64, 512),
@@ -44,6 +47,11 @@ class LanguageAwareClassifier(nn.Module):
     
     def _init_weights(self):
         """Initialize weights with Xavier uniform"""
+        # Initialize language projection
+        nn.init.xavier_uniform_(self.lang_projection.weight)
+        if self.lang_projection.bias is not None:
+            nn.init.constant_(self.lang_projection.bias, 0)
+            
         for module in self.classifier.values():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -66,11 +74,15 @@ class LanguageAwareClassifier(nn.Module):
         elif lang_ids.dtype != torch.long:
             lang_ids = lang_ids.long()
         
-        # Get language embeddings
-        lang_emb = self.lang_embed(lang_ids).unsqueeze(1).expand(-1, x.size(1), -1)
+        # Get language embeddings and apply residual connection
+        lang_emb = self.lang_embed(lang_ids)
+        lang_emb_expanded = lang_emb.unsqueeze(1).expand(-1, x.size(1), -1)
         
-        # Concatenate features with language embeddings
-        combined = torch.cat([x, lang_emb], dim=1)
+        # Add residual connection with projected language embeddings
+        x = x + self.lang_projection(lang_emb_expanded)
+        
+        # Concatenate features with language embeddings for classification
+        combined = torch.cat([x, lang_emb_expanded], dim=-1)
         
         # Apply classifier layers
         x = self.classifier['projection'](combined)
