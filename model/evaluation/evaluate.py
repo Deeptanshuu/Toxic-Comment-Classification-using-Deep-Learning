@@ -18,138 +18,190 @@ import argparse
 from torch.utils.data import Dataset, DataLoader
 import gc
 import multiprocessing
+from pathlib import Path
+import hashlib
+import logging
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+logger = logging.getLogger(__name__)
 
 class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, config):
-        self.texts = df['comment_text'].values
-        self.labels = df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values
+        self.df = df
         self.tokenizer = tokenizer
+        self.config = config
+        self.cache_dir = Path(config.cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Handle config max_length with fallback
-        self.max_length = getattr(config, 'max_length', 128)  # Default to 128 if not specified
+        # Create cache key based on data and config
+        cache_key = self._create_cache_key(df, tokenizer, config)
+        self.cache_file = self.cache_dir / f"cached_encodings_{cache_key}.pt"
+        self.meta_file = self.cache_dir / f"meta_{cache_key}.json"
         
-        # Define language mapping
-        self.lang_to_id = {
-            'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
-            'fr': 4, 'it': 5, 'pt': 6
-        }
+        # Initialize storage
+        self.cached_encodings = []
+        self.labels = None
+        self.langs = None
         
-        # Add reverse mapping
-        self.id_to_lang = {v: k for k, v in self.lang_to_id.items()}
-        
-        # Validate language column
-        if 'lang' not in df.columns:
-            raise ValueError("Language column 'lang' is required for evaluation")
-        
-        # Print language distribution before conversion
-        print("\nLanguage distribution in dataset:")
-        lang_counts = df['lang'].value_counts()
-        total_samples = len(df)
-        for lang, count in lang_counts.items():
-            percentage = (count / total_samples) * 100
-            print(f"  {lang}: {count:,} samples ({percentage:.2f}%)")
-        
-        # Convert language strings to IDs with validation
-        self.langs = np.zeros(len(df), dtype=int)
-        unknown_langs = set()
-        valid_langs = set()
-        
-        for idx, lang in enumerate(df['lang'].values):
-            lang_str = str(lang).lower().strip()
-            if lang_str in self.lang_to_id:
-                self.langs[idx] = self.lang_to_id[lang_str]
-                valid_langs.add(lang_str)
-            else:
-                unknown_langs.add(lang_str)
-                self.langs[idx] = 0  # Default to English
-        
-        # Print warnings for unknown languages
-        if unknown_langs:
-            print("\nWarning: Found unknown languages:")
-            for lang in sorted(unknown_langs):
-                mask = df['lang'].str.lower().str.strip() == lang
-                count = mask.sum()
-                percentage = (count / total_samples) * 100
-                print(f"  {lang}: {count:,} samples ({percentage:.2f}%) - Will be treated as English (en)")
-        
-        # Print language ID distribution after conversion
-        print("\nLanguage ID distribution after conversion:")
-        unique_ids, counts = np.unique(self.langs, return_counts=True)
-        for lang_id, count in zip(unique_ids, counts):
-            lang_code = self.id_to_lang.get(lang_id, 'unknown')
-            percentage = (count / total_samples) * 100
-            print(f"  {lang_code} (ID: {lang_id}): {count:,} samples ({percentage:.2f}%)")
-        
-        # Validate that we have at least one valid language
-        if not valid_langs:
-            raise ValueError("No valid language codes found in dataset. "
-                           f"Expected one of: {', '.join(sorted(self.lang_to_id.keys()))}")
-        
-        # Print label distribution by language
-        print("\nLabel distribution by language:")
-        for lang_id in unique_ids:
-            lang_code = self.id_to_lang.get(lang_id, 'unknown')
-            lang_mask = self.langs == lang_id
-            lang_labels = self.labels[lang_mask]
+        # Load or create cache
+        if self._is_cache_valid():
+            logger.info(f"Loading cached encodings from {self.cache_file}")
+            self._load_cache()
+        else:
+            logger.info("Cache not found or invalid. Creating new cache...")
+            self._create_cache()
             
-            print(f"\n{lang_code.upper()} (ID: {lang_id}, {counts[unique_ids == lang_id][0]:,} samples):")
-            label_sums = np.sum(lang_labels, axis=0)
-            label_names = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-            for name, count in zip(label_names, label_sums):
-                percentage = (count / len(lang_labels)) * 100 if len(lang_labels) > 0 else 0
-                print(f"  {name}: {int(count):,} samples ({percentage:.2f}%)")
+        # Validate final state
+        self._validate_dataset()
         
-        # Create cache directory if it doesn't exist
-        cache_dir = getattr(config, 'cache_dir', 'cached_data')  # Default to 'cached_data' if not specified
-        os.makedirs(cache_dir, exist_ok=True)
-        self.cache_file = os.path.join(
-            cache_dir, 
-            f'tokenized_data_{self.max_length}_{tokenizer.__class__.__name__}.pt'
+    def _create_cache_key(self, df, tokenizer, config):
+        """Create unique cache key based on data and configuration"""
+        key_components = [
+            df.shape[0],
+            df.columns.tolist(),
+            tokenizer.__class__.__name__,
+            config.max_length,
+            config.model_name
+        ]
+        key_string = json.dumps(key_components, sort_keys=True)
+        return hashlib.md5(key_string.encode()).hexdigest()[:10]
+    
+    def _is_cache_valid(self):
+        """Check if cache exists and is valid"""
+        if not self.cache_file.exists() or not self.meta_file.exists():
+            return False
+            
+        try:
+            with open(self.meta_file, 'r') as f:
+                meta = json.load(f)
+            return (
+                meta['num_samples'] == len(self.df) and
+                meta['max_length'] == self.config.max_length and
+                meta['model_name'] == self.config.model_name
+            )
+        except Exception as e:
+            logger.warning(f"Cache validation failed: {str(e)}")
+            return False
+    
+    def _create_cache(self):
+        """Create and save cached encodings"""
+        logger.info("Processing samples and creating cache...")
+        failed_indices = []
+        
+        # Process all samples
+        for idx in tqdm(range(len(self.df)), desc="Caching encodings"):
+            try:
+                encoding = self._process_sample(self.df.iloc[idx])
+                self.cached_encodings.append(encoding)
+            except Exception as e:
+                logger.error(f"Failed to process sample {idx}: {str(e)}")
+                failed_indices.append(idx)
+        
+        # Handle failed samples
+        if failed_indices:
+            logger.warning(f"Failed to process {len(failed_indices)} samples")
+            # Fill failed samples with empty encodings
+            for idx in failed_indices:
+                self.cached_encodings.append(self._create_empty_encoding())
+        
+        # Save cache
+        try:
+            torch.save(self.cached_encodings, self.cache_file)
+            meta = {
+                'num_samples': len(self.df),
+                'max_length': self.config.max_length,
+                'model_name': self.config.model_name,
+                'failed_indices': failed_indices
+            }
+            with open(self.meta_file, 'w') as f:
+                json.dump(meta, f)
+            logger.info(f"Cache saved to {self.cache_file}")
+        except Exception as e:
+            logger.error(f"Failed to save cache: {str(e)}")
+    
+    def _load_cache(self):
+        """Load cached encodings"""
+        try:
+            self.cached_encodings = torch.load(self.cache_file)
+            with open(self.meta_file, 'r') as f:
+                meta = json.load(f)
+            if meta.get('failed_indices'):
+                logger.warning(f"Cache contains {len(meta['failed_indices'])} failed samples")
+        except Exception as e:
+            logger.error(f"Failed to load cache: {str(e)}")
+            raise
+    
+    def _process_sample(self, row):
+        """Process a single sample"""
+        # Tokenize text
+        encoding = self.tokenizer(
+            row['comment_text'],
+            max_length=self.config.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
         )
         
-        # Try to load cached tokenized data
-        self.cached_encodings = self._load_or_create_cache()
-
-    def _load_or_create_cache(self):
-        """Load cached tokenized data or create if not exists"""
-        if os.path.exists(self.cache_file):
-            return torch.load(self.cache_file)
-        
-        encodings = []
-        for text in tqdm(self.texts, desc="Tokenizing", leave=False):
-            encoding = self.tokenizer(
-                str(text),
-                max_length=self.max_length,
-                padding='max_length',
-                truncation=True,
-                return_tensors='pt'
-            )
-            encodings.append({
-                'input_ids': encoding['input_ids'].flatten(),
-                'attention_mask': encoding['attention_mask'].flatten()
-            })
-        
-        torch.save(encodings, self.cache_file)
-        return encodings
-
-    def __len__(self):
-        return len(self.texts)
-
-    def __getitem__(self, idx):
-        # Use cached encodings
-        encoding = self.cached_encodings[idx]
-        return {
-            'input_ids': encoding['input_ids'],
-            'attention_mask': encoding['attention_mask'],
-            'labels': torch.FloatTensor(self.labels[idx]),
-            'lang': torch.tensor(self.langs[idx], dtype=torch.long)
+        # Convert to expected format
+        sample = {
+            'input_ids': encoding['input_ids'].squeeze(0),
+            'attention_mask': encoding['attention_mask'].squeeze(0),
+            'labels': torch.tensor([
+                row['toxic'], row['severe_toxic'], row['obscene'],
+                row['threat'], row['insult'], row['identity_hate']
+            ], dtype=torch.float32),
+            'lang': torch.tensor(row['lang_id'], dtype=torch.long)
         }
+        return sample
+    
+    def _create_empty_encoding(self):
+        """Create an empty encoding for failed samples"""
+        return {
+            'input_ids': torch.zeros(self.config.max_length, dtype=torch.long),
+            'attention_mask': torch.zeros(self.config.max_length, dtype=torch.long),
+            'labels': torch.zeros(6, dtype=torch.float32),
+            'lang': torch.tensor(0, dtype=torch.long)
+        }
+    
+    def _validate_dataset(self):
+        """Validate the final dataset state"""
+        if len(self.cached_encodings) != len(self.df):
+            raise ValueError(
+                f"Cache size mismatch: {len(self.cached_encodings)} cached samples "
+                f"vs {len(self.df)} input samples"
+            )
+        
+        # Extract labels and langs for sampler
+        self.labels = torch.stack([enc['labels'] for enc in self.cached_encodings])
+        self.langs = torch.tensor([enc['lang'].item() for enc in self.cached_encodings])
+        
+        # Validate shapes
+        expected_shapes = {
+            'input_ids': (self.config.max_length,),
+            'attention_mask': (self.config.max_length,),
+            'labels': (6,),
+            'lang': ()
+        }
+        
+        for idx, encoding in enumerate(self.cached_encodings):
+            for key, expected_shape in expected_shapes.items():
+                if encoding[key].shape != expected_shape:
+                    raise ValueError(
+                        f"Shape mismatch in sample {idx}, key {key}: "
+                        f"got {encoding[key].shape}, expected {expected_shape}"
+                    )
+    
+    def __len__(self):
+        return len(self.cached_encodings)
+    
+    def __getitem__(self, idx):
+        if idx >= len(self.cached_encodings):
+            raise IndexError(f"Index {idx} out of bounds for dataset of size {len(self.cached_encodings)}")
+        return self.cached_encodings[idx]
 
 def load_model(model_path):
     """Load model and tokenizer"""

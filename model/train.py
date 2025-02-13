@@ -392,15 +392,12 @@ def create_dataloaders(train_dataset, val_dataset, config):
     
     logger.info("Initializing sampler...")
     try:
-        # Log shapes before sampler creation
-        logger.info(f"Labels shape: {train_dataset.labels.shape}")
-        logger.info(f"Groups (langs) shape: {len(train_dataset.langs)}")
-        logger.info(f"Unique languages: {set(train_dataset.langs)}")
-        
+        # Create sampler with cached size
         train_sampler = MultilabelStratifiedSampler(
             labels=train_dataset.labels,
             groups=train_dataset.langs,
-            batch_size=config.batch_size
+            batch_size=config.batch_size,
+            cached_size=len(train_dataset.cached_encodings)
         )
         
         logger.info("Creating DataLoader...")
@@ -410,10 +407,14 @@ def create_dataloaders(train_dataset, val_dataset, config):
             sampler=train_sampler,
             num_workers=config.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if config.num_workers > 0 else False,
+            prefetch_factor=2 if config.num_workers > 0 else None,
             drop_last=False
         )
+        
+        # Validate dataloader setup
         logger.info(f"DataLoader created with {len(train_loader)} batches")
+        logger.info(f"Effective samples per epoch: {len(train_loader) * config.batch_size}")
         
         return train_loader
         
