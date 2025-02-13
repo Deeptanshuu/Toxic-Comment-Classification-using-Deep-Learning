@@ -152,6 +152,68 @@ def load_model(model_path):
         logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
+def find_optimal_threshold(labels, predictions, resolution=100):
+    """Find the optimal threshold that maximizes F1 score"""
+    best_f1 = 0
+    best_threshold = 0.5
+    
+    # Try thresholds from 0.01 to 0.99 with given resolution
+    thresholds = np.linspace(0.01, 0.99, resolution)
+    
+    for threshold in thresholds:
+        binary_preds = (predictions > threshold).astype(int)
+        f1 = f1_score(labels, binary_preds)
+        
+        if f1 > best_f1:
+            best_f1 = f1
+            best_threshold = threshold
+    
+    return {
+        'threshold': float(best_threshold),
+        'f1_score': float(best_f1),
+        'support': int(labels.sum()),
+        'total_samples': len(labels)
+    }
+
+def calculate_optimal_thresholds(predictions, labels, langs):
+    """Calculate optimal thresholds for each class and language combination"""
+    logger.info("Calculating optimal thresholds...")
+    
+    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
+    unique_langs = np.unique(langs)
+    
+    thresholds = {
+        'global': {},
+        'per_language': {}
+    }
+    
+    # Calculate global thresholds
+    logger.info("Computing global thresholds...")
+    for i, class_name in enumerate(tqdm(toxicity_types, desc="Global thresholds")):
+        thresholds['global'][class_name] = find_optimal_threshold(
+            labels[:, i],
+            predictions[:, i]
+        )
+    
+    # Calculate language-specific thresholds
+    logger.info("Computing language-specific thresholds...")
+    for lang in tqdm(unique_langs, desc="Language thresholds"):
+        lang_mask = langs == lang
+        if not lang_mask.any():
+            continue
+            
+        thresholds['per_language'][str(lang)] = {}
+        lang_preds = predictions[lang_mask]
+        lang_labels = labels[lang_mask]
+        
+        for i, class_name in enumerate(toxicity_types):
+            thresholds['per_language'][str(lang)][class_name] = find_optimal_threshold(
+                lang_labels[:, i],
+                lang_preds[:, i]
+            )
+    
+    return thresholds
+
 def evaluate_model(model, val_loader, device, output_dir):
     """Evaluate model performance on validation set"""
     model.eval()
@@ -325,6 +387,16 @@ def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
     
+    # Calculate optimal thresholds
+    logger.info("\nCalculating optimal classification thresholds...")
+    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
+    
+    # Save thresholds
+    threshold_path = os.path.join(output_dir, 'optimal_thresholds.json')
+    logger.info(f"Saving optimal thresholds to {threshold_path}")
+    with open(threshold_path, 'w') as f:
+        json.dump(thresholds, f, indent=2)
+    
     # Save detailed metrics
     with open(os.path.join(output_dir, 'evaluation_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
@@ -336,6 +408,11 @@ def save_results(results, predictions, labels, langs, output_dir):
         labels=labels,
         langs=langs
     )
+    
+    # Log threshold summary
+    logger.info("\nOptimal global thresholds:")
+    for class_name, data in thresholds['global'].items():
+        logger.info(f"{class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
 
 def plot_metrics(results, output_dir):
     """Generate visualization plots"""
@@ -359,6 +436,26 @@ def plot_metrics(results, output_dir):
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
         plt.close()
+        
+        # Plot threshold optimization curves
+        plt.figure(figsize=(12, 6))
+        thresholds = np.linspace(0.01, 0.99, 100)
+        for class_name in toxicity_types:
+            f1_scores = []
+            for threshold in thresholds:
+                binary_preds = (results['per_class'][class_name]['predictions'] > threshold).astype(int)
+                f1 = f1_score(results['per_class'][class_name]['labels'], binary_preds)
+                f1_scores.append(f1)
+            plt.plot(thresholds, f1_scores, label=class_name)
+        
+        plt.title('F1 Score vs. Threshold by Class')
+        plt.xlabel('Threshold')
+        plt.ylabel('F1 Score')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'threshold_optimization.png'))
+        plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
@@ -367,7 +464,7 @@ def main():
                       help='Path to model directory containing checkpoints')
     parser.add_argument('--checkpoint', type=str,
                       help='Specific checkpoint to evaluate (e.g., checkpoint_epoch05_20240213). If not specified, uses latest.')
-    parser.add_argument('--test_file', type=str, default='dataset/split/train.csv',
+    parser.add_argument('--test_file', type=str, default='dataset/split/val.csv',
                       help='Path to test dataset')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
