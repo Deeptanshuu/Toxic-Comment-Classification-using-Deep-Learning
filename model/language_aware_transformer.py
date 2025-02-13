@@ -74,30 +74,32 @@ class LanguageAwareClassifier(nn.Module):
         elif lang_ids.dtype != torch.long:
             lang_ids = lang_ids.long()
         
-        # Get language embeddings and apply residual connection
-        lang_emb = self.lang_embed(lang_ids)
-        lang_emb_expanded = lang_emb.unsqueeze(1).expand(-1, x.size(1), -1)
+        # Get language embeddings
+        lang_emb = self.lang_embed(lang_ids)  # Shape: [batch_size, 64]
         
-        # Add residual connection with projected language embeddings
-        x = x + self.lang_projection(lang_emb_expanded)
+        # Project language embeddings for residual connection
+        lang_proj = self.lang_projection(lang_emb)  # Shape: [batch_size, hidden_size]
+        
+        # Add residual connection
+        x = x + lang_proj  # Shape: [batch_size, hidden_size]
         
         # Concatenate features with language embeddings for classification
-        combined = torch.cat([x, lang_emb_expanded], dim=-1)
+        combined = torch.cat([x, lang_emb], dim=-1)  # Shape: [batch_size, hidden_size + 64]
         
         # Apply classifier layers
-        x = self.classifier['projection'](combined)
+        x = self.classifier['projection'](combined)  # Shape: [batch_size, 512]
         x = self.classifier['activation'](x)
         x = self.classifier['norm'](x)
         x = self.classifier['dropout'](x)
-        logits = self.classifier['output'](x)
+        logits = self.classifier['output'](x)  # Shape: [batch_size, num_labels]
 
         # Apply language-specific threshold adjustment
         batch_thresholds = []
         for i, lang_id in enumerate(lang_ids):
-            threshold = self.threshold_adjust[str(lang_id.item())](self.lang_embed(lang_id))
+            threshold = self.threshold_adjust[str(lang_id.item())](lang_emb[i:i+1])  # Use existing lang_emb
             batch_thresholds.append(threshold)
-        lang_thresholds = torch.cat(batch_thresholds, dim=0)
-        logits = logits * torch.sigmoid(lang_thresholds)
+        lang_thresholds = torch.cat(batch_thresholds, dim=0)  # Shape: [batch_size, 1]
+        logits = logits * torch.sigmoid(lang_thresholds)  # Shape: [batch_size, num_labels]
 
         return logits
 
