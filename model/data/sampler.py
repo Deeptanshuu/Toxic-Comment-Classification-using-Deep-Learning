@@ -25,116 +25,57 @@ class MultilabelStratifiedSampler(Sampler):
         if self.batch_size < min_batch_size:
             raise ValueError(f"Batch size {batch_size} is too small to satisfy minimum {min_samples_per_lang} samples per language. Need at least {min_batch_size}.")
         
-        # Calculate weights for balanced sampling
-        self.weights = self._calculate_weights()
+        # Pre-compute indices per group
+        self.indices_per_group = self._get_indices_per_group()
         
-        # Calculate samples per group
-        self.samples_per_group = max(2, self.batch_size // len(self.unique_groups))
-        self.remainder = self.batch_size - (self.samples_per_group * len(self.unique_groups))
-        self.indices = self._generate_indices()
+        # Calculate number of batches
+        total_samples = len(self.labels)
+        self.num_batches = total_samples // self.batch_size + (1 if total_samples % self.batch_size != 0 else 0)
+        
+    def _get_indices_per_group(self):
+        indices_per_group = defaultdict(list)
+        for idx in range(len(self.labels)):
+            group = self.groups[idx]
+            indices_per_group[group].append(idx)
+        return indices_per_group
     
-    def _calculate_weights(self):
-        try:
-            weights = torch.ones(len(self.labels))
-            for group in self.unique_groups:
-                group_mask = self.groups == group
-                if not np.any(group_mask):
-                    continue
-                    
-                group_labels = self.labels[torch.from_numpy(group_mask)]
+    def _generate_batch_indices(self):
+        # Calculate base samples per group
+        samples_per_group = self.batch_size // len(self.unique_groups)
+        extra_samples = self.batch_size % len(self.unique_groups)
+        
+        batch_indices = []
+        
+        # Get samples from each group
+        for group in self.unique_groups:
+            group_indices = self.indices_per_group[group]
+            if not group_indices:
+                continue
                 
-                if len(group_labels) == 0:
-                    continue
-                
-                # Calculate inverse frequency for each class
-                class_weights = []
-                for c in range(self.num_classes):
-                    pos_count = group_labels[:, c].sum().item()
-                    if pos_count > 0:
-                        w = len(group_labels) / (2 * pos_count)
-                        class_weights.append(w)
-                    else:
-                        class_weights.append(1.0)
-                
-                # Apply weights to samples in this group
-                group_weights = torch.tensor(class_weights).mean()
-                weights[torch.from_numpy(group_mask)] = group_weights
+            # Get number of samples for this group
+            n_samples = samples_per_group + (1 if extra_samples > 0 else 0)
+            extra_samples = max(0, extra_samples - 1)
             
-            return weights
+            # Randomly sample indices
+            if len(group_indices) < n_samples:
+                # If not enough samples, use all with replacement
+                sampled = np.random.choice(group_indices, size=n_samples, replace=True)
+            else:
+                # Otherwise sample without replacement
+                sampled = np.random.choice(group_indices, size=n_samples, replace=False)
             
-        except Exception as e:
-            print(f"Warning: Error calculating weights: {str(e)}")
-            return torch.ones(len(self.labels))
-    
-    def _generate_indices(self):
-        try:
-            # Convert weights to probabilities safely
-            weights = self.weights.clamp(min=1e-5)
-            probs = weights / weights.sum()
-            
-            # Generate indices ensuring each batch has samples from each group
-            indices = []
-            remaining_indices = set(range(len(self.labels)))
-            
-            while remaining_indices:
-                batch_indices = []
-                
-                # First, ensure minimum samples from each group
-                for group in self.unique_groups:
-                    group_mask = self.groups == group
-                    group_indices = np.where(group_mask)[0]
-                    available_indices = list(set(group_indices) & remaining_indices)
-                    
-                    if available_indices:
-                        # Get probabilities for available indices
-                        group_probs = probs[available_indices].numpy()
-                        group_probs /= group_probs.sum()
-                        
-                        # Sample indices
-                        try:
-                            selected = np.random.choice(
-                                available_indices,
-                                size=min(self.samples_per_group, len(available_indices)),
-                                p=group_probs,
-                                replace=False
-                            )
-                            batch_indices.extend(selected)
-                            remaining_indices -= set(selected)
-                        except ValueError:
-                            continue
-                
-                # Fill remaining slots if any
-                if self.remainder > 0 and remaining_indices:
-                    available_probs = probs[list(remaining_indices)].numpy()
-                    available_probs /= available_probs.sum()
-                    
-                    try:
-                        remaining = np.random.choice(
-                            list(remaining_indices),
-                            size=min(self.remainder, len(remaining_indices)),
-                            p=available_probs,
-                            replace=False
-                        )
-                        batch_indices.extend(remaining)
-                        remaining_indices -= set(remaining)
-                    except ValueError:
-                        pass
-                
-                if batch_indices:
-                    random.shuffle(batch_indices)
-                    indices.extend(batch_indices)
-            
-            return indices
-            
-        except Exception as e:
-            print(f"Warning: Error in sampling: {str(e)}")
-            # Fallback to random sampling
-            indices = list(range(len(self.labels)))
-            random.shuffle(indices)
-            return indices
+            batch_indices.extend(sampled)
+        
+        # Shuffle the batch indices
+        np.random.shuffle(batch_indices)
+        return batch_indices
     
     def __iter__(self):
-        return iter(self.indices)
+        all_indices = []
+        for _ in range(self.num_batches):
+            batch_indices = self._generate_batch_indices()
+            all_indices.extend(batch_indices)
+        return iter(all_indices)
     
     def __len__(self):
-        return (len(self.indices) + self.batch_size - 1) // self.batch_size 
+        return self.num_batches 
