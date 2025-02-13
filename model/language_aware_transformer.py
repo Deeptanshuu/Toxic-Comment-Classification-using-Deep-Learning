@@ -155,8 +155,6 @@ class LanguageAwareTransformer(nn.Module):
         self.lang_attention = nn.MultiheadAttention(
             embed_dim=self.working_hidden_size,
             num_heads=num_attention_heads,
-            kdim=self.working_hidden_size,  # Changed from hidden_size + 64
-            vdim=self.working_hidden_size,  # Changed from hidden_size + 64
             dropout=dropout,
             batch_first=True
         )
@@ -246,32 +244,33 @@ class LanguageAwareTransformer(nn.Module):
         combined = torch.cat([hidden_states, lang_embeddings], dim=-1)
         features = self.pre_attention(combined)
         
-        # Apply attention using only the processed features
+        # Apply attention using the processed features
         attention_output, _ = self.lang_attention(
             query=features,
             key=features,
             value=features,
-            key_padding_mask=~attention_mask.bool(),
             need_weights=False
         )
         
-        # Post-process
-        features = self.post_attention(attention_output)
+        # Post-process attention output
+        output = self.post_attention(attention_output)
         
-        # Classification
-        logits = self.output(features[:, 0], lang_ids)
+        # Get logits and probabilities
+        logits = self.output(output[:, 0], lang_ids)  # Use [CLS] token output
+        probabilities = torch.sigmoid(logits)
         
-        # Calculate loss if needed
-        loss = None
+        # Prepare output dictionary
+        result = {
+            'logits': logits,
+            'probabilities': probabilities
+        }
+        
+        # Add loss if labels are provided
         if labels is not None:
             loss_fct = WeightedBCEWithLogitsLoss()
-            loss = loss_fct(logits, labels.float())
+            result['loss'] = loss_fct(logits, labels)
         
-        return {
-            'loss': loss,
-            'logits': logits,
-            'probabilities': torch.sigmoid(logits)
-        }
+        return result
     
     def save_pretrained(self, save_path: str):
         os.makedirs(save_path, exist_ok=True)
