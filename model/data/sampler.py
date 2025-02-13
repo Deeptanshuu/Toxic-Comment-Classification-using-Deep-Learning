@@ -14,6 +14,7 @@ class MultilabelStratifiedSampler(Sampler):
         self.batch_size = batch_size
         self.min_samples_per_lang = min_samples_per_lang
         self.unique_groups = np.unique(self.groups)
+        self.num_samples = len(labels)
         
         if len(self.unique_groups) == 0:
             raise ValueError("No groups found in the dataset")
@@ -29,8 +30,9 @@ class MultilabelStratifiedSampler(Sampler):
         self.indices_per_group = self._get_indices_per_group()
         
         # Calculate number of batches
-        total_samples = len(self.labels)
-        self.num_batches = total_samples // self.batch_size + (1 if total_samples % self.batch_size != 0 else 0)
+        self.num_batches = self.num_samples // self.batch_size
+        if self.num_samples % self.batch_size != 0:
+            self.num_batches += 1
         
     def _get_indices_per_group(self):
         indices_per_group = defaultdict(list)
@@ -41,30 +43,30 @@ class MultilabelStratifiedSampler(Sampler):
     
     def _generate_batch_indices(self):
         # Calculate base samples per group
-        samples_per_group = self.batch_size // len(self.unique_groups)
-        extra_samples = self.batch_size % len(self.unique_groups)
+        samples_per_group = max(1, self.batch_size // len(self.unique_groups))
+        remaining = self.batch_size - (samples_per_group * len(self.unique_groups))
         
         batch_indices = []
         
-        # Get samples from each group
+        # First, ensure minimum samples from each group
         for group in self.unique_groups:
             group_indices = self.indices_per_group[group]
             if not group_indices:
                 continue
-                
-            # Get number of samples for this group
-            n_samples = samples_per_group + (1 if extra_samples > 0 else 0)
-            extra_samples = max(0, extra_samples - 1)
             
-            # Randomly sample indices
-            if len(group_indices) < n_samples:
-                # If not enough samples, use all with replacement
-                sampled = np.random.choice(group_indices, size=n_samples, replace=True)
-            else:
-                # Otherwise sample without replacement
-                sampled = np.random.choice(group_indices, size=n_samples, replace=False)
-            
+            # Sample with replacement if needed
+            n_samples = min(samples_per_group, len(group_indices))
+            sampled = np.random.choice(group_indices, size=n_samples, replace=len(group_indices) < n_samples)
             batch_indices.extend(sampled)
+        
+        # Fill remaining slots randomly from any group
+        if remaining > 0:
+            all_indices = list(range(self.num_samples))
+            extra_samples = np.random.choice(all_indices, size=remaining, replace=False)
+            batch_indices.extend(extra_samples)
+        
+        # Ensure we don't exceed batch size
+        batch_indices = batch_indices[:self.batch_size]
         
         # Shuffle the batch indices
         np.random.shuffle(batch_indices)

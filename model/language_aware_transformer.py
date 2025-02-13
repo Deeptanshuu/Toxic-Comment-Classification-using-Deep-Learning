@@ -155,8 +155,8 @@ class LanguageAwareTransformer(nn.Module):
         self.lang_attention = nn.MultiheadAttention(
             embed_dim=self.working_hidden_size,
             num_heads=num_attention_heads,
-            kdim=hidden_size + 64,  # Account for language embeddings
-            vdim=hidden_size + 64,  # Account for language embeddings
+            kdim=self.working_hidden_size,  # Changed from hidden_size + 64
+            vdim=self.working_hidden_size,  # Changed from hidden_size + 64
             dropout=dropout,
             batch_first=True
         )
@@ -242,11 +242,11 @@ class LanguageAwareTransformer(nn.Module):
         lang_embeddings = self.output.lang_embed(lang_ids)
         lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
         
-        # Process features
+        # Process features with language information
         combined = torch.cat([hidden_states, lang_embeddings], dim=-1)
         features = self.pre_attention(combined)
         
-        # Apply attention
+        # Apply attention using only the processed features
         attention_output, _ = self.lang_attention(
             query=features,
             key=features,
