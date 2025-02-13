@@ -230,7 +230,7 @@ class TrainingConfig:
     grad_accum_steps: int = 1
     epochs: int = 10
     lr: float = 2e-5  # Base learning rate
-    weight_decay: float = 0.005
+    weight_decay: float = 2e-7  # Set to 0.01 * learning rate for better stability
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
     label_smoothing: float = 0.01
@@ -259,17 +259,20 @@ class TrainingConfig:
             
         # Validate weight decay and learning rate combination
         if self.weight_decay > 0:
-            if self.lr < 1e-4:
+            # Weight decay should typically be 0.01-0.1 times the learning rate
+            wd_to_lr_ratio = self.weight_decay / self.lr
+            if wd_to_lr_ratio > 0.1:
                 logger.warning(
-                    "Weight decay (%.4f) may be too high for learning rate %.2e", 
-                    self.weight_decay, self.lr
+                    "Weight decay too high: %.2e (%.2fx learning rate). "
+                    "Should be 0.01-0.1x learning rate.", 
+                    self.weight_decay, wd_to_lr_ratio
                 )
             # Calculate effective learning rate after weight decay
             effective_lr = self.lr * (1 - self.weight_decay)
-            if effective_lr < 1e-7:
+            if effective_lr < self.lr * 0.9:  # More than 10% reduction
                 logger.warning(
-                    "Effective learning rate %.2e after weight decay may be too small",
-                    effective_lr
+                    "Weight decay %.2e reduces effective learning rate to %.2e (%.1f%% reduction)",
+                    self.weight_decay, effective_lr, (1 - effective_lr/self.lr) * 100
                 )
         
         # Rest of the validation checks
