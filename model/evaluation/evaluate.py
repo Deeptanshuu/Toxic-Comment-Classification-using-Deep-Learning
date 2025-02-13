@@ -131,14 +131,9 @@ def load_model(model_path):
         model.load_state_dict(state_dict)
         logger.info("Model weights loaded successfully")
         
-        # Load tokenizer
-        try:
-            tokenizer = XLMRobertaTokenizer.from_pretrained(str(model_dir))
-            logger.info("Loaded tokenizer from checkpoint")
-        except Exception as e:
-            logger.warning(f"Could not load tokenizer from checkpoint: {e}")
-            logger.info("Loading base XLM-RoBERTa tokenizer...")
-            tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
+        # Load base XLM-RoBERTa tokenizer directly
+        logger.info("Loading XLM-RoBERTa tokenizer...")
+        tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
         
         # Load training metadata if available
         metadata_path = model_dir / 'metadata.json'
