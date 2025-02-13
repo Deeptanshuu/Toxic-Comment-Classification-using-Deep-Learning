@@ -216,7 +216,7 @@ class LanguageAwareTransformer(nn.Module):
         hidden_states = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask
-        ).last_hidden_state
+        ).last_hidden_state  # Shape: [batch_size, seq_len, hidden_size]
 
         # Check for numerical instabilities
         if hidden_states.isnan().any():
@@ -224,38 +224,30 @@ class LanguageAwareTransformer(nn.Module):
         if hidden_states.isinf().any():
             raise ValueError("Inf detected in hidden states")
 
-        # Add gradient safety checks
-        if hidden_states.requires_grad and self.gradient_checkpointing:
-            hidden_states = torch.utils.checkpoint.checkpoint(
-                self.base_model,
-                input_ids,
-                attention_mask
-            ).last_hidden_state
-        
         # Project if needed
         if self.needs_projection:
             hidden_states = self.dim_projection(hidden_states)
         
-        # Get language embeddings
-        lang_embeddings = self.output.lang_embed(lang_ids)
+        # Get language embeddings and expand to match sequence length
+        lang_embeddings = self.output.lang_embed(lang_ids)  # Shape: [batch_size, 64]
         lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
         
-        # Process features with language information
-        combined = torch.cat([hidden_states, lang_embeddings], dim=-1)
-        features = self.pre_attention(combined)
+        # Combine features with language embeddings
+        combined = torch.cat([hidden_states, lang_embeddings], dim=-1)  # Shape: [batch_size, seq_len, hidden_size + 64]
+        features = self.pre_attention(combined)  # Shape: [batch_size, seq_len, hidden_size]
         
-        # Apply attention using the processed features
+        # Apply attention using only the processed features
         attention_output, _ = self.lang_attention(
             query=features,
             key=features,
             value=features,
-            need_weights=False
+            key_padding_mask=~attention_mask.bool() if attention_mask is not None else None
         )
         
         # Post-process attention output
-        output = self.post_attention(attention_output)
+        output = self.post_attention(attention_output)  # Shape: [batch_size, seq_len, hidden_size]
         
-        # Get logits and probabilities
+        # Get logits using the [CLS] token output
         logits = self.output(output[:, 0], lang_ids)  # Use [CLS] token output
         probabilities = torch.sigmoid(logits)
         
