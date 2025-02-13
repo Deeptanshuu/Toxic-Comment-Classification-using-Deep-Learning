@@ -25,7 +25,6 @@ from model.evaluation.evaluate import ToxicDataset
 from model.training_config import MetricsTracker, TrainingConfig
 from model.data.sampler import MultilabelStratifiedSampler
 from model.language_aware_transformer import LanguageAwareTransformer
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 logging.basicConfig(
     level=logging.INFO,
