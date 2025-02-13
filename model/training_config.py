@@ -8,6 +8,7 @@ import numpy as np
 from pathlib import Path
 from contextlib import nullcontext
 from dataclasses import asdict
+import os
 
 @dataclass
 class DynamicClassWeights:
@@ -227,29 +228,31 @@ class TrainingConfig:
     
     # Training parameters
     batch_size: int = 64
-    grad_accum_steps: int = 1
+    grad_accum_steps: int = 2
     epochs: int = 6
-    lr: float = 2e-5  # Base learning rate
-    weight_decay: float = 2e-7  # Set to 0.01 * learning rate for better stability
+    lr: float = 2e-5
+    weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.01
     label_smoothing: float = 0.01
-    min_lr_ratio: float = 0.01  # Minimum learning rate will be 1% of base lr
+    min_lr_ratio: float = 0.01
+    
+    # Memory optimization
+    activation_checkpointing: bool = True
+    mixed_precision: str = "fp16"
+    num_workers: int = 8
+    gc_frequency: int = 100
+    tensor_float_32: bool = True
     
     # Cosine scheduler parameters
-    num_cycles: int = 3  # Number of cosine cycles
-    
-    # System parameters
-    num_workers: int = 16
-    mixed_precision: str = "fp16"
-    device: str = None
-    activation_checkpointing: bool = False
-    tensor_float_32: bool = True
-    gc_frequency: int = 500
-    
+    num_cycles: int = 3
+
     def __post_init__(self):
         """Initialize and validate configuration"""
-        # Validate learning rate first
+        # Set environment variables for memory optimization
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
+        
+        # Rest of the initialization code...
         if self.lr <= 0:
             raise ValueError(f"Learning rate must be positive, got {self.lr}")
         if self.lr < 1e-7:
@@ -259,7 +262,6 @@ class TrainingConfig:
             
         # Validate weight decay and learning rate combination
         if self.weight_decay > 0:
-            # Weight decay should typically be 0.01-0.1 times the learning rate
             wd_to_lr_ratio = self.weight_decay / self.lr
             if wd_to_lr_ratio > 0.1:
                 logger.warning(
@@ -267,60 +269,33 @@ class TrainingConfig:
                     "Should be 0.01-0.1x learning rate.", 
                     self.weight_decay, wd_to_lr_ratio
                 )
-            # Calculate effective learning rate after weight decay
             effective_lr = self.lr * (1 - self.weight_decay)
-            if effective_lr < self.lr * 0.9:  # More than 10% reduction
+            if effective_lr < self.lr * 0.9:
                 logger.warning(
                     "Weight decay %.2e reduces effective learning rate to %.2e (%.1f%% reduction)",
                     self.weight_decay, effective_lr, (1 - effective_lr/self.lr) * 100
                 )
         
-        # Rest of the validation checks
-        if self.batch_size <= 0:
-            raise ValueError(f"Invalid batch_size: {self.batch_size}")
-        if self.grad_accum_steps <= 0:
-            raise ValueError(f"Invalid grad_accum_steps: {self.grad_accum_steps}")
-        if self.epochs <= 0:
-            raise ValueError(f"Invalid epochs: {self.epochs}")
-        if self.weight_decay < 0:
-            raise ValueError(f"Invalid weight_decay: {self.weight_decay}")
-        if self.num_workers < 0:
-            raise ValueError(f"Invalid num_workers: {self.num_workers}")
-        if self.gc_frequency <= 0:
-            raise ValueError(f"Invalid gc_frequency: {self.gc_frequency}")
-        if not 0 <= self.model_dropout < 1:
-            raise ValueError(f"Invalid model_dropout: {self.model_dropout}")
-        if self.max_grad_norm <= 0:
-            raise ValueError(f"Invalid max_grad_norm: {self.max_grad_norm}")
-        if not 0 <= self.warmup_ratio < 1:
-            raise ValueError(f"Invalid warmup_ratio: {self.warmup_ratio}")
-        if not 0 <= self.label_smoothing < 1:
-            raise ValueError(f"Invalid label_smoothing: {self.label_smoothing}")
-        if self.freeze_layers < 0:
-            raise ValueError(f"Invalid freeze_layers: {self.freeze_layers}")
-        if not 0 < self.min_lr_ratio < 1:
-            raise ValueError(f"Invalid min_lr_ratio: {self.min_lr_ratio}")
-            
-        # Set device with error handling
+        # Set device with memory optimization
         if torch.cuda.is_available():
             try:
                 torch.cuda.init()
+                # Set memory allocation strategy
+                torch.cuda.set_per_process_memory_fraction(0.95)  # Leave some GPU memory free
                 self.device = torch.device('cuda')
                 
-                # Check if GPU supports BF16
                 if self.mixed_precision == "bf16":
                     if not torch.cuda.is_bf16_supported():
                         print("Warning: BF16 not supported on this GPU. Falling back to FP16")
                         self.mixed_precision = "fp16"
                 
-                # Enable TF32 if requested and available
                 if self.tensor_float_32:
-                    if torch.cuda.get_device_capability()[0] >= 8:  # Ampere or newer
+                    if torch.cuda.get_device_capability()[0] >= 8:
                         torch.backends.cuda.matmul.allow_tf32 = True
                         torch.backends.cudnn.allow_tf32 = True
-                else:
-                    print("Warning: TF32 not supported on this GPU. Disabling.")
-                    self.tensor_float_32 = False
+                    else:
+                        print("Warning: TF32 not supported on this GPU. Disabling.")
+                        self.tensor_float_32 = False
                 
             except Exception as e:
                 print(f"Warning: CUDA initialization failed: {str(e)}")

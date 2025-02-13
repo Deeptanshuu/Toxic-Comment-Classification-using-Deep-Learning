@@ -195,8 +195,8 @@ class LanguageAwareFocalLoss(nn.Module):
             return focal_loss.sum()
         return focal_loss
 
-def training_step(batch, model, optimizer, scheduler, config, scaler):
-    """Execute a single training step"""
+def training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx):
+    """Execute a single training step with gradient accumulation"""
     # Move batch to device
     batch = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v 
             for k, v in batch.items()}
@@ -227,10 +227,12 @@ def training_step(batch, model, optimizer, scheduler, config, scaler):
         
         # Calculate loss with focal loss
         loss_fct = LanguageAwareFocalLoss(
-            alpha=alpha.mean(),  # Use mean alpha for batch
-            gamma=gamma.mean()   # Use mean gamma for batch
+            alpha=alpha.mean(),
+            gamma=gamma.mean()
         )
         loss = loss_fct(outputs['logits'], batch['labels'].float(), lang_weights)
+        # Scale loss by gradient accumulation steps
+        loss = loss / config.grad_accum_steps
         outputs['loss'] = loss
         
         # Check for numerical instability
@@ -245,18 +247,20 @@ def training_step(batch, model, optimizer, scheduler, config, scaler):
     # Scale loss and backward pass
     scaler.scale(loss).backward()
     
-    # Gradient clipping
-    if config.max_grad_norm > 0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+    # Only update weights after accumulating enough gradients
+    if (batch_idx + 1) % config.grad_accum_steps == 0:
+        # Gradient clipping
+        if config.max_grad_norm > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+        
+        # Optimizer step with scaler
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        scheduler.step()
     
-    # Optimizer step with scaler
-    scaler.step(optimizer)
-    scaler.update()
-    optimizer.zero_grad()
-    scheduler.step()
-    
-    return loss.item()
+    return loss.item() * config.grad_accum_steps  # Return unscaled loss for logging
 
 def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
     """Save model checkpoint"""
@@ -278,6 +282,8 @@ def train(model, train_loader, config):
     _model = model
     
     logger.info("Initializing training components...")
+    logger.info(f"Using gradient accumulation with {config.grad_accum_steps} steps")
+    logger.info(f"Effective batch size: {config.batch_size * config.grad_accum_steps}")
     
     # Initialize gradient scaler for mixed precision
     logger.info("Setting up gradient scaler...")
@@ -291,7 +297,7 @@ def train(model, train_loader, config):
     _optimizer = optimizer
     
     # Calculate total steps for cosine scheduler
-    total_steps = len(train_loader) * config.epochs
+    total_steps = (len(train_loader) // config.grad_accum_steps) * config.epochs
     warmup_steps = int(total_steps * config.warmup_ratio)
     logger.info(f"Training schedule: {total_steps} total steps, {warmup_steps} warmup steps")
     logger.info(f"Actual number of batches per epoch: {len(train_loader)}")
@@ -300,9 +306,9 @@ def train(model, train_loader, config):
     logger.info("Creating learning rate scheduler...")
     scheduler = CosineAnnealingWarmRestarts(
         optimizer,
-        T_0=total_steps // config.num_cycles,  # First cycle length
-        T_mult=1,  # Keep cycle length constant
-        eta_min=config.lr * config.min_lr_ratio  # Minimum LR
+        T_0=total_steps // config.num_cycles,
+        T_mult=1,
+        eta_min=config.lr * config.min_lr_ratio
     )
     _scheduler = scheduler
     
@@ -317,8 +323,9 @@ def train(model, train_loader, config):
         num_batches = 0
         
         logger.info(f"Starting epoch {epoch + 1}/{config.epochs}")
-        # Progress bar for batches
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
+        
+        optimizer.zero_grad()  # Zero gradients at start of epoch
         
         logger.info("Iterating through batches...")
         for batch_idx, batch in enumerate(progress_bar):
@@ -329,27 +336,32 @@ def train(model, train_loader, config):
                               f"attention_mask: {batch['attention_mask'].shape}, "
                               f"labels: {batch['labels'].shape}")
                 
-                loss = training_step(batch, model, optimizer, scheduler, config, scaler)
-                epoch_loss += loss
-                num_batches += 1
+                loss = training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx)
+                if loss is not None:
+                    epoch_loss += loss
+                    num_batches += 1
                 
                 # Update progress bar
                 progress_bar.set_postfix({
-                    'loss': f'{loss:.4f}',
+                    'loss': f'{loss:.4f}' if loss is not None else 'N/A',
                     'lr': f'{scheduler.get_last_lr()[0]:.2e}'
                 })
                 
                 # Log to wandb
-                try:
-                    wandb.log({
-                        'batch_loss': loss,
-                        'learning_rate': scheduler.get_last_lr()[0]
-                    })
-                except Exception as e:
-                    logger.warning(f"Could not log to wandb: {str(e)}")
+                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                    try:
+                        wandb.log({
+                            'batch_loss': loss if loss is not None else 0,
+                            'learning_rate': scheduler.get_last_lr()[0]
+                        })
+                    except Exception as e:
+                        logger.warning(f"Could not log to wandb: {str(e)}")
                 
                 if batch_idx % 100 == 0:
                     logger.info(f"Completed {batch_idx}/{len(train_loader)} batches")
+                    # Explicit memory cleanup
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 
             except Exception as e:
                 logger.error(f"Error in batch {batch_idx}: {str(e)}")
