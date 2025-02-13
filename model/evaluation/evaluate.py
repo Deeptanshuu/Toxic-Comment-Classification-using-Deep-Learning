@@ -34,109 +34,21 @@ class ToxicDataset(Dataset):
         self.df = df
         self.tokenizer = tokenizer
         self.config = config
-        self.cache_dir = Path(config.cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create cache key based on data and config
-        cache_key = self._create_cache_key(df, tokenizer, config)
-        self.cache_file = self.cache_dir / f"cached_encodings_{cache_key}.pt"
-        self.meta_file = self.cache_dir / f"meta_{cache_key}.json"
+        # Extract labels and language IDs for the sampler
+        self.labels = torch.tensor(df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values)
+        self.langs = torch.tensor(df['lang_id'].values)
         
-        # Initialize storage
-        self.cached_encodings = []
-        self.labels = None
-        self.langs = None
-        
-        # Load or create cache
-        if self._is_cache_valid():
-            logger.info(f"Loading cached encodings from {self.cache_file}")
-            self._load_cache()
-        else:
-            logger.info("Cache not found or invalid. Creating new cache...")
-            self._create_cache()
-            
-        # Validate final state
-        self._validate_dataset()
-        
-    def _create_cache_key(self, df, tokenizer, config):
-        """Create unique cache key based on data and configuration"""
-        key_components = [
-            df.shape[0],
-            df.columns.tolist(),
-            tokenizer.__class__.__name__,
-            config.max_length,
-            config.model_name
-        ]
-        key_string = json.dumps(key_components, sort_keys=True)
-        return hashlib.md5(key_string.encode()).hexdigest()[:10]
+        logger.info(f"Dataset initialized with {len(df)} samples")
+        logger.info(f"Labels shape: {self.labels.shape}")
+        logger.info(f"Languages shape: {self.langs.shape}")
     
-    def _is_cache_valid(self):
-        """Check if cache exists and is valid"""
-        if not self.cache_file.exists() or not self.meta_file.exists():
-            return False
-            
-        try:
-            with open(self.meta_file, 'r') as f:
-                meta = json.load(f)
-            return (
-                meta['num_samples'] == len(self.df) and
-                meta['max_length'] == self.config.max_length and
-                meta['model_name'] == self.config.model_name
-            )
-        except Exception as e:
-            logger.warning(f"Cache validation failed: {str(e)}")
-            return False
+    def __len__(self):
+        return len(self.df)
     
-    def _create_cache(self):
-        """Create and save cached encodings"""
-        logger.info("Processing samples and creating cache...")
-        failed_indices = []
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
         
-        # Process all samples
-        for idx in tqdm(range(len(self.df)), desc="Caching encodings"):
-            try:
-                encoding = self._process_sample(self.df.iloc[idx])
-                self.cached_encodings.append(encoding)
-            except Exception as e:
-                logger.error(f"Failed to process sample {idx}: {str(e)}")
-                failed_indices.append(idx)
-        
-        # Handle failed samples
-        if failed_indices:
-            logger.warning(f"Failed to process {len(failed_indices)} samples")
-            # Fill failed samples with empty encodings
-            for idx in failed_indices:
-                self.cached_encodings.append(self._create_empty_encoding())
-        
-        # Save cache
-        try:
-            torch.save(self.cached_encodings, self.cache_file)
-            meta = {
-                'num_samples': len(self.df),
-                'max_length': self.config.max_length,
-                'model_name': self.config.model_name,
-                'failed_indices': failed_indices
-            }
-            with open(self.meta_file, 'w') as f:
-                json.dump(meta, f)
-            logger.info(f"Cache saved to {self.cache_file}")
-        except Exception as e:
-            logger.error(f"Failed to save cache: {str(e)}")
-    
-    def _load_cache(self):
-        """Load cached encodings"""
-        try:
-            self.cached_encodings = torch.load(self.cache_file)
-            with open(self.meta_file, 'r') as f:
-                meta = json.load(f)
-            if meta.get('failed_indices'):
-                logger.warning(f"Cache contains {len(meta['failed_indices'])} failed samples")
-        except Exception as e:
-            logger.error(f"Failed to load cache: {str(e)}")
-            raise
-    
-    def _process_sample(self, row):
-        """Process a single sample"""
         # Tokenize text
         encoding = self.tokenizer(
             row['comment_text'],
@@ -146,7 +58,7 @@ class ToxicDataset(Dataset):
             return_tensors='pt'
         )
         
-        # Convert to expected format
+        # Create sample dictionary
         sample = {
             'input_ids': encoding['input_ids'].squeeze(0),
             'attention_mask': encoding['attention_mask'].squeeze(0),
@@ -156,52 +68,8 @@ class ToxicDataset(Dataset):
             ], dtype=torch.float32),
             'lang': torch.tensor(row['lang_id'], dtype=torch.long)
         }
+        
         return sample
-    
-    def _create_empty_encoding(self):
-        """Create an empty encoding for failed samples"""
-        return {
-            'input_ids': torch.zeros(self.config.max_length, dtype=torch.long),
-            'attention_mask': torch.zeros(self.config.max_length, dtype=torch.long),
-            'labels': torch.zeros(6, dtype=torch.float32),
-            'lang': torch.tensor(0, dtype=torch.long)
-        }
-    
-    def _validate_dataset(self):
-        """Validate the final dataset state"""
-        if len(self.cached_encodings) != len(self.df):
-            raise ValueError(
-                f"Cache size mismatch: {len(self.cached_encodings)} cached samples "
-                f"vs {len(self.df)} input samples"
-            )
-        
-        # Extract labels and langs for sampler
-        self.labels = torch.stack([enc['labels'] for enc in self.cached_encodings])
-        self.langs = torch.tensor([enc['lang'].item() for enc in self.cached_encodings])
-        
-        # Validate shapes
-        expected_shapes = {
-            'input_ids': (self.config.max_length,),
-            'attention_mask': (self.config.max_length,),
-            'labels': (6,),
-            'lang': ()
-        }
-        
-        for idx, encoding in enumerate(self.cached_encodings):
-            for key, expected_shape in expected_shapes.items():
-                if encoding[key].shape != expected_shape:
-                    raise ValueError(
-                        f"Shape mismatch in sample {idx}, key {key}: "
-                        f"got {encoding[key].shape}, expected {expected_shape}"
-                    )
-    
-    def __len__(self):
-        return len(self.cached_encodings)
-    
-    def __getitem__(self, idx):
-        if idx >= len(self.cached_encodings):
-            raise IndexError(f"Index {idx} out of bounds for dataset of size {len(self.cached_encodings)}")
-        return self.cached_encodings[idx]
 
 def load_model(model_path):
     """Load model and tokenizer"""
