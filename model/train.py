@@ -263,18 +263,88 @@ def training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx)
     return loss.item() * config.grad_accum_steps  # Return unscaled loss for logging
 
 def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
-    """Save model checkpoint"""
-    save_dir = Path('weights/toxic_classifier_xlm-roberta-large')
-    save_dir.mkdir(parents=True, exist_ok=True)
+    """Save model checkpoint with versioning and timestamps"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Save model state
-    model_save_path = save_dir / 'pytorch_model.bin'
-    torch.save(model.state_dict(), model_save_path)
+    # Create base checkpoint directory
+    base_dir = Path('weights/toxic_classifier_xlm-roberta-large')
+    base_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save config
-    config_save_path = save_dir / 'config.json'
-    with open(config_save_path, 'w') as f:
-        json.dump(config.to_serializable_dict(), f, indent=2)
+    # Create versioned checkpoint directory
+    checkpoint_dir = base_dir / f"checkpoint_epoch{epoch:02d}_{timestamp}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Saving checkpoint to {checkpoint_dir}")
+    
+    try:
+        # Save model state
+        model_save_path = checkpoint_dir / 'pytorch_model.bin'
+        torch.save(model.state_dict(), model_save_path)
+        logger.info(f"Saved model state to {model_save_path}")
+        
+        # Save training state
+        training_state = {
+            'epoch': epoch,
+            'optimizer_state': optimizer.state_dict(),
+            'scheduler_state': scheduler.state_dict(),
+            'metrics': {
+                'train_loss': metrics.train_losses[-1] if metrics.train_losses else None,
+                'best_auc': metrics.best_auc,
+                'timestamp': timestamp
+            }
+        }
+        state_save_path = checkpoint_dir / 'training_state.pt'
+        torch.save(training_state, state_save_path)
+        logger.info(f"Saved training state to {state_save_path}")
+        
+        # Save config
+        config_save_path = checkpoint_dir / 'config.json'
+        with open(config_save_path, 'w') as f:
+            json.dump(config.to_serializable_dict(), f, indent=2)
+        logger.info(f"Saved config to {config_save_path}")
+        
+        # Create latest symlink
+        latest_path = base_dir / 'latest'
+        if latest_path.exists():
+            latest_path.unlink()
+        latest_path.symlink_to(checkpoint_dir.relative_to(base_dir))
+        logger.info(f"Updated 'latest' symlink to point to {checkpoint_dir.name}")
+        
+        # Save checkpoint metadata
+        metadata = {
+            'timestamp': timestamp,
+            'epoch': epoch,
+            'model_size': os.path.getsize(model_save_path) / (1024 * 1024),  # Size in MB
+            'git_commit': os.environ.get('GIT_COMMIT', 'unknown'),
+            'training_metrics': {
+                'loss': metrics.train_losses[-1] if metrics.train_losses else None,
+                'best_auc': metrics.best_auc
+            }
+        }
+        meta_save_path = checkpoint_dir / 'metadata.json'
+        with open(meta_save_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        logger.info(f"Saved checkpoint metadata to {meta_save_path}")
+        
+        # Cleanup old checkpoints if needed
+        keep_last_n = 3  # Keep last 3 checkpoints
+        all_checkpoints = sorted([d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith('checkpoint')])
+        if len(all_checkpoints) > keep_last_n:
+            for old_checkpoint in all_checkpoints[:-keep_last_n]:
+                try:
+                    import shutil
+                    shutil.rmtree(old_checkpoint)
+                    logger.info(f"Removed old checkpoint: {old_checkpoint}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove old checkpoint {old_checkpoint}: {str(e)}")
+        
+        logger.info(f"Successfully saved checkpoint for epoch {epoch + 1}")
+        return checkpoint_dir
+        
+    except Exception as e:
+        logger.error(f"Error saving checkpoint: {str(e)}")
+        logger.error("Checkpoint save failed with traceback:", exc_info=True)
+        raise
 
 def train(model, train_loader, config):
     """Train the model"""

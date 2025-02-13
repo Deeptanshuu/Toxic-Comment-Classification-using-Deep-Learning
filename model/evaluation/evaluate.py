@@ -307,7 +307,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
     parser.add_argument('--model_path', type=str, default='weights/toxic_classifier_xlm-roberta-large',
                       help='Path to the trained model')
-    parser.add_argument('--test_file', type=str, default='dataset/split/train.csv',
+    parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
