@@ -436,6 +436,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
         # Log shapes before sampler creation
         logger.info(f"Labels shape: {train_dataset.labels.shape}")
         logger.info(f"Groups (langs) shape: {len(train_dataset.langs)}")
+        logger.info(f"Unique languages: {set(train_dataset.langs)}")
         
         train_sampler = MultilabelStratifiedSampler(
             labels=train_dataset.labels,
@@ -446,11 +447,17 @@ def create_dataloaders(train_dataset, val_dataset, config):
         logger.info(f"Expected number of batches: {expected_batches}")
         logger.info(f"Actual sampler length: {len(train_sampler)}")
         
+        # Validate sampler indices
+        sampler_indices = list(iter(train_sampler))
+        logger.info(f"Number of indices from sampler: {len(sampler_indices)}")
+        logger.info(f"First few indices: {sampler_indices[:10]}")
+        
         if len(train_sampler) != expected_batches:
             logger.warning(f"Sampler length mismatch! Expected {expected_batches} but got {len(train_sampler)}")
             
     except Exception as e:
         logger.error(f"Error creating sampler: {str(e)}")
+        logger.error("Sampler creation failed with traceback:", exc_info=True)
         raise
     
     logger.info("Creating DataLoader...")
@@ -458,6 +465,10 @@ def create_dataloaders(train_dataset, val_dataset, config):
         # Create DataLoader with worker init function for debugging
         def worker_init_fn(worker_id):
             logger.info(f"Initializing worker {worker_id}")
+            worker_info = torch.utils.data.get_worker_info()
+            if worker_info is not None:
+                logger.info(f"Worker {worker_id} info - num workers: {worker_info.num_workers}, "
+                          f"id: {worker_info.id}, dataset: {worker_info.dataset}")
             
         train_loader = DataLoader(
             train_dataset,
@@ -475,7 +486,20 @@ def create_dataloaders(train_dataset, val_dataset, config):
         # Try to peek at first batch without consuming it
         logger.info("Attempting to create iterator...")
         train_iter = iter(train_loader)
-        logger.info("Iterator created, attempting to load first batch...")
+        logger.info("Iterator created successfully")
+        
+        # Try to get first batch
+        logger.info("Attempting to load first batch...")
+        try:
+            first_batch = next(train_iter)
+            logger.info("Successfully loaded first batch")
+            logger.info(f"First batch shapes: {[(k, v.shape) for k, v in first_batch.items() if isinstance(v, torch.Tensor)]}")
+        except StopIteration:
+            logger.error("DataLoader is empty!")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading first batch: {str(e)}")
+            raise
         
         return train_loader
         

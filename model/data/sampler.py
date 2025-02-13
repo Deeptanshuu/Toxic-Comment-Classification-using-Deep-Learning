@@ -31,6 +31,7 @@ class MultilabelStratifiedSampler(Sampler):
         # Calculate samples per group
         self.samples_per_group = max(2, self.batch_size // len(self.unique_groups))
         self.remainder = self.batch_size - (self.samples_per_group * len(self.unique_groups))
+        self.indices = self._generate_indices()
     
     def _calculate_weights(self):
         try:
@@ -65,7 +66,7 @@ class MultilabelStratifiedSampler(Sampler):
             print(f"Warning: Error calculating weights: {str(e)}")
             return torch.ones(len(self.labels))
     
-    def __iter__(self):
+    def _generate_indices(self):
         try:
             # Convert weights to probabilities safely
             weights = self.weights.clamp(min=1e-5)
@@ -123,14 +124,17 @@ class MultilabelStratifiedSampler(Sampler):
                     random.shuffle(batch_indices)
                     indices.extend(batch_indices)
             
-            return iter(indices)
+            return indices
             
         except Exception as e:
             print(f"Warning: Error in sampling: {str(e)}")
             # Fallback to random sampling
             indices = list(range(len(self.labels)))
             random.shuffle(indices)
-            return iter(indices)
+            return indices
+    
+    def __iter__(self):
+        return iter(self.indices)
     
     def __len__(self):
-        return len(self.labels) 
+        return (len(self.indices) + self.batch_size - 1) // self.batch_size 
