@@ -2,27 +2,54 @@ from torch.utils.data import Sampler
 import numpy as np
 import logging
 from collections import defaultdict
+from pathlib import Path
+import torch
 
 logger = logging.getLogger(__name__)
 
 class MultilabelStratifiedSampler(Sampler):
-    def __init__(self, labels, groups, batch_size):
+    def __init__(self, labels, groups, batch_size, cached_size=None):
         super().__init__(None)
         self.labels = np.array(labels)
         self.groups = np.array(groups)
         self.batch_size = batch_size
-        self.num_samples = len(labels)
+        
+        # Use cached size if provided, otherwise use labels length
+        self.num_samples = cached_size if cached_size is not None else len(labels)
         
         if self.num_samples == 0:
             raise ValueError("Empty dataset")
+        
+        # Validate lengths match if cached_size provided
+        if cached_size is not None and cached_size != len(labels):
+            raise ValueError(
+                f"Cached size {cached_size} does not match labels size {len(labels)}. "
+                "This likely indicates incomplete caching of the dataset."
+            )
             
         logger.info(f"Dataset size: {self.num_samples}")
         logger.info(f"Batch size: {self.batch_size}")
+        logger.info(f"Labels shape: {self.labels.shape}")
+        logger.info(f"Groups shape: {self.groups.shape}")
         
-        # Create indices per group
+        # Create indices per group with validation
         self.group_indices = defaultdict(list)
+        valid_indices = set(range(self.num_samples))
         for idx, group in enumerate(self.groups):
+            if idx >= self.num_samples:
+                logger.warning(f"Skipping group assignment for index {idx} >= num_samples {self.num_samples}")
+                break
             self.group_indices[group].append(idx)
+            if idx not in valid_indices:
+                raise ValueError(f"Invalid index {idx} found in groups")
+        
+        # Validate group indices
+        total_group_samples = sum(len(indices) for indices in self.group_indices.values())
+        if total_group_samples != self.num_samples:
+            raise ValueError(
+                f"Total samples in groups ({total_group_samples}) "
+                f"does not match dataset size ({self.num_samples})"
+            )
         
         # Log group distribution
         for group, indices in self.group_indices.items():
@@ -46,11 +73,30 @@ class MultilabelStratifiedSampler(Sampler):
         try:
             # Shuffle indices within each group
             all_indices = []
+            samples_per_group = self.total_samples // len(self.group_indices)
+            
             for group in sorted(self.group_indices.keys()):
                 group_idx = np.array(self.group_indices[group])
+                
+                # Validate indices for this group
+                if np.any(group_idx >= self.num_samples):
+                    raise ValueError(
+                        f"Group {group} contains invalid indices: "
+                        f"max={group_idx.max()} >= num_samples={self.num_samples}"
+                    )
+                
                 np.random.shuffle(group_idx)
-                samples_for_group = self.total_samples // len(self.group_indices)
-                all_indices.extend(group_idx[:samples_for_group])
+                selected_indices = group_idx[:samples_per_group]
+                
+                # Validate selected indices
+                if len(selected_indices) > 0:
+                    if selected_indices.max() >= self.num_samples:
+                        raise ValueError(
+                            f"Invalid index selected for group {group}: "
+                            f"{selected_indices.max()} >= {self.num_samples}"
+                        )
+                
+                all_indices.extend(selected_indices)
             
             # Verify we have the right number of indices
             if len(all_indices) != self.total_samples:
