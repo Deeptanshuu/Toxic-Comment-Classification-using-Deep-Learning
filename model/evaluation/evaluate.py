@@ -35,6 +35,20 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
+        # Language mapping
+        self.lang_to_id = {
+            'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
+            'fr': 4, 'it': 5, 'pt': 6
+        }
+        
+        # Convert language codes to IDs
+        if 'lang_id' not in df.columns:
+            if 'lang' not in df.columns:
+                raise ValueError("Neither 'lang_id' nor 'lang' column found in DataFrame")
+            logger.info("Converting language codes to IDs...")
+            lang_ids = [self.lang_to_id.get(lang, 0) for lang in df['lang']]
+            self.df['lang_id'] = lang_ids
+        
         # Extract labels and language IDs for the sampler
         self.labels = torch.tensor(df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values)
         self.langs = torch.tensor(df['lang_id'].values)
@@ -42,6 +56,7 @@ class ToxicDataset(Dataset):
         logger.info(f"Dataset initialized with {len(df)} samples")
         logger.info(f"Labels shape: {self.labels.shape}")
         logger.info(f"Languages shape: {self.langs.shape}")
+        logger.info(f"Language distribution: {df['lang_id'].value_counts().to_dict()}")
     
     def __len__(self):
         return len(self.df)
