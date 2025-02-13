@@ -25,7 +25,9 @@ import logging
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
 
+# Set memory optimization environment variables
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +89,30 @@ class ToxicDataset(Dataset):
         return sample
 
 def load_model(model_path):
-    """Load model and tokenizer"""
+    """Load model and tokenizer from versioned checkpoint directory"""
     try:
+        # Check if model_path points to a specific checkpoint or base directory
+        model_dir = Path(model_path)
+        if model_dir.is_dir():
+            # Check for 'latest' symlink first
+            latest_link = model_dir / 'latest'
+            if latest_link.exists() and latest_link.is_symlink():
+                model_dir = latest_link.resolve()
+                logger.info(f"Using latest checkpoint: {model_dir}")
+            else:
+                # Find most recent checkpoint
+                checkpoints = sorted([
+                    d for d in model_dir.iterdir() 
+                    if d.is_dir() and d.name.startswith('checkpoint_epoch')
+                ])
+                if checkpoints:
+                    model_dir = checkpoints[-1]
+                    logger.info(f"Using most recent checkpoint: {model_dir}")
+                else:
+                    logger.info("No checkpoints found, using base directory")
+        
+        logger.info(f"Loading model from: {model_dir}")
+        
         # Initialize the custom model architecture
         model = LanguageAwareTransformer(
             num_labels=6,
@@ -99,22 +123,38 @@ def load_model(model_path):
         )
         
         # Load the trained weights
-        state_dict = torch.load(os.path.join(model_path, 'pytorch_model.bin'))
+        weights_path = model_dir / 'pytorch_model.bin'
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Model weights not found at {weights_path}")
+            
+        state_dict = torch.load(weights_path)
         model.load_state_dict(state_dict)
+        logger.info("Model weights loaded successfully")
         
+        # Load tokenizer
         try:
-            tokenizer = XLMRobertaTokenizer.from_pretrained(model_path)
-        except:
-            print("Loading base XLM-RoBERTa tokenizer...")
+            tokenizer = XLMRobertaTokenizer.from_pretrained(str(model_dir))
+            logger.info("Loaded tokenizer from checkpoint")
+        except Exception as e:
+            logger.warning(f"Could not load tokenizer from checkpoint: {e}")
+            logger.info("Loading base XLM-RoBERTa tokenizer...")
             tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
+        
+        # Load training metadata if available
+        metadata_path = model_dir / 'metadata.json'
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+            logger.info(f"Loaded checkpoint metadata: Epoch {metadata.get('epoch', 'unknown')}")
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         model.eval()
         
         return model, tokenizer, device
+        
     except Exception as e:
-        print(f"Error loading model: {str(e)}")
+        logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
 def evaluate_model(model, val_loader, device, output_dir):
@@ -305,16 +345,19 @@ def plot_metrics(results, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
-    parser.add_argument('--model_path', type=str, default='weights/toxic_classifier_xlm-roberta-large',
-                      help='Path to the trained model')
+    parser.add_argument('--model_path', type=str, 
+                      default='weights/toxic_classifier_xlm-roberta-large',
+                      help='Path to model directory containing checkpoints')
+    parser.add_argument('--checkpoint', type=str,
+                      help='Specific checkpoint to evaluate (e.g., checkpoint_epoch05_20240213). If not specified, uses latest.')
     parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
                       help='Path to test dataset')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                       help='Base directory to save results')
-    parser.add_argument('--num_workers', type=int, default=None,
-                      help='Number of workers for data loading (default: CPU count - 1)')
+    parser.add_argument('--num_workers', type=int, default=16,
+                      help='Number of workers for data loading')
     parser.add_argument('--cache_dir', type=str, default='cached_data',
                       help='Directory to store cached tokenized data')
     parser.add_argument('--force_retokenize', action='store_true',
@@ -323,6 +366,8 @@ def main():
                       help='Number of batches to prefetch per worker')
     parser.add_argument('--max_length', type=int, default=128,
                       help='Maximum sequence length for tokenization')
+    parser.add_argument('--gc_frequency', type=int, default=500,
+                      help='Frequency of garbage collection')
     
     args = parser.parse_args()
     
@@ -335,20 +380,18 @@ def main():
     eval_params = {
         'timestamp': timestamp,
         'model_path': args.model_path,
+        'checkpoint': args.checkpoint,
         'test_file': args.test_file,
         'batch_size': args.batch_size,
         'num_workers': args.num_workers,
         'cache_dir': args.cache_dir,
         'force_retokenize': args.force_retokenize,
         'prefetch_factor': args.prefetch_factor,
-        'max_length': args.max_length
+        'max_length': args.max_length,
+        'gc_frequency': args.gc_frequency
     }
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
-    
-    # Set number of workers
-    if args.num_workers is None:
-        args.num_workers = min(16, max(1, multiprocessing.cpu_count() - 1))
     
     try:
         # Load model
@@ -370,7 +413,7 @@ def main():
             config=args
         )
         
-        # Configure DataLoader
+        # Configure DataLoader with optimized settings
         test_loader = DataLoader(
             test_dataset,
             batch_size=args.batch_size,
@@ -378,7 +421,7 @@ def main():
             num_workers=args.num_workers,
             pin_memory=True,
             prefetch_factor=args.prefetch_factor,
-            persistent_workers=True,
+            persistent_workers=True if args.num_workers > 0 else False,
             drop_last=False
         )
         
