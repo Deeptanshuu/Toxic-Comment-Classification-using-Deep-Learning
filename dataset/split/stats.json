@@ -1,45 +1,45 @@
 {
   "original": {
     "language_dist": {
-      "ru": 0.14583239721410918,
-      "pt": 0.14580150527971242,
-      "es": 0.14514154122669062,
-      "tr": 0.145020781846776,
-      "fr": 0.14485228038643003,
-      "it": 0.14450966075039318,
-      "en": 0.12884183329588855
+      "ru": 0.14562790958550675,
+      "pt": 0.1455970609680857,
+      "es": 0.14493802232318134,
+      "tr": 0.14481743227326266,
+      "fr": 0.14464916708732964,
+      "it": 0.14430702787593247,
+      "en": 0.13006337988670144
     },
     "lang_class_dist": {
       "en": {
         "toxic": {
-          "positive_ratio": 0.47462836217795024,
-          "count": 21775,
-          "total": 45878
+          "positive_ratio": 0.4802923800077623,
+          "count": 22275,
+          "total": 46378
         },
         "severe_toxic": {
-          "positive_ratio": 0.043223331444265226,
+          "positive_ratio": 0.04275734184311527,
           "count": 1983,
-          "total": 45878
+          "total": 46378
         },
         "obscene": {
-          "positive_ratio": 0.2685165002833602,
+          "positive_ratio": 0.265621630945707,
           "count": 12319,
-          "total": 45878
+          "total": 46378
         },
         "threat": {
-          "positive_ratio": 0.015214263917346005,
-          "count": 698,
-          "total": 45878
+          "positive_ratio": 0.02583121307516495,
+          "count": 1198,
+          "total": 46378
         },
         "insult": {
-          "positive_ratio": 0.2494659749771132,
+          "positive_ratio": 0.24677648885247316,
           "count": 11445,
-          "total": 45878
+          "total": 46378
         },
         "identity_hate": {
-          "positive_ratio": 0.04660185709926326,
+          "positive_ratio": 0.046099443701755144,
           "count": 2138,
-          "total": 45878
+          "total": 46378
         }
       },
       "ru": {
@@ -238,107 +238,107 @@
     "cooccurrence_patterns": {
       "toxic_severe_toxic": {
         "count": 16514,
-        "ratio": 0.04637721860256122
+        "ratio": 0.04631218800830108
       },
       "toxic_obscene": {
         "count": 85260,
-        "ratio": 0.23944057515165132
+        "ratio": 0.23910482921083628
       },
       "toxic_threat": {
-        "count": 6682,
-        "ratio": 0.018765445967198383
+        "count": 7182,
+        "ratio": 0.020141342756183747
       },
       "toxic_insult": {
         "count": 100463,
-        "ratio": 0.28213603684565264
+        "ratio": 0.28174042290650064
       },
       "toxic_identity_hate": {
         "count": 17832,
-        "ratio": 0.05007863401482813
+        "ratio": 0.05000841325929665
       },
       "severe_toxic_obscene": {
         "count": 14569,
-        "ratio": 0.04091496292967872
+        "ratio": 0.040857591564305344
       },
       "severe_toxic_threat": {
         "count": 1838,
-        "ratio": 0.00516176140193215
+        "ratio": 0.005154523529081833
       },
       "severe_toxic_insult": {
         "count": 14596,
-        "ratio": 0.04099078858683442
+        "ratio": 0.04093331089797521
       },
       "severe_toxic_identity_hate": {
         "count": 4305,
-        "ratio": 0.01208997977982476
+        "ratio": 0.012073027090694936
       },
       "obscene_threat": {
         "count": 3667,
-        "ratio": 0.010298247584812402
+        "ratio": 0.010283807280273711
       },
       "obscene_insult": {
         "count": 65364,
-        "ratio": 0.18356549090092114
+        "ratio": 0.1833080935554434
       },
       "obscene_identity_hate": {
         "count": 12262,
-        "ratio": 0.03443608177937542
+        "ratio": 0.034387795165180327
       },
       "threat_insult": {
         "count": 4494,
-        "ratio": 0.012620759379914626
+        "ratio": 0.012603062426383982
       },
       "threat_identity_hate": {
         "count": 1722,
-        "ratio": 0.0048359919119299035
+        "ratio": 0.004829210836277974
       },
       "insult_identity_hate": {
         "count": 15719,
-        "ratio": 0.04414457425297686
+        "ratio": 0.04408267429468843
       }
     }
   },
   "train": {
     "language_dist": {
-      "ru": 0.14583099303527297,
-      "pt": 0.1457993990114581,
-      "es": 0.14514294540552686,
-      "tr": 0.14502359020444844,
-      "fr": 0.14485508874410244,
-      "it": 0.14450755448213884,
-      "en": 0.12884042911705235
+      "ru": 0.145626507375624,
+      "pt": 0.14559495765326155,
+      "es": 0.1449394245330641,
+      "tr": 0.1448202366930282,
+      "fr": 0.1446519715070952,
+      "it": 0.1443049245611083,
+      "en": 0.13006197767681868
     },
     "lang_class_dist": {
       "en": {
         "toxic": {
-          "positive_ratio": 0.47463353495722305,
-          "count": 17420,
-          "total": 36702
+          "positive_ratio": 0.4802975580831222,
+          "count": 17820,
+          "total": 37102
         },
         "severe_toxic": {
-          "positive_ratio": 0.043240150400523134,
+          "positive_ratio": 0.042773974448816775,
           "count": 1587,
-          "total": 36702
+          "total": 37102
         },
         "obscene": {
-          "positive_ratio": 0.2684867309683396,
+          "positive_ratio": 0.26559215136650316,
           "count": 9854,
-          "total": 36702
+          "total": 37102
         },
         "threat": {
-          "positive_ratio": 0.015258024085880879,
-          "count": 560,
-          "total": 36702
+          "positive_ratio": 0.025874615923669884,
+          "count": 960,
+          "total": 37102
         },
         "insult": {
-          "positive_ratio": 0.2494959402757343,
+          "positive_ratio": 0.246806102096922,
           "count": 9157,
-          "total": 36702
+          "total": 37102
         },
         "identity_hate": {
-          "positive_ratio": 0.04656421993351861,
+          "positive_ratio": 0.04606220688911649,
           "count": 1709,
-          "total": 36702
+          "total": 37102
         }
       },
       "ru": {
@@ -537,72 +537,72 @@
     "cooccurrence_patterns": {
       "toxic_severe_toxic": {
         "count": 13211,
-        "ratio": 0.04637651651314311
+        "ratio": 0.04631148690335969
       },
       "toxic_obscene": {
         "count": 68206,
-        "ratio": 0.23943355425747023
+        "ratio": 0.2390978181614224
       },
       "toxic_threat": {
-        "count": 5348,
-        "ratio": 0.018773871040215682
+        "count": 5748,
+        "ratio": 0.020149756015480396
       },
       "toxic_insult": {
         "count": 80371,
-        "ratio": 0.282138143113907
+        "ratio": 0.2817425262213248
       },
       "toxic_identity_hate": {
         "count": 14262,
-        "ratio": 0.05006599640530218
+        "ratio": 0.04999579337035168
       },
       "severe_toxic_obscene": {
         "count": 11655,
-        "ratio": 0.04091426084026062
+        "ratio": 0.040856890459363956
       },
       "severe_toxic_threat": {
         "count": 1470,
-        "ratio": 0.005160357223095933
+        "ratio": 0.005153121319199058
       },
       "severe_toxic_insult": {
         "count": 11676,
-        "ratio": 0.04098798022916199
+        "ratio": 0.04093050647820966
       },
       "severe_toxic_identity_hate": {
         "count": 3443,
-        "ratio": 0.012086469332734218
+        "ratio": 0.012069521565987998
       },
       "obscene_threat": {
         "count": 2932,
-        "ratio": 0.010292630869467535
+        "ratio": 0.01027819844074261
       },
       "obscene_insult": {
         "count": 52292,
-        "ratio": 0.18356829925859358
+        "ratio": 0.18331089797520894
       },
       "obscene_identity_hate": {
         "count": 9808,
-        "ratio": 0.03443046506403055
+        "ratio": 0.034382186325649225
       },
       "threat_insult": {
         "count": 3595,
-        "ratio": 0.012620057290496518
+        "ratio": 0.012602361321442594
       },
       "threat_identity_hate": {
         "count": 1373,
-        "ratio": 0.004819843855313413
+        "ratio": 0.004813085422626059
       },
       "insult_identity_hate": {
         "count": 12567,
-        "ratio": 0.04411578858683442
+        "ratio": 0.04405392899209153
       }
     },
     "distribution_deltas": {
-      "en_toxic": 5.172779272810679e-06,
-      "en_severe_toxic": 1.681895625790797e-05,
-      "en_obscene": 2.9769315020633513e-05,
-      "en_threat": 4.376016853487388e-05,
-      "en_insult": 2.9965298621092984e-05,
-      "en_identity_hate": 3.76371657446542e-05,
+      "en_toxic": 5.178075359879575e-06,
+      "en_severe_toxic": 1.6632605701505376e-05,
+      "en_obscene": 2.947957920385047e-05,
+      "en_threat": 4.3402848504934394e-05,
+      "en_insult": 2.9613244448833953e-05,
+      "en_identity_hate": 3.7236812638653805e-05,
       "ru_toxic": 4.8275699559008345e-06,
       "ru_severe_toxic": 4.363077436612961e-06,
       "ru_obscene": 7.331750184608188e-06,
@@ -643,45 +643,45 @@
   },
   "val": {
     "language_dist": {
-      "ru": 0.14583801392945406,
-      "pt": 0.1458099303527297,
-      "es": 0.14513592451134577,
-      "tr": 0.14502359020444844,
-      "fr": 0.14482700516737812,
-      "it": 0.14451808582341047,
-      "en": 0.12884745001123343
+      "ru": 0.14563351842503786,
+      "pt": 0.14560547422738235,
+      "es": 0.14493241348365024,
+      "tr": 0.1448202366930282,
+      "fr": 0.14462392730943968,
+      "it": 0.14431544113522912,
+      "en": 0.13006898872623254
     },
     "lang_class_dist": {
       "en": {
         "toxic": {
-          "positive_ratio": 0.4749346120313862,
-          "count": 2179,
-          "total": 4588
+          "positive_ratio": 0.4803794739111686,
+          "count": 2228,
+          "total": 4638
         },
         "severe_toxic": {
-          "positive_ratio": 0.04337401918047079,
+          "positive_ratio": 0.04290642518326865,
           "count": 199,
-          "total": 4588
+          "total": 4638
         },
         "obscene": {
-          "positive_ratio": 0.26852659110723626,
-          "count": 1232,
-          "total": 4588
+          "positive_ratio": 0.26627856834842606,
+          "count": 1235,
+          "total": 4638
         },
         "threat": {
-          "positive_ratio": 0.015257192676547515,
-          "count": 70,
-          "total": 4588
+          "positive_ratio": 0.02544200086244071,
+          "count": 118,
+          "total": 4638
         },
         "insult": {
-          "positive_ratio": 0.2495640802092415,
-          "count": 1145,
-          "total": 4588
+          "positive_ratio": 0.24665804225959465,
+          "count": 1144,
+          "total": 4638
         },
         "identity_hate": {
-          "positive_ratio": 0.0468613775065388,
-          "count": 215,
-          "total": 4588
+          "positive_ratio": 0.046140577835273824,
+          "count": 214,
+          "total": 4638
         }
       },
       "ru": {
@@ -691,28 +691,28 @@
           "total": 5193
         },
         "severe_toxic": {
-          "positive_ratio": 0.04679376083188908,
-          "count": 243,
+          "positive_ratio": 0.0471788946658964,
+          "count": 245,
           "total": 5193
         },
         "obscene": {
-          "positive_ratio": 0.23878297708453688,
-          "count": 1240,
+          "positive_ratio": 0.2385904101675332,
+          "count": 1239,
           "total": 5193
         },
         "threat": {
-          "positive_ratio": 0.02079722703639515,
-          "count": 108,
+          "positive_ratio": 0.02041209320238783,
+          "count": 106,
           "total": 5193
         },
         "insult": {
-          "positive_ratio": 0.29135374542653575,
-          "count": 1513,
+          "positive_ratio": 0.2915463123435394,
+          "count": 1514,
           "total": 5193
         },
         "identity_hate": {
-          "positive_ratio": 0.053918736761024454,
-          "count": 280,
+          "positive_ratio": 0.053726169844020795,
+          "count": 279,
           "total": 5193
         }
       },
@@ -733,8 +733,8 @@
           "total": 5157
         },
         "threat": {
-          "positive_ratio": 0.020554585999612178,
-          "count": 106,
+          "positive_ratio": 0.02036067481093659,
+          "count": 105,
           "total": 5157
         },
         "insult": {
@@ -743,8 +743,8 @@
           "total": 5157
         },
         "identity_hate": {
-          "positive_ratio": 0.053131665697110725,
-          "count": 274,
+          "positive_ratio": 0.05293775450843514,
+          "count": 273,
           "total": 5157
         }
       },
@@ -755,8 +755,8 @@
           "total": 5146
         },
         "severe_toxic": {
-          "positive_ratio": 0.047221142635056355,
-          "count": 243,
+          "positive_ratio": 0.04702681694520015,
+          "count": 242,
           "total": 5146
         },
         "obscene": {
@@ -775,8 +775,8 @@
           "total": 5146
         },
         "identity_hate": {
-          "positive_ratio": 0.05402254178002332,
-          "count": 278,
+          "positive_ratio": 0.05382821609016712,
+          "count": 277,
           "total": 5146
         }
       },
@@ -792,23 +792,23 @@
           "total": 5168
         },
         "obscene": {
-          "positive_ratio": 0.23858359133126936,
-          "count": 1233,
+          "positive_ratio": 0.23877708978328174,
+          "count": 1234,
           "total": 5168
         },
         "threat": {
-          "positive_ratio": 0.020704334365325077,
-          "count": 107,
+          "positive_ratio": 0.02089783281733746,
+          "count": 108,
           "total": 5168
         },
         "insult": {
-          "positive_ratio": 0.2919891640866873,
-          "count": 1509,
+          "positive_ratio": 0.29237616099071206,
+          "count": 1511,
           "total": 5168
         },
         "identity_hate": {
-          "positive_ratio": 0.05359907120743034,
-          "count": 277,
+          "positive_ratio": 0.053405572755417956,
+          "count": 276,
           "total": 5168
         }
       },
@@ -819,28 +819,28 @@
           "total": 5192
         },
         "severe_toxic": {
-          "positive_ratio": 0.04699537750385208,
-          "count": 244,
+          "positive_ratio": 0.04680277349768875,
+          "count": 243,
           "total": 5192
         },
         "obscene": {
-          "positive_ratio": 0.23786594761171032,
-          "count": 1235,
+          "positive_ratio": 0.23748073959938368,
+          "count": 1233,
           "total": 5192
         },
         "threat": {
-          "positive_ratio": 0.020416024653312787,
-          "count": 106,
+          "positive_ratio": 0.020608628659476116,
+          "count": 107,
           "total": 5192
         },
         "insult": {
-          "positive_ratio": 0.2908320493066256,
-          "count": 1510,
+          "positive_ratio": 0.29063944530046226,
+          "count": 1509,
           "total": 5192
         },
         "identity_hate": {
-          "positive_ratio": 0.053929121725731895,
-          "count": 280,
+          "positive_ratio": 0.05335130970724191,
+          "count": 277,
           "total": 5192
         }
       },
@@ -851,180 +851,180 @@
           "total": 5164
         },
         "severe_toxic": {
-          "positive_ratio": 0.04686289697908598,
-          "count": 242,
+          "positive_ratio": 0.0470565453137103,
+          "count": 243,
           "total": 5164
         },
         "obscene": {
-          "positive_ratio": 0.23915569326103794,
-          "count": 1235,
+          "positive_ratio": 0.2387683965917893,
+          "count": 1233,
           "total": 5164
         },
         "threat": {
-          "positive_ratio": 0.021107668474051124,
-          "count": 109,
+          "positive_ratio": 0.021301316808675447,
+          "count": 110,
           "total": 5164
         },
         "insult": {
-          "positive_ratio": 0.29298993028659953,
-          "count": 1513,
+          "positive_ratio": 0.29318357862122385,
+          "count": 1514,
           "total": 5164
         },
         "identity_hate": {
-          "positive_ratio": 0.05480247869868319,
-          "count": 283,
+          "positive_ratio": 0.05460883036405887,
+          "count": 282,
           "total": 5164
         }
       }
     },
     "cooccurrence_patterns": {
       "toxic_severe_toxic": {
-        "count": 1654,
-        "ratio": 0.04645023590204449
+        "count": 1655,
+        "ratio": 0.0464131471198609
       },
       "toxic_obscene": {
-        "count": 8530,
-        "ratio": 0.23955290945854865
+        "count": 8529,
+        "ratio": 0.23918896180380278
       },
       "toxic_threat": {
-        "count": 665,
-        "ratio": 0.01867557852168052
+        "count": 716,
+        "ratio": 0.020079645521341633
       },
       "toxic_insult": {
-        "count": 10047,
-        "ratio": 0.2821556953493597
+        "count": 10043,
+        "ratio": 0.2816478770542375
       },
       "toxic_identity_hate": {
-        "count": 1785,
-        "ratio": 0.05012918445293193
+        "count": 1779,
+        "ratio": 0.04989062762914353
       },
       "severe_toxic_obscene": {
-        "count": 1459,
-        "ratio": 0.04097393844079982
+        "count": 1462,
+        "ratio": 0.04100061697234842
       },
       "severe_toxic_threat": {
         "count": 184,
-        "ratio": 0.0051673781172770165
+        "ratio": 0.005160132368612934
       },
       "severe_toxic_insult": {
-        "count": 1462,
-        "ratio": 0.041058189170972814
+        "count": 1459,
+        "ratio": 0.040916484379381904
       },
       "severe_toxic_identity_hate": {
-        "count": 433,
-        "ratio": 0.012160188721635587
+        "count": 431,
+        "ratio": 0.012087049189522688
       },
       "obscene_threat": {
         "count": 368,
-        "ratio": 0.010334756234554033
+        "ratio": 0.010320264737225868
       },
       "obscene_insult": {
-        "count": 6536,
-        "ratio": 0.1835542574702314
+        "count": 6539,
+        "ratio": 0.18338100846934768
       },
       "obscene_identity_hate": {
-        "count": 1230,
-        "ratio": 0.034542799370927885
+        "count": 1221,
+        "ratio": 0.0342419653373717
       },
       "threat_insult": {
-        "count": 449,
-        "ratio": 0.012609525949224893
+        "count": 451,
+        "ratio": 0.01264793314263279
       },
       "threat_identity_hate": {
-        "count": 174,
-        "ratio": 0.004886542350033701
+        "count": 170,
+        "ratio": 0.004767513601435863
       },
       "insult_identity_hate": {
-        "count": 1576,
-        "ratio": 0.04425971691754662
+        "count": 1574,
+        "ratio": 0.04414156710976499
       }
     },
     "distribution_deltas": {
-      "en_toxic": 0.0003062498534359692,
-      "en_severe_toxic": 0.0001506877362055653,
-      "en_obscene": 1.00908238760411e-05,
-      "en_threat": 4.2928759201510056e-05,
-      "en_insult": 9.81052321283038e-05,
-      "en_identity_hate": 0.0002595204072755389,
+      "en_toxic": 8.709390340627676e-05,
+      "en_severe_toxic": 0.00014908334015337893,
+      "en_obscene": 0.0006569374027190489,
+      "en_threat": 0.0003892122127242409,
+      "en_insult": 0.00011844659287851833,
+      "en_identity_hate": 4.113413351868045e-05,
       "ru_toxic": 7.697410830853624e-05,
-      "ru_severe_toxic": 7.88319889397579e-05,
-      "ru_obscene": 0.00022189250588952603,
-      "ru_threat": 0.0001532584645264068,
-      "ru_insult": 0.0006852316186036767,
-      "ru_identity_hate": 5.9848973068904465e-05,
+      "ru_severe_toxic": 0.0003063018450675595,
+      "ru_obscene": 2.932558888585346e-05,
+      "ru_threat": 0.0002318753694809106,
+      "ru_insult": 0.0004926647016000318,
+      "ru_identity_hate": 0.00025241589007256315,
       "fr_toxic": 1.0049140296009007e-05,
       "fr_severe_toxic": 6.943042386359927e-05,
       "fr_obscene": 4.1448474285027403e-05,
-      "fr_threat": 1.580117346213633e-05,
+      "fr_threat": 0.00020971236213772337,
       "fr_insult": 6.553934260422611e-05,
-      "fr_identity_hate": 0.00018376054191190233,
+      "fr_identity_hate": 1.0150646763684712e-05,
       "it_toxic": 4.859558421727028e-05,
-      "it_severe_toxic": 0.00030818618598237035,
+      "it_severe_toxic": 0.00011386049612616828,
       "it_obscene": 0.00014156843841731104,
       "it_threat": 0.000273272743637875,
       "it_insult": 0.00021614234279548894,
-      "it_identity_hate": 0.0003077896568913843,
+      "it_identity_hate": 0.00011346396703518918,
       "es_toxic": 1.9386536599219628e-05,
       "es_severe_toxic": 0.00011791417220072958,
-      "es_obscene": 8.662913940371553e-05,
-      "es_threat": 8.012203229490478e-07,
-      "es_insult": 6.934674215730574e-05,
-      "es_identity_hate": 7.532219839760657e-05,
+      "es_obscene": 0.00028012759141610166,
+      "es_threat": 0.0001942996723353317,
+      "es_insult": 0.000456343646182078,
+      "es_identity_hate": 0.0002688206504099927,
       "pt_toxic": 2.8669679673909432e-05,
-      "pt_severe_toxic": 0.00030546861081126586,
-      "pt_obscene": 0.0001981316747339812,
-      "pt_threat": 0.00032862546129321796,
-      "pt_insult": 7.950197145600857e-05,
-      "pt_identity_hate": 0.00018949886616759226,
+      "pt_severe_toxic": 0.00011286460464793313,
+      "pt_obscene": 0.00018707633759265652,
+      "pt_threat": 0.0001360214551298887,
+      "pt_insult": 0.00011310203470732416,
+      "pt_identity_hate": 0.00038831315232239205,
       "tr_toxic": 9.671354112117392e-06,
-      "tr_severe_toxic": 0.0002139248029005003,
-      "tr_obscene": 0.00037257026071887966,
-      "tr_threat": 0.00030943458106326774,
-      "tr_insult": 8.313464494447143e-05,
-      "tr_identity_hate": 0.0002506864486396185
+      "tr_severe_toxic": 2.0276468276181348e-05,
+      "tr_obscene": 0.0007598669299675176,
+      "tr_threat": 0.0005030829156875902,
+      "tr_insult": 0.00011051368967984754,
+      "tr_identity_hate": 5.703811401529951e-05
     }
   },
   "test": {
     "language_dist": {
-      "ru": 0.14583801392945406,
-      "pt": 0.1458099303527297,
-      "es": 0.14513592451134577,
-      "tr": 0.14499550662772412,
-      "fr": 0.14485508874410244,
-      "it": 0.14451808582341047,
-      "en": 0.12884745001123343
+      "ru": 0.14563351842503786,
+      "pt": 0.14560547422738235,
+      "es": 0.14493241348365024,
+      "tr": 0.1447921924953727,
+      "fr": 0.1446519715070952,
+      "it": 0.14431544113522912,
+      "en": 0.13006898872623254
     },
     "lang_class_dist": {
       "en": {
         "toxic": {
-          "positive_ratio": 0.4742807323452485,
-          "count": 2176,
-          "total": 4588
+          "positive_ratio": 0.48016386373436826,
+          "count": 2227,
+          "total": 4638
         },
         "severe_toxic": {
-          "positive_ratio": 0.04293809938971229,
+          "positive_ratio": 0.04247520482966796,
           "count": 197,
-          "total": 4588
+          "total": 4638
         },
         "obscene": {
-          "positive_ratio": 0.2687445510026155,
-          "count": 1233,
-          "total": 4588
+          "positive_ratio": 0.2652005174644243,
+          "count": 1230,
+          "total": 4638
         },
         "threat": {
-          "positive_ratio": 0.014821272885789015,
-          "count": 68,
-          "total": 4588
+          "positive_ratio": 0.0258732212160414,
+          "count": 120,
+          "total": 4638
         },
         "insult": {
-          "positive_ratio": 0.24912816041848299,
-          "count": 1143,
-          "total": 4588
+          "positive_ratio": 0.24665804225959465,
+          "count": 1144,
+          "total": 4638
         },
         "identity_hate": {
-          "positive_ratio": 0.046643417611159546,
-          "count": 214,
-          "total": 4588
+          "positive_ratio": 0.04635618801207417,
+          "count": 215,
+          "total": 4638
         }
       },
       "ru": {
@@ -1034,28 +1034,28 @@
           "total": 5193
         },
         "severe_toxic": {
-          "positive_ratio": 0.04698632774889274,
-          "count": 244,
+          "positive_ratio": 0.04660119391488542,
+          "count": 242,
           "total": 5193
         },
         "obscene": {
-          "positive_ratio": 0.23839784325052957,
-          "count": 1238,
+          "positive_ratio": 0.2385904101675332,
+          "count": 1239,
           "total": 5193
         },
         "threat": {
-          "positive_ratio": 0.02041209320238783,
-          "count": 106,
+          "positive_ratio": 0.02079722703639515,
+          "count": 108,
           "total": 5193
         },
         "insult": {
-          "positive_ratio": 0.29231658001155403,
-          "count": 1518,
+          "positive_ratio": 0.2921240130945504,
+          "count": 1517,
           "total": 5193
         },
         "identity_hate": {
-          "positive_ratio": 0.05430387059503177,
-          "count": 282,
+          "positive_ratio": 0.05449643751203543,
+          "count": 283,
           "total": 5193
         }
       },
@@ -1076,8 +1076,8 @@
           "total": 5158
         },
         "threat": {
-          "positive_ratio": 0.02074447460255913,
-          "count": 107,
+          "positive_ratio": 0.02093834819697557,
+          "count": 108,
           "total": 5158
         },
         "insult": {
@@ -1086,8 +1086,8 @@
           "total": 5158
         },
         "identity_hate": {
-          "positive_ratio": 0.053121364870104694,
-          "count": 274,
+          "positive_ratio": 0.05331523846452113,
+          "count": 275,
           "total": 5158
         }
       },
@@ -1098,8 +1098,8 @@
           "total": 5146
         },
         "severe_toxic": {
-          "positive_ratio": 0.046638165565487756,
-          "count": 240,
+          "positive_ratio": 0.04683249125534396,
+          "count": 241,
           "total": 5146
         },
         "obscene": {
@@ -1118,8 +1118,8 @@
           "total": 5146
         },
         "identity_hate": {
-          "positive_ratio": 0.05363389040031092,
-          "count": 276,
+          "positive_ratio": 0.05382821609016712,
+          "count": 277,
           "total": 5146
         }
       },
@@ -1135,23 +1135,23 @@
           "total": 5168
         },
         "obscene": {
-          "positive_ratio": 0.23858359133126936,
-          "count": 1233,
+          "positive_ratio": 0.23839009287925697,
+          "count": 1232,
           "total": 5168
         },
         "threat": {
-          "positive_ratio": 0.02089783281733746,
-          "count": 108,
+          "positive_ratio": 0.020704334365325077,
+          "count": 107,
           "total": 5168
         },
         "insult": {
-          "positive_ratio": 0.2919891640866873,
-          "count": 1509,
+          "positive_ratio": 0.2916021671826625,
+          "count": 1507,
           "total": 5168
         },
         "identity_hate": {
-          "positive_ratio": 0.05359907120743034,
-          "count": 277,
+          "positive_ratio": 0.05379256965944272,
+          "count": 278,
           "total": 5168
         }
       },
@@ -1162,28 +1162,28 @@
           "total": 5192
         },
         "severe_toxic": {
-          "positive_ratio": 0.046610169491525424,
-          "count": 242,
+          "positive_ratio": 0.04680277349768875,
+          "count": 243,
           "total": 5192
         },
         "obscene": {
-          "positive_ratio": 0.23767334360554698,
-          "count": 1234,
+          "positive_ratio": 0.23805855161787365,
+          "count": 1236,
           "total": 5192
         },
         "threat": {
-          "positive_ratio": 0.020993836671802775,
-          "count": 109,
+          "positive_ratio": 0.020801232665639446,
+          "count": 108,
           "total": 5192
         },
         "insult": {
-          "positive_ratio": 0.2908320493066256,
-          "count": 1510,
+          "positive_ratio": 0.29102465331278893,
+          "count": 1511,
           "total": 5192
         },
         "identity_hate": {
-          "positive_ratio": 0.053543913713405236,
-          "count": 278,
+          "positive_ratio": 0.05412172573189522,
+          "count": 281,
           "total": 5192
         }
       },
@@ -1194,144 +1194,144 @@
           "total": 5163
         },
         "severe_toxic": {
-          "positive_ratio": 0.04725934534185551,
-          "count": 244,
+          "positive_ratio": 0.04706565950029053,
+          "count": 243,
           "total": 5163
         },
         "obscene": {
-          "positive_ratio": 0.2397830718574472,
-          "count": 1238,
+          "positive_ratio": 0.24017044354057718,
+          "count": 1240,
           "total": 5163
         },
         "threat": {
-          "positive_ratio": 0.020918070889018012,
-          "count": 108,
+          "positive_ratio": 0.020724385047453033,
+          "count": 107,
           "total": 5163
         },
         "insult": {
-          "positive_ratio": 0.29324036412938215,
-          "count": 1514,
+          "positive_ratio": 0.29304667828781716,
+          "count": 1513,
           "total": 5163
         },
         "identity_hate": {
-          "positive_ratio": 0.05442572147975983,
-          "count": 281,
+          "positive_ratio": 0.05461940732132481,
+          "count": 282,
           "total": 5163
         }
       }
     },
     "cooccurrence_patterns": {
       "toxic_severe_toxic": {
-        "count": 1649,
-        "ratio": 0.04630981801842283
+        "count": 1648,
+        "ratio": 0.046216837736272366
       },
       "toxic_obscene": {
-        "count": 8524,
-        "ratio": 0.23938440799820265
+        "count": 8525,
+        "ratio": 0.23907678501318078
       },
       "toxic_threat": {
-        "count": 669,
-        "ratio": 0.01878791282857785
+        "count": 718,
+        "ratio": 0.020135733916652646
       },
       "toxic_insult": {
-        "count": 10045,
-        "ratio": 0.28209952819591105
+        "count": 10049,
+        "ratio": 0.2818161422401705
       },
       "toxic_identity_hate": {
-        "count": 1785,
-        "ratio": 0.05012918445293193
+        "count": 1791,
+        "ratio": 0.05022715800100959
       },
       "severe_toxic_obscene": {
-        "count": 1455,
-        "ratio": 0.040861604133902496
+        "count": 1452,
+        "ratio": 0.04072017499579337
       },
       "severe_toxic_threat": {
         "count": 184,
-        "ratio": 0.0051673781172770165
+        "ratio": 0.005160132368612934
       },
       "severe_toxic_insult": {
-        "count": 1458,
-        "ratio": 0.04094585486407549
+        "count": 1461,
+        "ratio": 0.04097257277469291
       },
       "severe_toxic_identity_hate": {
-        "count": 429,
-        "ratio": 0.012047854414738261
+        "count": 431,
+        "ratio": 0.012087049189522688
       },
       "obscene_threat": {
         "count": 367,
-        "ratio": 0.010306672657829702
+        "ratio": 0.010292220539570364
       },
       "obscene_insult": {
-        "count": 6536,
-        "ratio": 0.1835542574702314
+        "count": 6533,
+        "ratio": 0.18321274328341466
       },
       "obscene_identity_hate": {
-        "count": 1224,
-        "ratio": 0.03437429791058189
+        "count": 1233,
+        "ratio": 0.03457849570923776
       },
       "threat_insult": {
-        "count": 450,
-        "ratio": 0.012637609525949224
+        "count": 448,
+        "ratio": 0.012563800549666274
       },
       "threat_identity_hate": {
-        "count": 175,
-        "ratio": 0.004914625926758032
+        "count": 179,
+        "ratio": 0.005019911380335408
       },
       "insult_identity_hate": {
-        "count": 1576,
-        "ratio": 0.04425971691754662
+        "count": 1578,
+        "ratio": 0.04425374390038701
       }
     },
     "distribution_deltas": {
-      "en_toxic": 0.00034762983270175685,
-      "en_severe_toxic": 0.00028523205455293493,
-      "en_obscene": 0.00022805071925530163,
-      "en_threat": 0.0003929910315569902,
-      "en_insult": 0.00033781455863021725,
-      "en_identity_hate": 4.156051189628529e-05,
+      "en_toxic": 0.00012851627339405258,
+      "en_severe_toxic": 0.0002821370134473075,
+      "en_obscene": 0.00042111348128270887,
+      "en_threat": 4.2008140876449024e-05,
+      "en_insult": 0.00011844659287851833,
+      "en_identity_hate": 0.00025674431031902367,
       "ru_toxic": 0.00011559280869510857,
-      "ru_severe_toxic": 0.00011373492806390079,
-      "ru_obscene": 0.00016324132811779135,
-      "ru_threat": 0.0002318753694809106,
-      "ru_insult": 0.0002776029664146029,
-      "ru_identity_hate": 0.0003252848609384129,
+      "ru_severe_toxic": 0.0002713989059434166,
+      "ru_obscene": 2.932558888585346e-05,
+      "ru_threat": 0.0001532584645264068,
+      "ru_insult": 8.50360494109581e-05,
+      "ru_identity_hate": 0.0005178517779420716,
       "fr_toxic": 8.72823966332481e-05,
       "fr_severe_toxic": 7.845304605866299e-05,
       "fr_obscene": 0.00019847808758538532,
-      "fr_threat": 0.00017408742948481562,
+      "fr_threat": 0.00036796102390125596,
       "fr_insult": 0.0002657788632503544,
-      "fr_identity_hate": 0.00017345971490587142,
+      "fr_identity_hate": 0.0003673333093223083,
       "it_toxic": 4.859558421727028e-05,
-      "it_severe_toxic": 0.00027479088358622894,
+      "it_severe_toxic": 8.046519373002686e-05,
       "it_obscene": 0.00024708294129507924,
       "it_threat": 0.00011537863607452223,
       "it_insult": 0.00017250903691690134,
-      "it_identity_hate": 8.08617228210129e-05,
+      "it_identity_hate": 0.00011346396703518918,
       "es_toxic": 1.9386536599219628e-05,
       "es_severe_toxic": 7.558427981165655e-05,
-      "es_obscene": 8.662913940371553e-05,
-      "es_threat": 0.0001942996723353317,
-      "es_insult": 6.934674215730574e-05,
-      "es_identity_hate": 7.532219839760657e-05,
+      "es_obscene": 0.00010686931260867061,
+      "es_threat": 8.012203229490478e-07,
+      "es_insult": 0.00031765016186746653,
+      "es_identity_hate": 0.00011817625361477263,
       "pt_toxic": 2.8669679673909432e-05,
-      "pt_severe_toxic": 7.973940151539266e-05,
-      "pt_obscene": 5.5276685706484585e-06,
-      "pt_threat": 0.0002491865571967698,
-      "pt_insult": 7.950197145600857e-05,
-      "pt_identity_hate": 0.00019570914615906626,
+      "pt_severe_toxic": 0.00011286460464793313,
+      "pt_obscene": 0.0003907356808973139,
+      "pt_threat": 5.6582551033440565e-05,
+      "pt_insult": 0.0002721059776193413,
+      "pt_identity_hate": 0.00038210287233091805,
       "tr_toxic": 8.705904584838109e-05,
-      "tr_severe_toxic": 0.00018252355986903002,
-      "tr_obscene": 0.0002548083356903874,
-      "tr_threat": 0.00011983699603015582,
-      "tr_insult": 0.0001672991978381444,
-      "tr_identity_hate": 0.00012607077028373853
+      "tr_severe_toxic": 1.1162281695953347e-05,
+      "tr_obscene": 0.0006421800188203541,
+      "tr_threat": 7.384884553482407e-05,
+      "tr_insult": 2.6386643726838965e-05,
+      "tr_identity_hate": 6.761507128123789e-05
     }
   },
   "deduplication": {
-    "total_samples": 360728,
-    "unique_samples": 356080,
+    "total_samples": 361228,
+    "unique_samples": 356580,
     "duplicates_removed": 4648,
-    "duplicate_rate": 0.012885054667228493,
+    "duplicate_rate": 0.012867219595380203,
     "duplicate_groups": {
       "59166922f257b25e65e6ccd2414dd226af36b725c92a1a6cfa99880a5ba97ef4": {
         "count": 2,
