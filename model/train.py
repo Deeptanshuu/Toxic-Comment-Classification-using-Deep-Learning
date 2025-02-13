@@ -392,12 +392,12 @@ def create_dataloaders(train_dataset, val_dataset, config):
     
     logger.info("Initializing sampler...")
     try:
-        # Create sampler with cached size
+        # Create sampler with dataset size
         train_sampler = MultilabelStratifiedSampler(
             labels=train_dataset.labels,
             groups=train_dataset.langs,
             batch_size=config.batch_size,
-            cached_size=len(train_dataset.cached_encodings)
+            cached_size=len(train_dataset)  # Use dataset length directly
         )
         
         logger.info("Creating DataLoader...")
