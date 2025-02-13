@@ -227,9 +227,9 @@ class TrainingConfig:
     cache_dir: str = 'cached_dataset'
     
     # Training parameters
-    batch_size: int = 128
+    batch_size: int = 64
     grad_accum_steps: int = 2
-    epochs: int = 1
+    epochs: int = 6
     lr: float = 2e-5
     weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
@@ -241,11 +241,11 @@ class TrainingConfig:
     activation_checkpointing: bool = True
     mixed_precision: str = "fp16"
     num_workers: int = 16
-    gc_frequency: int = 100
+    gc_frequency: int = 500
     tensor_float_32: bool = True
     
     # Cosine scheduler parameters
-    num_cycles: int = 3
+    num_cycles: int = 2
 
     def __post_init__(self):
         """Initialize and validate configuration"""
