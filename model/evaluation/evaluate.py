@@ -367,7 +367,7 @@ def main():
                       help='Path to model directory containing checkpoints')
     parser.add_argument('--checkpoint', type=str,
                       help='Specific checkpoint to evaluate (e.g., checkpoint_epoch05_20240213). If not specified, uses latest.')
-    parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
+    parser.add_argument('--test_file', type=str, default='dataset/split/train.csv',
                       help='Path to test dataset')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
