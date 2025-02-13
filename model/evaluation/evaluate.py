@@ -279,7 +279,7 @@ def evaluate_model(model, val_loader, device, output_dir):
     
     # Plot metrics
     logger.info("Generating metric plots...")
-    plot_metrics(results, output_dir)
+    plot_metrics(results, output_dir, predictions=predictions, labels=labels)
     
     logger.info("Evaluation complete!")
     return results, predictions
@@ -414,7 +414,7 @@ def save_results(results, predictions, labels, langs, output_dir):
     for class_name, data in thresholds['global'].items():
         logger.info(f"{class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
 
-def plot_metrics(results, output_dir):
+def plot_metrics(results, output_dir, predictions=None, labels=None):
     """Generate visualization plots"""
     plots_dir = os.path.join(output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
@@ -437,25 +437,27 @@ def plot_metrics(results, output_dir):
         plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
         plt.close()
         
-        # Plot threshold optimization curves
-        plt.figure(figsize=(12, 6))
-        thresholds = np.linspace(0.01, 0.99, 100)
-        for class_name in toxicity_types:
-            f1_scores = []
-            for threshold in thresholds:
-                binary_preds = (results['per_class'][class_name]['predictions'] > threshold).astype(int)
-                f1 = f1_score(results['per_class'][class_name]['labels'], binary_preds)
-                f1_scores.append(f1)
-            plt.plot(thresholds, f1_scores, label=class_name)
-        
-        plt.title('F1 Score vs. Threshold by Class')
-        plt.xlabel('Threshold')
-        plt.ylabel('F1 Score')
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'threshold_optimization.png'))
-        plt.close()
+        # Plot threshold optimization curves if predictions and labels are available
+        if predictions is not None and labels is not None:
+            plt.figure(figsize=(12, 6))
+            thresholds = np.linspace(0.01, 0.99, 100)
+            
+            for i, class_name in enumerate(toxicity_types):
+                f1_scores = []
+                for threshold in thresholds:
+                    binary_preds = (predictions[:, i] > threshold).astype(int)
+                    f1 = f1_score(labels[:, i], binary_preds)
+                    f1_scores.append(f1)
+                plt.plot(thresholds, f1_scores, label=class_name)
+            
+            plt.title('F1 Score vs. Threshold by Class')
+            plt.xlabel('Threshold')
+            plt.ylabel('F1 Score')
+            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plots_dir, 'threshold_optimization.png'))
+            plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
