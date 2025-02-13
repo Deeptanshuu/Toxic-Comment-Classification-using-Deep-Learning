@@ -11,55 +11,63 @@ class MultilabelStratifiedSampler(Sampler):
         
         # Calculate number of batches
         self.num_batches = self.num_samples // self.batch_size
-        if self.num_samples % self.batch_size != 0:
-            self.num_batches += 1
         
-        # Get group sizes for proportional sampling
-        unique_groups, group_counts = np.unique(groups, return_counts=True)
-        self.group_weights = group_counts / group_counts.sum()
-        self.unique_groups = unique_groups
+        # Get indices for each group
+        self.group_indices = {}
+        for group in np.unique(groups):
+            self.group_indices[group] = np.where(groups == group)[0]
+            
+        # Calculate samples per group per batch
+        total_samples = sum(len(indices) for indices in self.group_indices.values())
+        self.group_ratios = {
+            group: len(indices) / total_samples
+            for group, indices in self.group_indices.items()
+        }
     
     def __iter__(self):
-        # Generate indices for one epoch
-        indices = []
-        samples_per_batch = {
-            group: int(self.batch_size * weight)
-            for group, weight in zip(self.unique_groups, self.group_weights)
-        }
+        # Generate indices for all complete batches
+        all_indices = []
         
-        # Ensure we have at least one sample per group
-        remaining = self.batch_size - sum(samples_per_batch.values())
-        if remaining > 0:
-            # Distribute remaining samples proportionally
-            for group in samples_per_batch:
-                samples_per_batch[group] += 1
-                remaining -= 1
-                if remaining == 0:
-                    break
-        
-        # Generate indices for all batches
         for _ in range(self.num_batches):
             batch_indices = []
             
-            # Sample from each group
-            for group in self.unique_groups:
-                # Get indices for this group
-                group_indices = np.where(self.groups == group)[0]
-                n_samples = samples_per_batch[group]
+            # Calculate samples needed from each group for this batch
+            remaining = self.batch_size
+            for group, ratio in self.group_ratios.items():
+                if remaining <= 0:
+                    break
+                    
+                # Calculate number of samples for this group
+                n_samples = max(1, min(
+                    int(self.batch_size * ratio),
+                    remaining,
+                    len(self.group_indices[group])
+                ))
                 
-                # Sample with replacement if needed
+                # Sample indices for this group
                 sampled = np.random.choice(
-                    group_indices, 
+                    self.group_indices[group],
                     size=n_samples,
-                    replace=len(group_indices) < n_samples
+                    replace=False
                 )
                 batch_indices.extend(sampled)
+                remaining -= n_samples
             
-            # Shuffle batch indices
+            # If we still need more samples, take them randomly
+            if remaining > 0:
+                all_available = np.concatenate(list(self.group_indices.values()))
+                extra = np.random.choice(
+                    all_available,
+                    size=remaining,
+                    replace=False
+                )
+                batch_indices.extend(extra)
+            
+            # Shuffle the batch indices
             np.random.shuffle(batch_indices)
-            indices.extend(batch_indices)
+            all_indices.extend(batch_indices)
         
-        return iter(indices)
+        return iter(all_indices)
     
     def __len__(self):
         return self.num_batches * self.batch_size 
