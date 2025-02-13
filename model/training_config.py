@@ -228,11 +228,11 @@ class TrainingConfig:
     # Training parameters
     batch_size: int = 64
     grad_accum_steps: int = 1
-    epochs: int = 10
+    epochs: int = 6
     lr: float = 2e-5  # Base learning rate
     weight_decay: float = 2e-7  # Set to 0.01 * learning rate for better stability
     max_grad_norm: float = 1.0
-    warmup_ratio: float = 0.1
+    warmup_ratio: float = 0.01
     label_smoothing: float = 0.01
     min_lr_ratio: float = 0.01  # Minimum learning rate will be 1% of base lr
     
