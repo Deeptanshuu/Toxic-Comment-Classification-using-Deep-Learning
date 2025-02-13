@@ -234,10 +234,10 @@ class TrainingConfig:
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
     label_smoothing: float = 0.01
+    min_lr_ratio: float = 0.01  # Minimum learning rate will be 1% of base lr
     
     # Cosine scheduler parameters
     num_cycles: int = 3  # Number of cosine cycles
-    min_lr_ratio: float = 0.1  # Minimum LR as a fraction of max LR
     
     # System parameters
     num_workers: int = 16
@@ -274,6 +274,8 @@ class TrainingConfig:
             raise ValueError(f"Invalid label_smoothing: {self.label_smoothing}")
         if self.freeze_layers < 0:
             raise ValueError(f"Invalid freeze_layers: {self.freeze_layers}")
+        if not 0 < self.min_lr_ratio < 1:
+            raise ValueError(f"Invalid min_lr_ratio: {self.min_lr_ratio}")
             
         # Validate weight decay and learning rate combination
         if self.weight_decay > 0 and self.lr < 0.01:
@@ -383,11 +385,6 @@ class TrainingConfig:
     def use_amp(self):
         """Check if AMP should be used based on device and mixed precision setting"""
         return self.device.type == 'cuda' and self.mixed_precision != "no"
-    
-    @property
-    def min_lr_ratio(self):
-        """Minimum learning rate ratio for cosine scheduler"""
-        return 0.01  # Minimum learning rate will be 1% of base lr
     
     @property
     def grad_norm_clip(self):
