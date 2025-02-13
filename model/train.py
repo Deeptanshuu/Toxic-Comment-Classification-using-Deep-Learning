@@ -25,6 +25,7 @@ from model.evaluation.evaluate import ToxicDataset
 from model.training_config import MetricsTracker, TrainingConfig
 from model.data.sampler import MultilabelStratifiedSampler
 from model.language_aware_transformer import LanguageAwareTransformer
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -290,7 +291,7 @@ def train(model, train_loader, config):
     warmup_steps = int(total_steps * config.warmup_ratio)
     
     # Initialize cosine scheduler with warm restarts
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    scheduler = CosineAnnealingWarmRestarts(
         optimizer,
         T_0=total_steps // config.num_cycles,  # First cycle length
         T_mult=1,  # Keep cycle length constant

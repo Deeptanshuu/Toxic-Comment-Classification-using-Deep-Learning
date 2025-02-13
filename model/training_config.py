@@ -229,7 +229,7 @@ class TrainingConfig:
     batch_size: int = 64
     grad_accum_steps: int = 1
     epochs: int = 10
-    lr: float = 2e-5
+    lr: float = 2e-5  # Base learning rate
     weight_decay: float = 0.005
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
@@ -249,15 +249,36 @@ class TrainingConfig:
     
     def __post_init__(self):
         """Initialize and validate configuration"""
-        # Validate parameters
+        # Validate learning rate first
+        if self.lr <= 0:
+            raise ValueError(f"Learning rate must be positive, got {self.lr}")
+        if self.lr < 1e-7:
+            raise ValueError(f"Learning rate too small: {self.lr}")
+        if self.lr > 1.0:
+            raise ValueError(f"Learning rate too large: {self.lr}")
+            
+        # Validate weight decay and learning rate combination
+        if self.weight_decay > 0:
+            if self.lr < 1e-4:
+                logger.warning(
+                    "Weight decay (%.4f) may be too high for learning rate %.2e", 
+                    self.weight_decay, self.lr
+                )
+            # Calculate effective learning rate after weight decay
+            effective_lr = self.lr * (1 - self.weight_decay)
+            if effective_lr < 1e-7:
+                logger.warning(
+                    "Effective learning rate %.2e after weight decay may be too small",
+                    effective_lr
+                )
+        
+        # Rest of the validation checks
         if self.batch_size <= 0:
             raise ValueError(f"Invalid batch_size: {self.batch_size}")
         if self.grad_accum_steps <= 0:
             raise ValueError(f"Invalid grad_accum_steps: {self.grad_accum_steps}")
         if self.epochs <= 0:
             raise ValueError(f"Invalid epochs: {self.epochs}")
-        if self.lr <= 0:
-            raise ValueError(f"Invalid learning rate: {self.lr}")
         if self.weight_decay < 0:
             raise ValueError(f"Invalid weight_decay: {self.weight_decay}")
         if self.num_workers < 0:
@@ -277,13 +298,6 @@ class TrainingConfig:
         if not 0 < self.min_lr_ratio < 1:
             raise ValueError(f"Invalid min_lr_ratio: {self.min_lr_ratio}")
             
-        # Validate weight decay and learning rate combination with better precision
-        if self.weight_decay > 0 and self.lr < 0.01:
-            logger.warning(
-                "High weight decay (%.4f) with low learning rate (%.2e) may cause instability", 
-                self.weight_decay, self.lr
-            )
-        
         # Set device with error handling
         if torch.cuda.is_available():
             try:
