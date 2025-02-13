@@ -14,23 +14,24 @@ class MultilabelStratifiedSampler(Sampler):
         
         if self.num_samples == 0:
             raise ValueError("Empty dataset")
+            
+        logger.info(f"Dataset size: {self.num_samples}")
+        logger.info(f"Batch size: {self.batch_size}")
         
-        # Calculate number of complete batches
-        self.num_batches = self.num_samples // self.batch_size
-        if self.num_batches == 0:
-            raise ValueError(f"Batch size {batch_size} is larger than dataset size {self.num_samples}")
-        
-        # Log dataset statistics
-        logger.info(f"Initializing sampler with {self.num_samples} samples")
-        logger.info(f"Creating {self.num_batches} batches of size {self.batch_size}")
-        
-        # Create valid indices array
+        # Store valid indices
         self.indices = np.arange(self.num_samples)
         
-        # Verify indices are within bounds
-        if len(self.indices) > self.num_samples:
-            logger.warning(f"Truncating indices from {len(self.indices)} to {self.num_samples}")
-            self.indices = self.indices[:self.num_samples]
+        # Calculate number of complete batches
+        self.num_batches = len(self.indices) // self.batch_size
+        if self.num_batches == 0:
+            raise ValueError(f"Batch size {batch_size} is larger than dataset size {self.num_samples}")
+            
+        # Calculate total samples that will be used
+        self.total_samples = self.num_batches * self.batch_size
+        
+        logger.info(f"Will use {self.total_samples} samples in {self.num_batches} batches")
+        if self.total_samples < self.num_samples:
+            logger.warning(f"Dropping {self.num_samples - self.total_samples} samples to maintain complete batches")
     
     def __iter__(self):
         try:
@@ -38,29 +39,23 @@ class MultilabelStratifiedSampler(Sampler):
             indices = self.indices.copy()
             np.random.shuffle(indices)
             
-            # Calculate total samples to use (only complete batches)
-            total_samples = self.num_batches * self.batch_size
-            
-            # Ensure we don't exceed dataset size
-            if total_samples > len(indices):
-                logger.warning(f"Reducing samples from {total_samples} to {len(indices)}")
-                total_samples = (len(indices) // self.batch_size) * self.batch_size
-            
             # Take only the indices we need for complete batches
-            valid_indices = indices[:total_samples]
+            valid_indices = indices[:self.total_samples]
             
             # Reshape into batches and shuffle batch order
-            batches = valid_indices.reshape(-1, self.batch_size)
+            batches = valid_indices.reshape(self.num_batches, self.batch_size)
             np.random.shuffle(batches)
             
             # Flatten and verify final indices
             final_indices = batches.flatten()
             
-            # Verify all indices are within bounds
+            # Double check indices are within bounds
+            if len(final_indices) != self.total_samples:
+                raise ValueError(f"Generated {len(final_indices)} indices but expected {self.total_samples}")
             if np.any(final_indices >= self.num_samples):
                 raise ValueError(f"Invalid indices generated: max index {final_indices.max()} >= dataset size {self.num_samples}")
             
-            logger.info(f"Generated {len(final_indices)} indices in {len(batches)} batches")
+            logger.debug(f"Returning {len(final_indices)} indices in {self.num_batches} batches")
             return iter(final_indices)
             
         except Exception as e:
@@ -68,5 +63,4 @@ class MultilabelStratifiedSampler(Sampler):
             raise
     
     def __len__(self):
-        # Return total number of samples that will be yielded
-        return self.num_batches * self.batch_size 
+        return self.total_samples 
