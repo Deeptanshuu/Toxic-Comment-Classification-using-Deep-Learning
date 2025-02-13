@@ -159,9 +159,21 @@ def evaluate_model(model, val_loader, device, output_dir):
     all_labels = []
     all_langs = []
     
-    print("\nGathering predictions...")
+    total_samples = len(val_loader.dataset)
+    total_batches = len(val_loader)
+    
+    logger.info(f"\nStarting evaluation on {total_samples:,} samples in {total_batches} batches")
+    progress_bar = tqdm(
+        val_loader,
+        desc="Evaluating",
+        total=total_batches,
+        unit="batch",
+        ncols=100,
+        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+    )
+    
     with torch.inference_mode():
-        for batch in val_loader:
+        for batch in progress_bar:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].cpu().numpy()
@@ -178,18 +190,23 @@ def evaluate_model(model, val_loader, device, output_dir):
             all_predictions.append(predictions)
             all_labels.append(labels)
             all_langs.append(langs)
+            
+            # Update progress bar description with batch size
+            progress_bar.set_description(f"Processed batch ({len(input_ids)} samples)")
     
-    # Concatenate all batches
+    # Concatenate all batches with progress bar
+    logger.info("\nProcessing results...")
     predictions = np.vstack(all_predictions)
     labels = np.vstack(all_labels)
     langs = np.concatenate(all_langs)
     
-    print(f"\nTotal samples: {len(predictions):,}")
+    logger.info(f"Computing metrics for {len(predictions):,} samples...")
     
-    # Calculate metrics
+    # Calculate metrics with progress indication
     results = calculate_metrics(predictions, labels, langs)
     
-    # Save evaluation results
+    # Save results with progress indication
+    logger.info("Saving evaluation results...")
     save_results(
         results=results,
         predictions=predictions,
@@ -199,8 +216,10 @@ def evaluate_model(model, val_loader, device, output_dir):
     )
     
     # Plot metrics
+    logger.info("Generating metric plots...")
     plot_metrics(results, output_dir)
     
+    logger.info("Evaluation complete!")
     return results, predictions
 
 def calculate_metrics(predictions, labels, langs):
@@ -211,12 +230,14 @@ def calculate_metrics(predictions, labels, langs):
         'per_class': {}
     }
     
-    # Calculate overall metrics
+    # Calculate overall metrics with progress bar
+    logger.info("Computing overall metrics...")
     results['overall'] = calculate_overall_metrics(predictions, labels)
     
-    # Calculate per-language metrics
+    # Calculate per-language metrics with progress bar
     unique_langs = np.unique(langs)
-    for lang in unique_langs:
+    logger.info(f"Computing metrics for {len(unique_langs)} languages...")
+    for lang in tqdm(unique_langs, desc="Language metrics", ncols=100):
         lang_mask = langs == lang
         if not lang_mask.any():
             continue
@@ -229,9 +250,10 @@ def calculate_metrics(predictions, labels, langs):
         )
         results['per_language'][str(lang)]['sample_count'] = int(lang_mask.sum())
     
-    # Calculate per-class metrics
+    # Calculate per-class metrics with progress bar
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    for i, class_name in enumerate(toxicity_types):
+    logger.info("Computing per-class metrics...")
+    for i, class_name in enumerate(tqdm(toxicity_types, desc="Class metrics", ncols=100)):
         results['per_class'][class_name] = calculate_class_metrics(
             labels[:, i],
             predictions[:, i],
