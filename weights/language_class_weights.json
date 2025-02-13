@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "total_samples": 360728,
+    "total_samples": 361228,
     "language_distribution": {
       "ru": 52632,
       "tr": 52558,
@@ -8,10 +8,10 @@
       "es": 52412,
       "fr": 52368,
       "it": 52340,
-      "en": 45978
+      "en": 46478
     },
     "weight_calculation": {
-      "method": "log_inverse_frequency",
+      "method": "focal_loss_with_adaptive_scaling",
       "parameters": {
         "default_max_weight": 15.0,
         "default_min_weight": 0.5,
@@ -22,771 +22,1233 @@
   "weights": {
     "en": {
       "toxic": {
-        "0": 1.69,
-        "1": 0.592,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 24135,
-        "support_1": 21843,
-        "raw_weight_1": 0.592,
+        "support_1": 22343,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.01,
-          "scale_factor": 0.351,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.5,
+          "alpha": 0.25,
+          "final_pt": 0.4807,
+          "effective_max": 15.0,
+          "modulating_factor": 0.1943,
+          "balanced_alpha": 0.391,
+          "severity_adjusted": false,
+          "boost_factor": 1.67,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.67",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 3.9,
-        "support_0": 43992,
+        "0": 1.0,
+        "1": 11.516,
+        "support_0": 44492,
         "support_1": 1986,
-        "raw_weight_1": 5.432,
+        "raw_weight_1": 3.9,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.408,
-          "scale_factor": 3.859,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.5,
+          "alpha": 0.25,
+          "final_pt": 0.0427,
+          "effective_max": 3.9,
+          "modulating_factor": 0.8966,
+          "balanced_alpha": 0.2583,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=3.9",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 3.9,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.458,
-        "1": 0.686,
-        "support_0": 33622,
+        "0": 1.0,
+        "1": 12.626,
+        "support_0": 34122,
         "support_1": 12356,
-        "raw_weight_1": 0.686,
+        "raw_weight_1": 0.633,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.106,
-          "scale_factor": 0.62,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2658,
+          "effective_max": 15.0,
+          "modulating_factor": 0.539,
+          "balanced_alpha": 0.3123,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.633,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
-        "1": 15.0,
+        "0": 1.0,
+        "1": 13.708,
         "support_0": 45274,
-        "support_1": 704,
-        "raw_weight_1": 23.461,
+        "support_1": 1204,
+        "raw_weight_1": 13.708,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.635,
-          "scale_factor": 10.885,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 3.0,
+          "alpha": 0.3,
+          "final_pt": 0.0259,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9243,
+          "balanced_alpha": 0.3055,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 13.708,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.34,
-        "1": 0.746,
-        "support_0": 34503,
+        "0": 1.0,
+        "1": 15.0,
+        "support_0": 35003,
         "support_1": 11475,
-        "raw_weight_1": 0.746,
+        "raw_weight_1": 0.705,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.118,
-          "scale_factor": 0.668,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2469,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5672,
+          "balanced_alpha": 0.3068,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.705,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 5.0,
-        "support_0": 43835,
+        "0": 1.0,
+        "1": 14.357,
+        "support_0": 44335,
         "support_1": 2143,
-        "raw_weight_1": 5.978,
+        "raw_weight_1": 5.0,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.393,
-          "scale_factor": 3.576,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 3.0,
+          "alpha": 0.3,
+          "final_pt": 0.0461,
+          "effective_max": 5.0,
+          "modulating_factor": 0.868,
+          "balanced_alpha": 0.31,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=5.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.0,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "ru": {
       "toxic": {
-        "0": 2.951,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26678,
         "support_1": 25954,
-        "raw_weight_1": 0.339,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.003,
-          "scale_factor": 0.338,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.4931,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2569,
+          "balanced_alpha": 0.3967,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.414,
-        "support_0": 50677,
-        "support_1": 1955,
-        "raw_weight_1": 6.414,
+        "0": 1.0,
+        "1": 14.997,
+        "support_0": 50191,
+        "support_1": 2441,
+        "raw_weight_1": 5.079,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.429,
-          "scale_factor": 4.487,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9094,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.079,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.175,
-        "1": 0.851,
-        "support_0": 40943,
-        "support_1": 11689,
-        "raw_weight_1": 0.851,
+        "0": 1.0,
+        "1": 14.96,
+        "support_0": 40200,
+        "support_1": 12432,
+        "raw_weight_1": 0.75,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.75,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2362,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5834,
+          "balanced_alpha": 0.3038,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.75,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 12.8,
-        "support_0": 51839,
-        "support_1": 793,
-        "raw_weight_1": 23.633,
+        "support_0": 51557,
+        "support_1": 1075,
+        "raw_weight_1": 12.8,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.626,
-          "scale_factor": 11.062,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.8,
+          "alpha": 0.25,
+          "final_pt": 0.0204,
+          "effective_max": 12.8,
+          "modulating_factor": 0.9439,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=12.8",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 12.8,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.496,
-        "1": 0.668,
-        "support_0": 38175,
-        "support_1": 14457,
-        "raw_weight_1": 0.668,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37425,
+        "support_1": 15207,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.101,
-          "scale_factor": 0.607,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2889,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5056,
+          "balanced_alpha": 0.3192,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.938,
-        "support_0": 50477,
-        "support_1": 2155,
-        "raw_weight_1": 6.938,
+        "0": 1.0,
+        "1": 14.216,
+        "support_0": 49820,
+        "support_1": 2812,
+        "raw_weight_1": 4.951,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.411,
-          "scale_factor": 4.071,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.8,
+          "alpha": 0.25,
+          "final_pt": 0.0534,
+          "effective_max": 7.0,
+          "modulating_factor": 0.8575,
+          "balanced_alpha": 0.2604,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=7.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 4.951,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "fr": {
       "toxic": {
-        "0": 2.465,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26491,
         "support_1": 25877,
-        "raw_weight_1": 0.406,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.002,
-          "scale_factor": 0.337,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.2,
+          "alpha": 0.25,
+          "final_pt": 0.4941,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2233,
+          "balanced_alpha": 0.3972,
+          "severity_adjusted": false,
+          "boost_factor": 1.2,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.2",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.427,
-        "support_0": 50426,
-        "support_1": 1942,
-        "raw_weight_1": 6.427,
+        "0": 1.0,
+        "1": 15.0,
+        "support_0": 49940,
+        "support_1": 2428,
+        "raw_weight_1": 5.08,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.43,
-          "scale_factor": 4.494,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9094,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.08,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.176,
-        "1": 0.85,
-        "support_0": 40732,
-        "support_1": 11636,
-        "raw_weight_1": 0.85,
+        "0": 1.0,
+        "1": 14.96,
+        "support_0": 39989,
+        "support_1": 12379,
+        "raw_weight_1": 0.75,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.75,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2364,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5831,
+          "balanced_alpha": 0.3039,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.75,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 15.0,
-        "support_0": 51576,
-        "support_1": 792,
-        "raw_weight_1": 23.534,
+        "support_0": 51302,
+        "support_1": 1066,
+        "raw_weight_1": 15.0,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.625,
-          "scale_factor": 11.02,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0204,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9597,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 15.0,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.499,
-        "1": 0.667,
-        "support_0": 37959,
-        "support_1": 14409,
-        "raw_weight_1": 0.667,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37237,
+        "support_1": 15131,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.101,
-          "scale_factor": 0.606,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2889,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5056,
+          "balanced_alpha": 0.3192,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.953,
-        "support_0": 50227,
-        "support_1": 2141,
-        "raw_weight_1": 6.953,
+        "0": 1.0,
+        "1": 15.0,
+        "support_0": 49594,
+        "support_1": 2774,
+        "raw_weight_1": 5.224,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.411,
-          "scale_factor": 4.077,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.053,
+          "effective_max": 10.0,
+          "modulating_factor": 0.8969,
+          "balanced_alpha": 0.2603,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=10.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.224,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "it": {
       "toxic": {
-        "0": 2.953,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26513,
         "support_1": 25827,
-        "raw_weight_1": 0.339,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.003,
-          "scale_factor": 0.338,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.4934,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2566,
+          "balanced_alpha": 0.3969,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.42,
-        "support_0": 50397,
-        "support_1": 1943,
-        "raw_weight_1": 6.42,
+        "0": 1.0,
+        "1": 14.985,
+        "support_0": 49911,
+        "support_1": 2429,
+        "raw_weight_1": 5.075,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.43,
-          "scale_factor": 4.49,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9093,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.075,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.172,
-        "1": 0.853,
-        "support_0": 40743,
-        "support_1": 11597,
-        "raw_weight_1": 0.853,
+        "0": 1.0,
+        "1": 15.0,
+        "support_0": 39999,
+        "support_1": 12341,
+        "raw_weight_1": 0.752,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.752,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2358,
+          "effective_max": 15.0,
+          "modulating_factor": 0.584,
+          "balanced_alpha": 0.3037,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.752,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 15.0,
-        "support_0": 51548,
-        "support_1": 792,
-        "raw_weight_1": 23.519,
+        "support_0": 51263,
+        "support_1": 1077,
+        "raw_weight_1": 15.0,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.625,
-          "scale_factor": 11.014,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0206,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9593,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 15.0,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.496,
-        "1": 0.668,
-        "support_0": 37963,
-        "support_1": 14377,
-        "raw_weight_1": 0.668,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37222,
+        "support_1": 15118,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.101,
-          "scale_factor": 0.607,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2888,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5057,
+          "balanced_alpha": 0.3191,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.984,
-        "support_0": 50208,
-        "support_1": 2132,
-        "raw_weight_1": 6.984,
+        "0": 1.0,
+        "1": 14.943,
+        "support_0": 49558,
+        "support_1": 2782,
+        "raw_weight_1": 5.204,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.412,
-          "scale_factor": 4.092,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0532,
+          "effective_max": 10.0,
+          "modulating_factor": 0.8965,
+          "balanced_alpha": 0.2604,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=10.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.204,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "es": {
       "toxic": {
-        "0": 2.955,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26538,
         "support_1": 25874,
-        "raw_weight_1": 0.338,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.002,
-          "scale_factor": 0.338,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.4937,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2564,
+          "balanced_alpha": 0.397,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.418,
-        "support_0": 50466,
-        "support_1": 1946,
-        "raw_weight_1": 6.418,
+        "0": 1.0,
+        "1": 14.988,
+        "support_0": 49980,
+        "support_1": 2432,
+        "raw_weight_1": 5.076,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.43,
-          "scale_factor": 4.489,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9093,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.076,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.175,
-        "1": 0.851,
-        "support_0": 40773,
-        "support_1": 11639,
-        "raw_weight_1": 0.851,
+        "0": 1.0,
+        "1": 14.96,
+        "support_0": 40024,
+        "support_1": 12388,
+        "raw_weight_1": 0.75,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.751,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2364,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5831,
+          "balanced_alpha": 0.3039,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.75,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 15.0,
-        "support_0": 51619,
-        "support_1": 793,
-        "raw_weight_1": 23.519,
+        "support_0": 51339,
+        "support_1": 1073,
+        "raw_weight_1": 15.0,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.625,
-          "scale_factor": 11.016,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0205,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9595,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 15.0,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.498,
-        "1": 0.667,
-        "support_0": 38000,
-        "support_1": 14412,
-        "raw_weight_1": 0.667,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37272,
+        "support_1": 15140,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.101,
-          "scale_factor": 0.606,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2889,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5057,
+          "balanced_alpha": 0.3191,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.967,
-        "support_0": 50273,
-        "support_1": 2139,
-        "raw_weight_1": 6.967,
+        "0": 1.0,
+        "1": 14.96,
+        "support_0": 49629,
+        "support_1": 2783,
+        "raw_weight_1": 5.21,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.412,
-          "scale_factor": 4.084,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0531,
+          "effective_max": 10.0,
+          "modulating_factor": 0.8966,
+          "balanced_alpha": 0.2604,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=10.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.21,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "pt": {
       "toxic": {
-        "0": 2.948,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26599,
         "support_1": 25841,
-        "raw_weight_1": 0.339,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.003,
-          "scale_factor": 0.338,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.4928,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2573,
+          "balanced_alpha": 0.3966,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.414,
-        "support_0": 50492,
-        "support_1": 1948,
-        "raw_weight_1": 6.414,
+        "0": 1.0,
+        "1": 14.997,
+        "support_0": 50008,
+        "support_1": 2432,
+        "raw_weight_1": 5.079,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.43,
-          "scale_factor": 4.487,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9094,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.079,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.174,
-        "1": 0.852,
-        "support_0": 40807,
-        "support_1": 11633,
-        "raw_weight_1": 0.852,
+        "0": 1.0,
+        "1": 14.96,
+        "support_0": 40045,
+        "support_1": 12395,
+        "raw_weight_1": 0.75,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.751,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2364,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5831,
+          "balanced_alpha": 0.3039,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.75,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 15.0,
-        "support_0": 51647,
-        "support_1": 793,
-        "raw_weight_1": 23.534,
+        "support_0": 51360,
+        "support_1": 1080,
+        "raw_weight_1": 15.0,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.625,
-          "scale_factor": 11.021,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0206,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9592,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 15.0,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.494,
-        "1": 0.669,
-        "support_0": 38054,
-        "support_1": 14386,
-        "raw_weight_1": 0.669,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37297,
+        "support_1": 15143,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.102,
-          "scale_factor": 0.608,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2888,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5059,
+          "balanced_alpha": 0.3191,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.987,
-        "support_0": 50305,
-        "support_1": 2135,
-        "raw_weight_1": 6.987,
+        "0": 1.0,
+        "1": 14.859,
+        "support_0": 49639,
+        "support_1": 2801,
+        "raw_weight_1": 5.175,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.412,
-          "scale_factor": 4.094,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0534,
+          "effective_max": 10.0,
+          "modulating_factor": 0.896,
+          "balanced_alpha": 0.2604,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=10.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.175,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     },
     "tr": {
       "toxic": {
-        "0": 2.949,
-        "1": 0.5,
+        "0": 1.0,
+        "1": 15.0,
         "support_0": 26650,
         "support_1": 25908,
-        "raw_weight_1": 0.339,
+        "raw_weight_1": 0.5,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.003,
-          "scale_factor": 0.338,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.4929,
+          "effective_max": 15.0,
+          "modulating_factor": 0.2571,
+          "balanced_alpha": 0.3966,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.5,
+            "max_weight_across_langs": 0.5,
+            "normalization_factor": 30.0
+          }
         }
       },
       "severe_toxic": {
-        "0": 0.5,
-        "1": 6.408,
-        "support_0": 50604,
-        "support_1": 1954,
-        "raw_weight_1": 6.408,
+        "0": 1.0,
+        "1": 14.985,
+        "support_0": 50119,
+        "support_1": 2439,
+        "raw_weight_1": 5.075,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.429,
-          "scale_factor": 4.483,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.0464,
+          "effective_max": 15.0,
+          "modulating_factor": 0.9093,
+          "balanced_alpha": 0.259,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 5.075,
+            "max_weight_across_langs": 5.08,
+            "normalization_factor": 2.953
+          }
         }
       },
       "obscene": {
-        "0": 1.174,
-        "1": 0.852,
-        "support_0": 40899,
-        "support_1": 11659,
-        "raw_weight_1": 0.852,
+        "0": 1.0,
+        "1": 14.98,
+        "support_0": 40147,
+        "support_1": 12411,
+        "raw_weight_1": 0.751,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.134,
-          "scale_factor": 0.751,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2361,
+          "effective_max": 15.0,
+          "modulating_factor": 0.5835,
+          "balanced_alpha": 0.3038,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.751,
+            "max_weight_across_langs": 0.752,
+            "normalization_factor": 19.947
+          }
         }
       },
       "threat": {
-        "0": 0.5,
+        "0": 1.0,
         "1": 12.8,
-        "support_0": 51765,
-        "support_1": 793,
-        "raw_weight_1": 23.595,
+        "support_0": 51481,
+        "support_1": 1077,
+        "raw_weight_1": 12.8,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.626,
-          "scale_factor": 11.046,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.8,
+          "alpha": 0.25,
+          "final_pt": 0.0205,
+          "effective_max": 12.8,
+          "modulating_factor": 0.9437,
+          "balanced_alpha": 0.2539,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=12.8",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 12.8,
+            "max_weight_across_langs": 15.0,
+            "normalization_factor": 1.0
+          }
         }
       },
       "insult": {
-        "0": 1.495,
-        "1": 0.669,
-        "support_0": 38130,
-        "support_1": 14428,
-        "raw_weight_1": 0.669,
+        "0": 1.0,
+        "1": 11.894,
+        "support_0": 37388,
+        "support_1": 15170,
+        "raw_weight_1": 0.559,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.101,
-          "scale_factor": 0.607,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.0,
+          "alpha": 0.25,
+          "final_pt": 0.2886,
+          "effective_max": 15.0,
+          "modulating_factor": 0.506,
+          "balanced_alpha": 0.3191,
+          "severity_adjusted": false,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=15.0",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=disabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 0.559,
+            "max_weight_across_langs": 0.705,
+            "normalization_factor": 21.277
+          }
         }
       },
       "identity_hate": {
-        "0": 0.5,
-        "1": 6.2,
-        "support_0": 50414,
-        "support_1": 2144,
-        "raw_weight_1": 6.97,
+        "0": 1.0,
+        "1": 14.101,
+        "support_0": 49731,
+        "support_1": 2827,
+        "raw_weight_1": 4.911,
         "calculation_metadata": {
-          "formula": "log_scaled_inverse_freq",
-          "raw_log_ratio": 1.412,
-          "scale_factor": 4.086,
+          "formula": "focal_loss_with_adaptive_scaling",
+          "gamma": 2.8,
+          "alpha": 0.25,
+          "final_pt": 0.0538,
+          "effective_max": 6.2,
+          "modulating_factor": 0.8566,
+          "balanced_alpha": 0.2605,
+          "severity_adjusted": true,
+          "boost_factor": 1.0,
           "constraints_applied": [
             "max_weight=6.2",
             "boost=1.0",
             "numerical_stability=enforced",
             "adaptive_scaling=enabled"
-          ]
+          ],
+          "normalization": {
+            "original_weight": 4.911,
+            "max_weight_across_langs": 5.224,
+            "normalization_factor": 2.871
+          }
         }
       }
     }

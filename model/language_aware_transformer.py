@@ -34,6 +34,11 @@ class LanguageAwareClassifier(nn.Module):
             'dropout': nn.Dropout(0.0),
             'output': nn.Linear(512, num_labels)
         })
+
+        # Language-specific threshold adjustment
+        self.threshold_adjust = nn.ModuleDict({
+            str(lang_id): nn.Linear(64, 1) for lang_id in range(7)  # Using string keys for ModuleDict
+        })
         
         self._init_weights()
     
@@ -47,7 +52,13 @@ class LanguageAwareClassifier(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 nn.init.constant_(module.bias, 0)
                 nn.init.constant_(module.weight, 1.0)
-    
+        
+        # Initialize threshold adjustment layers
+        for module in self.threshold_adjust.values():
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+
     def forward(self, x, lang_ids):
         # Ensure lang_ids is a tensor of integers
         if not isinstance(lang_ids, torch.Tensor):
@@ -56,7 +67,7 @@ class LanguageAwareClassifier(nn.Module):
             lang_ids = lang_ids.long()
         
         # Get language embeddings
-        lang_emb = self.lang_embed(lang_ids)
+        lang_emb = self.lang_embed(lang_ids).unsqueeze(1).expand(-1, x.size(1), -1)
         
         # Concatenate features with language embeddings
         combined = torch.cat([x, lang_emb], dim=1)
@@ -66,22 +77,33 @@ class LanguageAwareClassifier(nn.Module):
         x = self.classifier['activation'](x)
         x = self.classifier['norm'](x)
         x = self.classifier['dropout'](x)
-        return self.classifier['output'](x)
+        logits = self.classifier['output'](x)
+
+        # Apply language-specific threshold adjustment
+        batch_thresholds = []
+        for i, lang_id in enumerate(lang_ids):
+            threshold = self.threshold_adjust[str(lang_id.item())](self.lang_embed(lang_id))
+            batch_thresholds.append(threshold)
+        lang_thresholds = torch.cat(batch_thresholds, dim=0)
+        logits = logits * torch.sigmoid(lang_thresholds)
+
+        return logits
 
 class WeightedBCEWithLogitsLoss(nn.Module):
-    def __init__(self, reduction='mean'):
+    def __init__(self, gamma=2.0, reduction='mean'):
         super().__init__()
+        self.gamma = gamma
         self.reduction = reduction
-        
+
     def forward(self, logits, targets, weights=None):
-        loss = F.binary_cross_entropy_with_logits(
+        bce_loss = F.binary_cross_entropy_with_logits(
             logits, targets, reduction='none'
         )
+        pt = torch.exp(-bce_loss)
+        focal_loss = (1 - pt)**self.gamma * bce_loss
         if weights is not None:
-            loss = loss * weights
-        if self.reduction == 'mean':
-            return loss.mean()
-        return loss
+            focal_loss *= weights
+        return focal_loss.mean()
 
 class LanguageAwareTransformer(nn.Module):
     def __init__(
@@ -121,6 +143,8 @@ class LanguageAwareTransformer(nn.Module):
         self.lang_attention = nn.MultiheadAttention(
             embed_dim=self.working_hidden_size,
             num_heads=num_attention_heads,
+            kdim=hidden_size + 64,  # Account for language embeddings
+            vdim=hidden_size + 64,  # Account for language embeddings
             dropout=dropout,
             batch_first=True
         )
@@ -183,6 +207,20 @@ class LanguageAwareTransformer(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask
         ).last_hidden_state
+
+        # Check for numerical instabilities
+        if hidden_states.isnan().any():
+            raise ValueError("NaN detected in hidden states")
+        if hidden_states.isinf().any():
+            raise ValueError("Inf detected in hidden states")
+
+        # Add gradient safety checks
+        if hidden_states.requires_grad and self.gradient_checkpointing:
+            hidden_states = torch.utils.checkpoint.checkpoint(
+                self.base_model,
+                input_ids,
+                attention_mask
+            ).last_hidden_state
         
         # Project if needed
         if self.needs_projection:

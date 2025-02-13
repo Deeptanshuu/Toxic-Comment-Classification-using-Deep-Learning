@@ -5,8 +5,7 @@ import logging
 import os
 import gc
 import wandb
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
 import signal
 import atexit
 import sys
@@ -15,10 +14,11 @@ import numpy as np
 import warnings
 import json
 from tqdm import tqdm
+import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers import (
-    XLMRobertaTokenizer,
-    get_linear_schedule_with_warmup
+    XLMRobertaTokenizer
 )
 from torch.utils.data import DataLoader
 from model.evaluation.evaluate import ToxicDataset
@@ -117,14 +117,21 @@ def init_model(config):
         
         assert not any([p.requires_grad for p in _model.base_model.parameters()][:8]), "First 8 layers should be frozen"
         
+        # Enhanced gradient checkpointing setup
         if config.activation_checkpointing:
-            _model.gradient_checkpointing_enable()
+            logger.info("Enabling gradient checkpointing for memory efficiency")
+            _model.gradient_checkpointing = True
+            _model.base_model.gradient_checkpointing_enable()
+            _model.base_model._set_gradient_checkpointing(enable=True)
+            
+            # Verify checkpointing is enabled
+            assert _model.base_model.is_gradient_checkpointing, "Gradient checkpointing failed to enable"
         
         _model = _model.to(config.device)
         return _model
         
     except Exception as e:
-        print(f"Fatal error initializing model: {str(e)}")
+        logger.error(f"Fatal error initializing model: {str(e)}")
         raise
 
 def get_grad_stats(model):
@@ -162,11 +169,52 @@ def get_grad_stats(model):
         logger.warning(f"Error calculating gradient stats: {str(e)}")
         return {}
 
-def training_step(batch, model, optimizer, scheduler, config):
+class LanguageAwareFocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets, lang_weights=None):
+        bce_loss = F.binary_cross_entropy_with_logits(
+            inputs, targets, reduction='none'
+        )
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
+        
+        if lang_weights is not None:
+            # Expand lang_weights to match focal_loss dimensions
+            if lang_weights.dim() == 1:
+                lang_weights = lang_weights.unsqueeze(1).expand(-1, focal_loss.size(1))
+            focal_loss = focal_loss * lang_weights
+            
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+def training_step(batch, model, optimizer, scheduler, config, scaler):
     """Execute a single training step"""
     # Move batch to device
     batch = {k: v.to(config.device) if isinstance(v, torch.Tensor) else v 
             for k, v in batch.items()}
+    
+    # Calculate language weights and focal parameters
+    lang_weights = None
+    if hasattr(config, 'lang_weights') and config.lang_weights is not None:
+        weight_dict = config.lang_weights.get_weights_for_batch(
+            [lang.item() for lang in batch['lang']],
+            batch['labels'],
+            config.device
+        )
+        lang_weights = weight_dict['weights']
+        gamma = weight_dict['gamma']
+        alpha = weight_dict['alpha']
+    else:
+        gamma = torch.full_like(batch['labels'], 2.0, dtype=torch.float32)
+        alpha = torch.full_like(batch['labels'], 0.25, dtype=torch.float32)
     
     # Forward pass
     with config.get_autocast_context():
@@ -176,16 +224,35 @@ def training_step(batch, model, optimizer, scheduler, config):
             labels=batch['labels'],
             lang_ids=batch['lang']
         )
-        loss = outputs['loss']
+        
+        # Calculate loss with focal loss
+        loss_fct = LanguageAwareFocalLoss(
+            alpha=alpha.mean(),  # Use mean alpha for batch
+            gamma=gamma.mean()   # Use mean gamma for batch
+        )
+        loss = loss_fct(outputs['logits'], batch['labels'].float(), lang_weights)
+        outputs['loss'] = loss
+        
+        # Check for numerical instability
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            logger.error(f"Numerical instability detected! Loss: {loss.item()}")
+            logger.error(f"Batch stats - input_ids shape: {batch['input_ids'].shape}, labels shape: {batch['labels'].shape}")
+            logger.error(f"Weights stats - min: {lang_weights.min():.3f}, max: {lang_weights.max():.3f}")
+            logger.error(f"Focal params - gamma: {gamma.mean():.3f}, alpha: {alpha.mean():.3f}")
+            optimizer.zero_grad()
+            return None
     
-    # Backward pass
-    loss.backward()
+    # Scale loss and backward pass
+    scaler.scale(loss).backward()
     
     # Gradient clipping
-    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+    if config.max_grad_norm > 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
     
-    # Optimizer step
-    optimizer.step()
+    # Optimizer step with scaler
+    scaler.step(optimizer)
+    scaler.update()
     optimizer.zero_grad()
     scheduler.step()
     
@@ -209,6 +276,9 @@ def train(model, train_loader, config):
     """Train the model"""
     global _model, _optimizer, _scheduler
     _model = model
+    
+    # Initialize gradient scaler for mixed precision
+    scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
     
     optimizer = torch.optim.AdamW(
         config.get_param_groups(model),
@@ -243,7 +313,7 @@ def train(model, train_loader, config):
         
         for batch in progress_bar:
             try:
-                loss = training_step(batch, model, optimizer, scheduler, config)
+                loss = training_step(batch, model, optimizer, scheduler, config, scaler)
                 epoch_loss += loss
                 num_batches += 1
                 
@@ -286,6 +356,35 @@ def train(model, train_loader, config):
         except Exception as e:
             print(f"Warning: Could not log epoch metrics to wandb: {str(e)}")
 
+def collate_fn(batch, tokenizer):
+    """Custom collate function for toxic comment dataset"""
+    input_ids = []
+    attention_masks = []
+    labels = []
+    langs = []
+    
+    # Process each item in batch
+    for item in batch:
+        input_ids.append(item['input_ids'])
+        attention_masks.append(item['attention_mask'])
+        labels.append(item['labels'])
+        langs.append(item['lang'])
+    
+    # Pad sequences
+    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=tokenizer.pad_token_id)
+    attention_masks = torch.nn.utils.rnn.pad_sequence(attention_masks, batch_first=True, padding_value=0)
+    
+    # Stack other tensors
+    labels = torch.stack(labels)
+    langs = torch.tensor(langs, dtype=torch.long)
+    
+    return {
+        'input_ids': input_ids,
+        'attention_mask': attention_masks,
+        'labels': labels,
+        'lang': langs
+    }
+
 def create_dataloaders(train_dataset, val_dataset, config):
     """Create optimized DataLoaders"""
     train_sampler = MultilabelStratifiedSampler(
@@ -300,8 +399,9 @@ def create_dataloaders(train_dataset, val_dataset, config):
         sampler=train_sampler,
         num_workers=config.num_workers,
         pin_memory=True,
-        prefetch_factor=2,
-        persistent_workers=True
+        prefetch_factor=4 if config.num_workers > 0 else None,
+        persistent_workers=True,
+        collate_fn=lambda x: collate_fn(x, train_dataset.tokenizer)
     )
     
     return train_loader
