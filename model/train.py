@@ -277,9 +277,13 @@ def train(model, train_loader, config):
     global _model, _optimizer, _scheduler
     _model = model
     
+    logger.info("Initializing training components...")
+    
     # Initialize gradient scaler for mixed precision
+    logger.info("Setting up gradient scaler...")
     scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
     
+    logger.info("Creating optimizer...")
     optimizer = torch.optim.AdamW(
         config.get_param_groups(model),
         weight_decay=config.weight_decay
@@ -289,8 +293,10 @@ def train(model, train_loader, config):
     # Calculate total steps for cosine scheduler
     total_steps = len(train_loader) * config.epochs
     warmup_steps = int(total_steps * config.warmup_ratio)
+    logger.info(f"Training schedule: {total_steps} total steps, {warmup_steps} warmup steps")
     
     # Initialize cosine scheduler with warm restarts
+    logger.info("Creating learning rate scheduler...")
     scheduler = CosineAnnealingWarmRestarts(
         optimizer,
         T_0=total_steps // config.num_cycles,  # First cycle length
@@ -302,17 +308,26 @@ def train(model, train_loader, config):
     # Initialize metrics tracker
     metrics = MetricsTracker()
     
+    logger.info("Starting training loop...")
     # Training loop
     model.train()
     for epoch in range(config.epochs):
         epoch_loss = 0
         num_batches = 0
         
+        logger.info(f"Starting epoch {epoch + 1}/{config.epochs}")
         # Progress bar for batches
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
         
-        for batch in progress_bar:
+        logger.info("Iterating through batches...")
+        for batch_idx, batch in enumerate(progress_bar):
             try:
+                if batch_idx == 0:
+                    logger.info("Successfully loaded first batch")
+                    logger.info(f"Batch shapes - input_ids: {batch['input_ids'].shape}, "
+                              f"attention_mask: {batch['attention_mask'].shape}, "
+                              f"labels: {batch['labels'].shape}")
+                
                 loss = training_step(batch, model, optimizer, scheduler, config, scaler)
                 epoch_loss += loss
                 num_batches += 1
@@ -330,21 +345,32 @@ def train(model, train_loader, config):
                         'learning_rate': scheduler.get_last_lr()[0]
                     })
                 except Exception as e:
-                    print(f"Warning: Could not log to wandb: {str(e)}")
+                    logger.warning(f"Could not log to wandb: {str(e)}")
+                
+                if batch_idx % 100 == 0:
+                    logger.info(f"Completed {batch_idx}/{len(train_loader)} batches")
                 
             except Exception as e:
-                print(f"Error in training step: {str(e)}")
+                logger.error(f"Error in batch {batch_idx}: {str(e)}")
+                logger.error("Batch contents:")
+                for k, v in batch.items():
+                    if isinstance(v, torch.Tensor):
+                        logger.error(f"{k}: shape={v.shape}, dtype={v.dtype}")
+                    else:
+                        logger.error(f"{k}: type={type(v)}")
                 continue
         
         # Calculate average epoch loss
         avg_epoch_loss = epoch_loss / num_batches if num_batches > 0 else float('inf')
         metrics.update_train(avg_epoch_loss)
+        logger.info(f"Epoch {epoch + 1} completed. Average loss: {avg_epoch_loss:.4f}")
         
         # Save checkpoint
         try:
             save_checkpoint(model, optimizer, scheduler, metrics, config, epoch)
+            logger.info(f"Saved checkpoint for epoch {epoch + 1}")
         except Exception as e:
-            print(f"Warning: Could not save checkpoint: {str(e)}")
+            logger.error(f"Could not save checkpoint: {str(e)}")
         
         # Log epoch metrics
         try:
@@ -354,7 +380,7 @@ def train(model, train_loader, config):
                 'best_auc': metrics.best_auc
             })
         except Exception as e:
-            print(f"Warning: Could not log epoch metrics to wandb: {str(e)}")
+            logger.error(f"Could not log epoch metrics to wandb: {str(e)}")
 
 def collate_fn(batch, tokenizer):
     """Custom collate function for toxic comment dataset"""
@@ -387,12 +413,20 @@ def collate_fn(batch, tokenizer):
 
 def create_dataloaders(train_dataset, val_dataset, config):
     """Create optimized DataLoaders"""
+    logger.info("Creating data loaders...")
+    logger.info(f"Dataset size: {len(train_dataset)} samples")
+    logger.info(f"Batch size: {config.batch_size}")
+    logger.info(f"Number of workers: {config.num_workers}")
+    
+    logger.info("Initializing sampler...")
     train_sampler = MultilabelStratifiedSampler(
         labels=train_dataset.labels,
         groups=train_dataset.langs,
         batch_size=config.batch_size
     )
+    logger.info(f"Sampler created with {len(train_sampler)} batches")
     
+    logger.info("Creating DataLoader...")
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
@@ -403,11 +437,13 @@ def create_dataloaders(train_dataset, val_dataset, config):
         persistent_workers=True,
         collate_fn=lambda x: collate_fn(x, train_dataset.tokenizer)
     )
+    logger.info("DataLoader created successfully")
     
     return train_loader
 
 def main():
     try:
+        logger.info("Initializing training configuration...")
         # Initialize config first
         config = TrainingConfig()
         
@@ -418,32 +454,39 @@ def main():
                 name=f"toxic-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
                 config=config.to_serializable_dict()
             )
-            print("Initialized wandb logging")
+            logger.info("Initialized wandb logging")
         except Exception as e:
-            print(f"Warning: Could not initialize wandb: {str(e)}")
+            logger.warning(f"Could not initialize wandb: {str(e)}")
         
         global _model, _optimizer, _scheduler
         _model = None
         _optimizer = None
         _scheduler = None
         
-        print("Loading datasets...")
+        logger.info("Loading datasets...")
         try:
             train_df = pd.read_csv("dataset/split/train.csv")
-            print(f"Loaded train ({len(train_df)} samples) dataset")
+            logger.info(f"Loaded train dataset with {len(train_df)} samples")
         except Exception as e:
-            print(f"Error loading datasets: {str(e)}")
+            logger.error(f"Error loading datasets: {str(e)}")
             raise
         
         try:
+            logger.info("Creating tokenizer and dataset...")
             tokenizer = XLMRobertaTokenizer.from_pretrained(config.model_name)
             train_dataset = ToxicDataset(train_df, tokenizer, config)
+            logger.info("Dataset creation successful")
         except Exception as e:
-            print(f"Error creating datasets: {str(e)}")
+            logger.error(f"Error creating datasets: {str(e)}")
             raise
         
+        logger.info("Creating data loaders...")
         train_loader = create_dataloaders(train_dataset, None, config)
+        
+        logger.info("Initializing model...")
         model = init_model(config)
+        
+        logger.info("Starting training...")
         train(model, train_loader, config)
         
     except KeyboardInterrupt:
