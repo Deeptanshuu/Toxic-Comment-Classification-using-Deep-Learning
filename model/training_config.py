@@ -277,10 +277,12 @@ class TrainingConfig:
         if not 0 < self.min_lr_ratio < 1:
             raise ValueError(f"Invalid min_lr_ratio: {self.min_lr_ratio}")
             
-        # Validate weight decay and learning rate combination
+        # Validate weight decay and learning rate combination with better precision
         if self.weight_decay > 0 and self.lr < 0.01:
-            logger.warning("High weight decay (%.4f) with low learning rate (%.4f) may cause instability", 
-                         self.weight_decay, self.lr)
+            logger.warning(
+                "High weight decay (%.4f) with low learning rate (%.2e) may cause instability", 
+                self.weight_decay, self.lr
+            )
         
         # Set device with error handling
         if torch.cuda.is_available():
