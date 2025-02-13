@@ -227,9 +227,9 @@ class TrainingConfig:
     cache_dir: str = 'cached_dataset'
     
     # Training parameters
-    batch_size: int = 64
+    batch_size: int = 128
     grad_accum_steps: int = 2
-    epochs: int = 6
+    epochs: int = 1
     lr: float = 2e-5
     weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
@@ -240,7 +240,7 @@ class TrainingConfig:
     # Memory optimization
     activation_checkpointing: bool = True
     mixed_precision: str = "fp16"
-    num_workers: int = 8
+    num_workers: int = 16
     gc_frequency: int = 100
     tensor_float_32: bool = True
     
