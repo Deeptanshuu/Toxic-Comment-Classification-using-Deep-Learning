@@ -240,7 +240,7 @@ class TrainingConfig:
     num_cycles: int = 3  # Number of cosine cycles
     
     # System parameters
-    num_workers: int = 8
+    num_workers: int = 16
     mixed_precision: str = "fp16"
     device: str = None
     activation_checkpointing: bool = False
