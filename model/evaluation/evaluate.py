@@ -264,13 +264,8 @@ def evaluate_model(model, val_loader, device, output_dir):
     
     logger.info(f"Computing metrics for {len(predictions):,} samples...")
     
-    # First calculate optimal thresholds
-    logger.info("\nCalculating optimal classification thresholds...")
-    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
-    
-    # Then calculate metrics using these thresholds
-    logger.info("\nComputing metrics with optimized thresholds...")
-    results = calculate_metrics(predictions, labels, langs, thresholds)
+    # Calculate metrics with progress indication
+    results = calculate_metrics(predictions, labels, langs)
     
     # Save results with progress indication
     logger.info("Saving evaluation results...")
@@ -279,8 +274,7 @@ def evaluate_model(model, val_loader, device, output_dir):
         predictions=predictions,
         labels=labels,
         langs=langs,
-        output_dir=output_dir,
-        thresholds=thresholds
+        output_dir=output_dir
     )
     
     # Plot metrics
@@ -290,26 +284,19 @@ def evaluate_model(model, val_loader, device, output_dir):
     logger.info("Evaluation complete!")
     return results, predictions
 
-def calculate_metrics(predictions, labels, langs, thresholds):
-    """Calculate detailed metrics using optimized thresholds"""
+def calculate_metrics(predictions, labels, langs):
+    """Calculate detailed metrics"""
     results = {
         'overall': {},
         'per_language': {},
         'per_class': {}
     }
     
-    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    
-    # Calculate overall metrics with optimized global thresholds
+    # Calculate overall metrics with progress bar
     logger.info("Computing overall metrics...")
-    binary_predictions = np.zeros_like(predictions, dtype=np.int32)
-    for i, class_name in enumerate(toxicity_types):
-        threshold = thresholds['global'][class_name]['threshold']
-        binary_predictions[:, i] = (predictions[:, i] > threshold).astype(int)
+    results['overall'] = calculate_overall_metrics(predictions, labels)
     
-    results['overall'] = calculate_overall_metrics(predictions, labels, binary_predictions)
-    
-    # Calculate per-language metrics with language-specific thresholds
+    # Calculate per-language metrics with progress bar
     unique_langs = np.unique(langs)
     logger.info(f"Computing metrics for {len(unique_langs)} languages...")
     for lang in tqdm(unique_langs, desc="Language metrics", ncols=100):
@@ -319,37 +306,28 @@ def calculate_metrics(predictions, labels, langs, thresholds):
             
         lang_preds = predictions[lang_mask]
         lang_labels = labels[lang_mask]
-        lang_binary_preds = np.zeros_like(lang_preds, dtype=np.int32)
-        
-        # Use language-specific thresholds if available, otherwise fall back to global
-        lang_thresholds = thresholds['per_language'].get(str(lang), thresholds['global'])
-        for i, class_name in enumerate(toxicity_types):
-            threshold = lang_thresholds[class_name]['threshold']
-            lang_binary_preds[:, i] = (lang_preds[:, i] > threshold).astype(int)
         
         results['per_language'][str(lang)] = calculate_overall_metrics(
-            lang_preds, lang_labels, lang_binary_preds
+            lang_preds, lang_labels
         )
         results['per_language'][str(lang)]['sample_count'] = int(lang_mask.sum())
     
-    # Calculate per-class metrics with global thresholds
+    # Calculate per-class metrics with progress bar
+    toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     logger.info("Computing per-class metrics...")
     for i, class_name in enumerate(tqdm(toxicity_types, desc="Class metrics", ncols=100)):
-        threshold = thresholds['global'][class_name]['threshold']
-        binary_preds = (predictions[:, i] > threshold).astype(int)
         results['per_class'][class_name] = calculate_class_metrics(
             labels[:, i],
             predictions[:, i],
-            binary_preds,
-            threshold
+            (predictions[:, i] > 0.5).astype(int),
+            0.5
         )
     
     return results
 
-def calculate_overall_metrics(predictions, labels, binary_predictions=None):
+def calculate_overall_metrics(predictions, labels):
     """Calculate overall metrics for multi-label classification"""
-    if binary_predictions is None:
-        binary_predictions = (predictions > 0.5).astype(int)
+    binary_predictions = (predictions > 0.5).astype(int)
     
     metrics = {}
     
@@ -405,9 +383,13 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
     
     return metrics
 
-def save_results(results, predictions, labels, langs, output_dir, thresholds):
+def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Calculate optimal thresholds
+    logger.info("\nCalculating optimal classification thresholds...")
+    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
     
     # Save thresholds
     threshold_path = os.path.join(output_dir, 'optimal_thresholds.json')
@@ -427,10 +409,10 @@ def save_results(results, predictions, labels, langs, output_dir, thresholds):
         langs=langs
     )
     
-    # Log threshold summary and metrics
-    logger.info("\nOptimal global thresholds and metrics:")
+    # Log threshold summary
+    logger.info("\nOptimal global thresholds:")
     for class_name, data in thresholds['global'].items():
-        logger.info(f"{class_name:>12}: threshold={data['threshold']:.3f}, F1={data['f1_score']:.3f}, support={data['support']}")
+        logger.info(f"{class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
 
 def plot_metrics(results, output_dir, predictions=None, labels=None):
     """Generate visualization plots"""

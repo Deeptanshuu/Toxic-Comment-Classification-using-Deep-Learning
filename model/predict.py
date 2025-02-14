@@ -121,17 +121,6 @@ def adjust_thresholds(thresholds):
     
     return adjusted
 
-def load_thresholds(thresholds_path='evaluation_results/eval_20250208_161149/thresholds.json'):
-    """Load language-specific classification thresholds"""
-    try:
-        with open(thresholds_path, 'r') as f:
-            thresholds = json.load(f)
-            # Apply threshold adjustments
-            return adjust_thresholds(thresholds)
-    except Exception as e:
-        print(f"Warning: Could not load thresholds from {thresholds_path}: {str(e)}")
-        return None
-
 def analyze_unicode_ranges(text):
     """Analyze text for characters in language-specific Unicode ranges"""
     scores = {lang: 0 for lang in SUPPORTED_LANGUAGES.keys()}
@@ -271,9 +260,6 @@ def main():
     if model is None or tokenizer is None:
         return
     
-    # Load thresholds
-    thresholds = load_thresholds()
-    
     while True:
         # Get input text
         print("\nEnter text to analyze (or 'q' to quit):")
@@ -288,7 +274,7 @@ def main():
         
         # Make prediction
         print("\nAnalyzing text...")
-        predictions, lang_id = predict_toxicity(text, model, tokenizer, device, thresholds)
+        predictions, lang_id = predict_toxicity(text, model, tokenizer, device)
         
         # Get language name
         lang_name = [k for k, v in SUPPORTED_LANGUAGES.items() if v == lang_id][0]
