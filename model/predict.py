@@ -1,21 +1,21 @@
 import torch
 from model.language_aware_transformer import LanguageAwareTransformer
 from transformers import XLMRobertaTokenizer
-import json
 import os
 import re
-from collections import Counter
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
     'fr': 4, 'it': 5, 'pt': 6
 }
 
-# Threshold adjustments to reduce overflagging while maintaining sensitivity for rare classes
+# Static thresholds for all languages
 THRESHOLD_ADJUSTMENTS = {
     'toxic': 0.85,         # Increased from ~46% to reduce overflagging
-    'insult': 0.70,        # Increased from ~26% to reduce overflagging
-    'threat': 0.30,        # Kept low due to rare class importance
+    'severe_toxic': 0.30,  # Kept low due to rare class importance
+    'obscene': 0.70,      # Increased to reduce overflagging
+    'threat': 0.30,       # Kept low due to rare class importance
+    'insult': 0.70,       # Increased from ~26% to reduce overflagging
     'identity_hate': 0.30  # Kept low due to rare class importance
 }
 
@@ -206,7 +206,7 @@ def detect_language(text, tokenizer):
         print(f"Note: Language detection failed ({str(e)}). Using English.")
         return SUPPORTED_LANGUAGES['en']
 
-def predict_toxicity(text, model, tokenizer, device, thresholds=None):
+def predict_toxicity(text, model, tokenizer, device):
     """Predict toxicity labels for a given text"""
     # Detect language
     lang_id = detect_language(text, tokenizer)
@@ -235,14 +235,10 @@ def predict_toxicity(text, model, tokenizer, device, thresholds=None):
     # Labels for toxicity types
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Create results dictionary
+    # Create results dictionary using static thresholds
     results = {}
-    
-    # Get language-specific thresholds if available
-    lang_thresholds = thresholds.get(str(lang_id)) if thresholds else None
-    
     for label, prob in zip(labels, probabilities):
-        threshold = lang_thresholds.get(label) if lang_thresholds else 0.3
+        threshold = THRESHOLD_ADJUSTMENTS.get(label, 0.3)  # Default to 0.3 if not specified
         results[label] = {
             'probability': float(prob),
             'is_toxic': prob > threshold,
@@ -254,7 +250,7 @@ def predict_toxicity(text, model, tokenizer, device, thresholds=None):
 def main():
     # Load model
     print("Loading model...")
-    model_path = 'weights/toxic_classifier_xlm-roberta-large'
+    model_path = 'weights/toxic_classifier_xlm-roberta-large/latest'
     model, tokenizer, device = load_model(model_path)
     
     if model is None or tokenizer is None:
