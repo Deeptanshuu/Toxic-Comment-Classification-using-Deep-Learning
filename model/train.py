@@ -305,10 +305,23 @@ def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
         
         # Create latest symlink
         latest_path = base_dir / 'latest'
-        if latest_path.exists():
-            latest_path.unlink()
-        latest_path.symlink_to(checkpoint_dir.relative_to(base_dir))
-        logger.info(f"Updated 'latest' symlink to point to {checkpoint_dir.name}")
+        target_path = checkpoint_dir.relative_to(base_dir)
+        
+        # Remove existing symlink and target if they exist
+        try:
+            if latest_path.exists():
+                if latest_path.is_symlink():
+                    latest_path.unlink()
+                else:
+                    import shutil
+                    shutil.rmtree(latest_path)
+            
+            # Create new symlink
+            latest_path.symlink_to(target_path, target_is_directory=True)
+            logger.info(f"Updated 'latest' symlink to point to {checkpoint_dir.name}")
+        except Exception as e:
+            logger.warning(f"Failed to create symlink: {str(e)}")
+            # Continue execution even if symlink creation fails
         
         # Save checkpoint metadata
         metadata = {
