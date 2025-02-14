@@ -9,14 +9,14 @@ SUPPORTED_LANGUAGES = {
     'fr': 4, 'it': 5, 'pt': 6
 }
 
-# Static thresholds for all languages
+# Static thresholds for all languages - adjusted to reduce false positives
 THRESHOLD_ADJUSTMENTS = {
-    'toxic': 0.85,         # Increased from ~46% to reduce overflagging
-    'severe_toxic': 0.30,  # Kept low due to rare class importance
-    'obscene': 0.70,      # Increased to reduce overflagging
-    'threat': 0.30,       # Kept low due to rare class importance
-    'insult': 0.70,       # Increased from ~26% to reduce overflagging
-    'identity_hate': 0.30  # Kept low due to rare class importance
+    'toxic': 0.50,         # Base threshold for general toxicity
+    'severe_toxic': 0.40,  # Higher threshold as this is a stronger category
+    'obscene': 0.45,      # Higher threshold to avoid false positives
+    'threat': 0.40,       # Higher threshold for serious categories
+    'insult': 0.45,       # Higher threshold to avoid flagging mild language
+    'identity_hate': 0.40  # Higher threshold for serious hate speech
 }
 
 # Unicode ranges for different scripts
