@@ -42,10 +42,17 @@ class MultilabelStratifiedSampler(Sampler):
         max_valid_idx = min(len(self.groups), self.num_samples) - 1
         valid_indices = np.arange(max_valid_idx + 1)
         
-        # Validate group values are within valid range
+        # Convert groups to numeric IDs if they're strings
         unique_groups = np.unique(self.groups[:self.num_samples])
         if len(unique_groups) == 0:
             raise ValueError("No valid groups found in the dataset")
+        
+        # Create mapping if groups are strings
+        if unique_groups.dtype.kind in ['U', 'S', 'O']:  # Unicode, String, or Object dtype
+            self.group_to_id = {group: idx for idx, group in enumerate(unique_groups)}
+            self.groups = np.array([self.group_to_id[g] for g in self.groups])
+            logger.info("Converted string groups to numeric IDs")
+            unique_groups = np.unique(self.groups[:self.num_samples])
         
         min_group, max_group = unique_groups.min(), unique_groups.max()
         logger.info(f"Group range: {min_group} to {max_group}")
@@ -54,8 +61,8 @@ class MultilabelStratifiedSampler(Sampler):
         for idx in valid_indices:
             try:
                 group = self.groups[idx]
-                if not np.isnan(group):  # Skip NaN groups
-                    self.group_indices[group].append(idx)
+                if isinstance(group, (int, np.integer)):  # Only process numeric groups
+                    self.group_indices[int(group)].append(idx)
             except IndexError as e:
                 raise ValueError(
                     f"Index {idx} is out of bounds for groups array of size {len(self.groups)}"
@@ -111,8 +118,9 @@ class MultilabelStratifiedSampler(Sampler):
             indices = self.group_indices[group]
             min_idx = min(indices) if indices else -1
             max_idx = max(indices) if indices else -1
+            orig_group = next((k for k, v in self.group_to_id.items() if v == group), group) if hasattr(self, 'group_to_id') else group
             logger.info(
-                f"Group {group}: {count} samples ({prob:.2%} of total) "
+                f"Group {orig_group}: {count} samples ({prob:.2%} of total) "
                 f"[index range: {min_idx}-{max_idx}]"
             )
         
