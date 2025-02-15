@@ -9,8 +9,8 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     brier_score_loss
 )
-from skopt import BayesSearchCV
-from skopt.space import Real
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.model_selection import GridSearchCV
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
@@ -90,6 +90,26 @@ class ToxicDataset(Dataset):
         
         return sample
 
+class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
+    """Custom estimator for threshold optimization"""
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
+        self.probabilities_ = None
+        
+    def fit(self, X, y):
+        # Store probabilities for prediction
+        self.probabilities_ = X
+        return self
+        
+    def predict(self, X):
+        # Apply threshold to probabilities
+        return (X > self.threshold).astype(int)
+        
+    def score(self, X, y):
+        # Return F1 score
+        predictions = self.predict(X)
+        return f1_score(y, predictions)
+
 def load_model(model_path):
     """Load model and tokenizer from versioned checkpoint directory"""
     try:
@@ -153,37 +173,37 @@ def load_model(model_path):
         logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
-def optimize_threshold(y_true, y_pred_proba, n_iter=50):
+def optimize_threshold(y_true, y_pred_proba, n_steps=50):
     """
-    Optimize threshold using Bayesian optimization to maximize F1 score
+    Optimize threshold using grid search to maximize F1 score
     """
-    def objective(threshold):
-        y_pred = (y_pred_proba >= threshold).astype(int)
-        f1 = f1_score(y_true, y_pred)
-        # Return negative since BayesSearchCV minimizes
-        return -f1
-    
-    # Define the search space as a dictionary
-    search_space = {
-        'threshold': Real(0.3, 0.7, prior='uniform', transform='identity')
+    # Create parameter grid
+    param_grid = {
+        'threshold': np.linspace(0.3, 0.7, n_steps)
     }
     
-    # Run Bayesian optimization
-    opt = BayesSearchCV(
-        lambda params: objective(params['threshold']),  # Wrapper for objective function
-        search_space,
-        n_iter=n_iter,
-        random_state=42,
-        n_jobs=-1
+    # Initialize optimizer
+    optimizer = ThresholdOptimizer()
+    
+    # Run grid search
+    grid_search = GridSearchCV(
+        optimizer,
+        param_grid,
+        scoring='f1',
+        cv=5,
+        n_jobs=-1,
+        verbose=0
     )
     
-    # Fit with dummy X
-    X_dummy = np.zeros((len(y_true), 1))
-    opt.fit(X_dummy, y_true)
+    # Reshape probabilities to 2D array
+    X = y_pred_proba.reshape(-1, 1)
     
-    # Get best threshold and corresponding F1 score
-    best_threshold = opt.best_params_['threshold']
-    best_f1 = -opt.best_score_
+    # Fit grid search
+    grid_search.fit(X, y_true)
+    
+    # Get best results
+    best_threshold = grid_search.best_params_['threshold']
+    best_f1 = grid_search.best_score_
     
     return {
         'threshold': float(best_threshold),
@@ -210,7 +230,7 @@ def calculate_optimal_thresholds(predictions, labels, langs):
         thresholds['global'][class_name] = optimize_threshold(
             labels[:, i],
             predictions[:, i],
-            n_iter=50
+            n_steps=50
         )
     
     # Calculate language-specific thresholds
@@ -230,7 +250,7 @@ def calculate_optimal_thresholds(predictions, labels, langs):
                 thresholds['per_language'][str(lang)][class_name] = optimize_threshold(
                     lang_labels[:, i],
                     lang_preds[:, i],
-                    n_iter=30  # Fewer iterations for per-language optimization
+                    n_steps=30  # Fewer iterations for per-language optimization
                 )
             else:
                 # Use global threshold if not enough samples
