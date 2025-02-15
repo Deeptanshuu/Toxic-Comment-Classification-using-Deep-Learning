@@ -134,9 +134,17 @@ class MultilabelStratifiedSampler(Sampler):
             # Initialize arrays for batch construction
             batch_indices = []
             current_batch_size = 0
+            max_attempts = 3 * self.total_samples  # Safety limit
+            attempts = 0
             
             # Generate batches using dynamic ratio-based sampling
             while len(batch_indices) < self.total_samples:
+                attempts += 1
+                if attempts > max_attempts:
+                    logger.error(f"Failed to generate indices after {max_attempts} attempts")
+                    logger.error(f"Generated {len(batch_indices)}/{self.total_samples} indices")
+                    raise RuntimeError("Failed to generate balanced batches")
+                
                 # Select group based on probabilities
                 selected_group = np.random.choice(
                     len(self.group_indices),
@@ -145,9 +153,16 @@ class MultilabelStratifiedSampler(Sampler):
                 
                 # Get indices for selected group
                 group_indices = self.group_indices[selected_group]
+                if not group_indices:  # Skip empty groups
+                    continue
                 
                 # Randomly sample from selected group
                 selected_idx = np.random.choice(group_indices)
+                
+                # Validate index
+                if selected_idx >= self.num_samples:
+                    logger.warning(f"Invalid index {selected_idx} generated, skipping")
+                    continue
                 
                 batch_indices.append(selected_idx)
                 current_batch_size += 1

@@ -596,30 +596,10 @@ def create_dataloaders(train_dataset, val_dataset, config):
     logger.info(f"Batch size: {config.batch_size}")
     logger.info(f"Number of workers: {config.num_workers}")
     
-    # Set multiprocessing start method for Linux
-    if os.name != 'nt' and config.num_workers > 0:
-        try:
-            import multiprocessing as mp
-            # Force 'fork' on Linux for better compatibility
-            if mp.get_start_method(allow_none=True) != 'fork':
-                mp.set_start_method('fork', force=True)
-                logger.info("Set multiprocessing start method to 'fork'")
-        except Exception as e:
-            logger.warning(f"Could not set multiprocessing start method: {str(e)}")
-            config.num_workers = 0
-            logger.warning("Falling back to single worker")
-    
-    # Adjust number of workers based on CPU count
-    if config.num_workers > 0:
-        cpu_count = os.cpu_count() or 1
-        max_workers = min(8, cpu_count - 1)  # Leave one CPU free
-        if config.num_workers > max_workers:
-            logger.warning(f"Reducing number of workers from {config.num_workers} to {max_workers}")
-            config.num_workers = max_workers
-    
-    logger.info("Initializing sampler...")
+    # Start with no workers for initial test
+    logger.info("Creating test DataLoader with single worker...")
     try:
-        # Create sampler with dataset size
+        # Create sampler
         train_sampler = MultilabelStratifiedSampler(
             labels=train_dataset.labels,
             groups=train_dataset.langs,
@@ -627,83 +607,86 @@ def create_dataloaders(train_dataset, val_dataset, config):
             cached_size=len(train_dataset)
         )
         
-        # Set DataLoader settings based on system
-        pin_memory = torch.cuda.is_available()
-        persistent_workers = config.num_workers > 0
-        prefetch_factor = 2 if config.num_workers > 0 else None
-        
-        logger.info("Creating DataLoader with settings:")
-        logger.info(f"- Pin memory: {pin_memory}")
-        logger.info(f"- Persistent workers: {persistent_workers}")
-        logger.info(f"- Prefetch factor: {prefetch_factor}")
-        logger.info(f"- Number of workers: {config.num_workers}")
-        
-        # Create initial DataLoader with minimal settings
-        logger.info("Creating initial DataLoader for testing...")
+        # Test DataLoader with minimal settings
         test_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
-            num_workers=0,  # Use single worker for testing
+            sampler=train_sampler,
+            num_workers=0,
             pin_memory=False,
-            shuffle=False,
+            persistent_workers=False,
+            prefetch_factor=None,
             drop_last=False
         )
         
-        # Test batch loading with simple iteration
-        logger.info("Testing batch loading with single worker...")
-        try:
-            test_batch = next(iter(test_loader))
-            logger.info("Initial batch test successful")
-            
-            # Log test batch information
-            logger.info(f"Test batch shapes:")
-            for k, v in test_batch.items():
-                if isinstance(v, torch.Tensor):
-                    logger.info(f"- {k}: {v.shape}")
-            
-            # If test successful, create actual DataLoader with full settings
-            logger.info("Creating main DataLoader with full settings...")
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=config.batch_size,
-                sampler=train_sampler,
-                num_workers=config.num_workers,
-                pin_memory=pin_memory,
-                persistent_workers=persistent_workers,
-                prefetch_factor=prefetch_factor,
-                drop_last=False
-            )
-            
-            # Validate final dataloader setup
-            logger.info(f"Main DataLoader created with {len(train_loader)} batches")
-            logger.info(f"Effective samples per epoch: {len(train_loader) * config.batch_size}")
-            
-            return train_loader
-            
-        except Exception as e:
-            logger.error(f"Error in batch loading test: {str(e)}")
-            logger.error("Falling back to single worker mode")
-            config.num_workers = 0
-            
-            # Create fallback DataLoader with minimal settings
-            logger.info("Creating fallback DataLoader...")
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=config.batch_size,
-                sampler=train_sampler,
-                num_workers=0,
-                pin_memory=pin_memory,
-                persistent_workers=False,
-                prefetch_factor=None,
-                drop_last=False
-            )
-            
-            return train_loader
-            
+        # Verify basic functionality
+        logger.info("Testing basic DataLoader functionality...")
+        test_batch = next(iter(test_loader))
+        logger.info("Basic DataLoader test successful")
+        
+        # If basic test passes, try with workers
+        if config.num_workers > 0:
+            logger.info("Testing with multiple workers...")
+            # Start with 2 workers and gradually increase
+            for num_workers in range(2, config.num_workers + 1, 2):
+                try:
+                    logger.info(f"Attempting with {num_workers} workers...")
+                    temp_loader = DataLoader(
+                        train_dataset,
+                        batch_size=config.batch_size,
+                        sampler=train_sampler,
+                        num_workers=num_workers,
+                        pin_memory=torch.cuda.is_available(),
+                        persistent_workers=True,
+                        prefetch_factor=2,
+                        drop_last=False,
+                        timeout=60
+                    )
+                    
+                    # Test batch loading with timeout
+                    test_batch = next(iter(temp_loader))
+                    logger.info(f"Successfully tested with {num_workers} workers")
+                    config.num_workers = num_workers
+                except Exception as e:
+                    logger.warning(f"Failed with {num_workers} workers: {str(e)}")
+                    break
+        
+        # Create final DataLoader with tested settings
+        logger.info("Creating final DataLoader...")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.batch_size,
+            sampler=train_sampler,
+            num_workers=config.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=config.num_workers > 0,
+            prefetch_factor=2 if config.num_workers > 0 else None,
+            drop_last=False
+        )
+        
+        logger.info(f"Final DataLoader created with {config.num_workers} workers")
+        logger.info(f"DataLoader has {len(train_loader)} batches")
+        logger.info(f"Effective samples per epoch: {len(train_loader) * config.batch_size}")
+        
+        return train_loader
+        
     except Exception as e:
-        logger.error(f"Error creating data loader: {str(e)}")
-        logger.error("DataLoader creation failed with traceback:", exc_info=True)
-        raise
+        logger.error(f"Error in DataLoader creation: {str(e)}")
+        logger.error("Falling back to single worker mode")
+        
+        # Final fallback loader
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config.batch_size,
+            sampler=train_sampler,
+            num_workers=0,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=False,
+            prefetch_factor=None,
+            drop_last=False
+        )
+        
+        return train_loader
 
 def main():
     try:
