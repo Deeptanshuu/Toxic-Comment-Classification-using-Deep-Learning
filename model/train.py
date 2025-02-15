@@ -596,24 +596,10 @@ def create_dataloaders(train_dataset, val_dataset, config):
     logger.info(f"Batch size: {config.batch_size}")
     logger.info(f"Number of workers: {config.num_workers}")
     
-    # Set multiprocessing start method
-    if config.num_workers > 0:
-        try:
-            import multiprocessing as mp
-            if mp.get_start_method(allow_none=True) != 'spawn':
-                mp.set_start_method('spawn', force=True)
-                logger.info("Set multiprocessing start method to 'spawn'")
-        except Exception as e:
-            logger.warning(f"Could not set multiprocessing start method: {str(e)}")
-            config.num_workers = 0
-            logger.warning("Falling back to single worker")
-    
-    # Reduce number of workers if needed
-    if config.num_workers > 0:
-        max_workers = min(8, os.cpu_count() or 1)
-        if config.num_workers > max_workers:
-            logger.warning(f"Reducing number of workers from {config.num_workers} to {max_workers}")
-            config.num_workers = max_workers
+    # Force single worker on Windows
+    if os.name == 'nt':
+        logger.info("Windows detected, forcing single worker mode")
+        config.num_workers = 0
     
     logger.info("Initializing sampler...")
     try:
@@ -622,13 +608,13 @@ def create_dataloaders(train_dataset, val_dataset, config):
             labels=train_dataset.labels,
             groups=train_dataset.langs,
             batch_size=config.batch_size,
-            cached_size=len(train_dataset)  # Use dataset length directly
+            cached_size=len(train_dataset)
         )
         
         # Set DataLoader settings based on system
         pin_memory = torch.cuda.is_available()
-        persistent_workers = config.num_workers > 0
-        prefetch_factor = 2 if config.num_workers > 0 else None
+        persistent_workers = False  # Disable persistent workers to avoid Windows issues
+        prefetch_factor = None  # Disable prefetching
         
         logger.info("Creating DataLoader with settings:")
         logger.info(f"- Pin memory: {pin_memory}")
@@ -636,7 +622,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
         logger.info(f"- Prefetch factor: {prefetch_factor}")
         logger.info(f"- Number of workers: {config.num_workers}")
         
-        # Create DataLoader with timeout
+        # Create DataLoader with simpler initialization
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
@@ -645,73 +631,56 @@ def create_dataloaders(train_dataset, val_dataset, config):
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
             prefetch_factor=prefetch_factor,
-            drop_last=False,
-            timeout=60  # Add timeout to prevent hanging
+            drop_last=False
         )
         
         # Validate dataloader setup
         logger.info(f"DataLoader created with {len(train_loader)} batches")
         logger.info(f"Effective samples per epoch: {len(train_loader) * config.batch_size}")
         
-        # Test batch loading with timeout
+        # Simple batch loading test without threading
         logger.info("Testing batch loading...")
-        import threading
-        import queue
-
-        def load_batch():
-            try:
-                test_batch = next(iter(train_loader))
-                batch_queue.put(("success", test_batch))
-            except Exception as e:
-                batch_queue.put(("error", str(e)))
-
-        batch_queue = queue.Queue()
-        load_thread = threading.Thread(target=load_batch)
-        load_thread.daemon = True
-        load_thread.start()
-        
         try:
-            status, result = batch_queue.get(timeout=30)
-            if status == "error":
-                raise RuntimeError(f"Batch loading test failed: {result}")
+            test_batch = next(iter(train_loader))
             logger.info("Batch loading test successful")
-            
-            # Log batch information
-            test_batch = result
             logger.info(f"Sample batch shapes:")
             for k, v in test_batch.items():
                 if isinstance(v, torch.Tensor):
                     logger.info(f"- {k}: {v.shape}")
-        except queue.Empty:
-            logger.error("Batch loading test timed out")
-            if config.num_workers > 0:
-                logger.warning("Retrying with single worker")
-                config.num_workers = 0
-                return create_dataloaders(train_dataset, val_dataset, config)
-            raise RuntimeError("DataLoader initialization failed")
-        
-        return train_loader
+            return train_loader
+        except Exception as e:
+            logger.error(f"Error loading first batch: {str(e)}")
+            raise
         
     except Exception as e:
         logger.error(f"Error creating data loader: {str(e)}")
         logger.error("DataLoader creation failed with traceback:", exc_info=True)
-        if config.num_workers > 0:
-            logger.warning("Retrying with single worker")
-            config.num_workers = 0
-            return create_dataloaders(train_dataset, val_dataset, config)
         raise
 
 def main():
     try:
+        # Set environment variables for CUDA
+        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+        
         logger.info("Initializing training configuration...")
         # Initialize config first
         config = TrainingConfig()
         
-        # Set CUDA settings for better performance
+        # Initialize CUDA settings
         if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
-            logger.info("Enabled CUDA optimizations")
+            # Disable TF32 on Ampere GPUs
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            
+            # Set deterministic mode
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            
+            logger.info("Configured CUDA settings for stability")
         
         # Initialize wandb
         try:
@@ -772,6 +741,8 @@ def main():
         cleanup()
 
 if __name__ == "__main__":
+    # Set global PyTorch settings
+    torch.set_num_threads(1)  # Limit CPU threads
     np.set_printoptions(precision=4, suppress=True)
     torch.set_printoptions(precision=4, sci_mode=False)
     
