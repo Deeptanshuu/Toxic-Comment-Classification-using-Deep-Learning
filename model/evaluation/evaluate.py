@@ -42,12 +42,21 @@ class ToxicDataset(Dataset):
         
         # Convert labels to numpy array for efficiency
         self.labels = df[config.label_columns].values
-        self.langs = df['lang'].values
+        
+        # Create language mapping
+        self.lang_to_id = {
+            'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
+            'fr': 4, 'it': 5, 'pt': 6
+        }
+        
+        # Convert language codes to numeric indices
+        self.langs = np.array([self.lang_to_id.get(lang, 0) for lang in df['lang']])
         
         print(f"Initialized dataset with {len(self)} samples")
         logger.info(f"Dataset initialized with {len(self)} samples")
         logger.info(f"Label columns: {config.label_columns}")
-        logger.info(f"Unique languages: {np.unique(self.langs)}")
+        logger.info(f"Unique languages: {np.unique(df['lang'])}")
+        logger.info(f"Language mapping: {self.lang_to_id}")
     
     def __len__(self):
         return len(self.df)
@@ -60,7 +69,7 @@ class ToxicDataset(Dataset):
         # Get text and labels
         text = self.df.iloc[idx]['comment_text']
         labels = torch.FloatTensor(self.labels[idx])
-        lang = torch.tensor(self.langs[idx])
+        lang = torch.tensor(self.langs[idx], dtype=torch.long)  # Ensure long dtype
         
         # Tokenize text
         encoding = self.tokenizer(
