@@ -106,9 +106,11 @@ class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
         return (X > self.threshold).astype(int)
         
     def score(self, X, y):
-        # Return F1 score
+        # Return F1 score with proper handling of edge cases
         predictions = self.predict(X)
-        return f1_score(y, predictions)
+        if y.sum() == 0 and predictions.sum() == 0:
+            return 1.0  # Perfect prediction when no positive samples
+        return f1_score(y, predictions, zero_division=1)
 
 def load_model(model_path):
     """Load model and tokenizer from versioned checkpoint directory"""
@@ -430,15 +432,20 @@ def calculate_overall_metrics(predictions, labels, binary_predictions):
     metrics = {}
     
     # AUC scores (threshold independent)
-    metrics['auc_macro'] = roc_auc_score(labels, predictions, average='macro')
-    metrics['auc_weighted'] = roc_auc_score(labels, predictions, average='weighted')
+    try:
+        metrics['auc_macro'] = roc_auc_score(labels, predictions, average='macro')
+        metrics['auc_weighted'] = roc_auc_score(labels, predictions, average='weighted')
+    except ValueError:
+        # Handle case where a class has no positive samples
+        metrics['auc_macro'] = 0.0
+        metrics['auc_weighted'] = 0.0
     
     # Precision, recall, F1 (threshold dependent)
     precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='macro', zero_division=0
+        labels, binary_predictions, average='macro', zero_division=1
     )
     precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
-        labels, binary_predictions, average='weighted', zero_division=0
+        labels, binary_predictions, average='weighted', zero_division=1
     )
     
     metrics.update({
@@ -460,12 +467,33 @@ def calculate_overall_metrics(predictions, labels, binary_predictions):
 
 def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
     """Calculate metrics for a single class"""
+    # Handle case where there are no positive samples
+    if labels.sum() == 0:
+        return {
+            'auc': 0.0,
+            'threshold': threshold,
+            'precision': 1.0 if binary_predictions.sum() == 0 else 0.0,
+            'recall': 1.0,  # All true negatives were correctly identified
+            'f1': 1.0 if binary_predictions.sum() == 0 else 0.0,
+            'support': 0,
+            'brier': brier_score_loss(labels, predictions),
+            'true_positives': 0,
+            'false_positives': int(binary_predictions.sum()),
+            'true_negatives': int((1 - binary_predictions).sum()),
+            'false_negatives': 0
+        }
+    
+    try:
+        auc = roc_auc_score(labels, predictions)
+    except ValueError:
+        auc = 0.0
+    
     metrics = {
-        'auc': roc_auc_score(labels, predictions),
+        'auc': auc,
         'threshold': threshold,
-        'precision': precision_score(labels, binary_predictions),
-        'recall': recall_score(labels, binary_predictions),
-        'f1': f1_score(labels, binary_predictions),
+        'precision': precision_score(labels, binary_predictions, zero_division=1),
+        'recall': recall_score(labels, binary_predictions, zero_division=1),
+        'f1': f1_score(labels, binary_predictions, zero_division=1),
         'support': int(labels.sum()),
         'brier': brier_score_loss(labels, predictions)
     }
