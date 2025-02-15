@@ -518,9 +518,12 @@ def train(model, train_loader, config):
                 # Calculate batch processing time
                 batch_time = time.time() - batch_start_time
                 
+                # Format loss string outside of the postfix dict
+                loss_str = "N/A" if loss is None else f"{loss:.4f}"
+                
                 # Update progress bar with detailed metrics
                 progress_bar.set_postfix({
-                    'loss': f"{loss:.4f}" if loss is not None else "N/A",
+                    'loss': loss_str,
                     'lr': f"{scheduler.get_last_lr()[0]:.2e}",
                     'batch_time': f"{batch_time:.2f}s",
                     'processed': f"{(batch_idx + 1) * config.batch_size}"
@@ -540,9 +543,10 @@ def train(model, train_loader, config):
                 
                 # More frequent logging for debugging
                 if batch_idx % 10 == 0:
+                    loss_debug_str = "N/A" if loss is None else f"{loss:.4f}"
                     logger.debug(
                         f"Batch {batch_idx}/{len(train_loader)}: "
-                        f"Loss={loss:.4f if loss is not None else 'N/A'}, "
+                        f"Loss={loss_debug_str}, "
                         f"Time={batch_time:.2f}s"
                     )
                 
