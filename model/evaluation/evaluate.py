@@ -9,6 +9,8 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     brier_score_loss
 )
+from skopt import BayesSearchCV
+from skopt.space import Real
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
@@ -118,8 +120,7 @@ def load_model(model_path):
             num_labels=6,
             hidden_size=1024,
             num_attention_heads=16,
-            model_name='xlm-roberta-large',
-            dropout=0.1
+            model_name='xlm-roberta-large'
         )
         
         # Load the trained weights
@@ -152,32 +153,46 @@ def load_model(model_path):
         logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
-def find_optimal_threshold(labels, predictions, resolution=100):
-    """Find the optimal threshold that maximizes F1 score"""
-    best_f1 = 0
-    best_threshold = 0.5
+def optimize_threshold(y_true, y_pred_proba, n_iter=50):
+    """
+    Optimize threshold using Bayesian optimization to maximize F1 score
+    """
+    def objective(threshold):
+        y_pred = (y_pred_proba >= threshold).astype(int)
+        f1 = f1_score(y_true, y_pred)
+        # Return negative since BayesSearchCV minimizes
+        return -f1
     
-    # Try thresholds from 0.01 to 0.99 with given resolution
-    thresholds = np.linspace(0.01, 0.99, resolution)
+    # Define the search space
+    search_space = [Real(0.3, 0.7, name='threshold')]
     
-    for threshold in thresholds:
-        binary_preds = (predictions > threshold).astype(int)
-        f1 = f1_score(labels, binary_preds)
-        
-        if f1 > best_f1:
-            best_f1 = f1
-            best_threshold = threshold
+    # Run Bayesian optimization
+    opt = BayesSearchCV(
+        lambda x: objective(x[0]),  # Wrapper for objective function
+        search_space,
+        n_iter=n_iter,
+        random_state=42,
+        n_jobs=-1
+    )
+    
+    # Fit with dummy X
+    X_dummy = np.zeros((len(y_true), 1))
+    opt.fit(X_dummy, y_true)
+    
+    # Get best threshold and corresponding F1 score
+    best_threshold = opt.best_params_['threshold']
+    best_f1 = -opt.best_score_
     
     return {
         'threshold': float(best_threshold),
         'f1_score': float(best_f1),
-        'support': int(labels.sum()),
-        'total_samples': len(labels)
+        'support': int(y_true.sum()),
+        'total_samples': len(y_true)
     }
 
 def calculate_optimal_thresholds(predictions, labels, langs):
-    """Calculate optimal thresholds for each class and language combination"""
-    logger.info("Calculating optimal thresholds...")
+    """Calculate optimal thresholds for each class and language combination using Bayesian optimization"""
+    logger.info("Calculating optimal thresholds using Bayesian optimization...")
     
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     unique_langs = np.unique(langs)
@@ -190,9 +205,10 @@ def calculate_optimal_thresholds(predictions, labels, langs):
     # Calculate global thresholds
     logger.info("Computing global thresholds...")
     for i, class_name in enumerate(tqdm(toxicity_types, desc="Global thresholds")):
-        thresholds['global'][class_name] = find_optimal_threshold(
+        thresholds['global'][class_name] = optimize_threshold(
             labels[:, i],
-            predictions[:, i]
+            predictions[:, i],
+            n_iter=50
         )
     
     # Calculate language-specific thresholds
@@ -207,10 +223,16 @@ def calculate_optimal_thresholds(predictions, labels, langs):
         lang_labels = labels[lang_mask]
         
         for i, class_name in enumerate(toxicity_types):
-            thresholds['per_language'][str(lang)][class_name] = find_optimal_threshold(
-                lang_labels[:, i],
-                lang_preds[:, i]
-            )
+            # Only optimize if we have enough samples
+            if lang_labels[:, i].sum() >= 100:  # Minimum samples threshold
+                thresholds['per_language'][str(lang)][class_name] = optimize_threshold(
+                    lang_labels[:, i],
+                    lang_preds[:, i],
+                    n_iter=30  # Fewer iterations for per-language optimization
+                )
+            else:
+                # Use global threshold if not enough samples
+                thresholds['per_language'][str(lang)][class_name] = thresholds['global'][class_name]
     
     return thresholds
 
@@ -287,55 +309,109 @@ def evaluate_model(model, val_loader, device, output_dir):
 def calculate_metrics(predictions, labels, langs):
     """Calculate detailed metrics"""
     results = {
-        'overall': {},
-        'per_language': {},
-        'per_class': {}
+        'default_thresholds': {
+            'overall': {},
+            'per_language': {},
+            'per_class': {}
+        },
+        'optimized_thresholds': {
+            'overall': {},
+            'per_language': {},
+            'per_class': {}
+        }
     }
     
-    # Calculate overall metrics with progress bar
-    logger.info("Computing overall metrics...")
-    results['overall'] = calculate_overall_metrics(predictions, labels)
+    # Default threshold of 0.5
+    DEFAULT_THRESHOLD = 0.5
     
-    # Calculate per-language metrics with progress bar
+    # Calculate metrics with default threshold
+    logger.info("Computing metrics with default threshold (0.5)...")
+    binary_predictions_default = (predictions > DEFAULT_THRESHOLD).astype(int)
+    results['default_thresholds']['overall'] = calculate_overall_metrics(predictions, labels, binary_predictions_default)
+    
+    # Calculate per-language metrics with default threshold
     unique_langs = np.unique(langs)
-    logger.info(f"Computing metrics for {len(unique_langs)} languages...")
-    for lang in tqdm(unique_langs, desc="Language metrics", ncols=100):
+    logger.info(f"Computing per-language metrics with default threshold...")
+    for lang in tqdm(unique_langs, desc="Language metrics (default)", ncols=100):
         lang_mask = langs == lang
         if not lang_mask.any():
             continue
             
         lang_preds = predictions[lang_mask]
         lang_labels = labels[lang_mask]
+        lang_binary_preds = binary_predictions_default[lang_mask]
         
-        results['per_language'][str(lang)] = calculate_overall_metrics(
-            lang_preds, lang_labels
+        results['default_thresholds']['per_language'][str(lang)] = calculate_overall_metrics(
+            lang_preds, lang_labels, lang_binary_preds
         )
-        results['per_language'][str(lang)]['sample_count'] = int(lang_mask.sum())
+        results['default_thresholds']['per_language'][str(lang)]['sample_count'] = int(lang_mask.sum())
     
-    # Calculate per-class metrics with progress bar
+    # Calculate per-class metrics with default threshold
     toxicity_types = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
-    logger.info("Computing per-class metrics...")
-    for i, class_name in enumerate(tqdm(toxicity_types, desc="Class metrics", ncols=100)):
-        results['per_class'][class_name] = calculate_class_metrics(
+    logger.info("Computing per-class metrics with default threshold...")
+    for i, class_name in enumerate(tqdm(toxicity_types, desc="Class metrics (default)", ncols=100)):
+        results['default_thresholds']['per_class'][class_name] = calculate_class_metrics(
             labels[:, i],
             predictions[:, i],
-            (predictions[:, i] > 0.5).astype(int),
-            0.5
+            binary_predictions_default[:, i],
+            DEFAULT_THRESHOLD
         )
+    
+    # Calculate optimal thresholds and corresponding metrics
+    logger.info("Computing optimal thresholds...")
+    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
+    
+    # Apply optimal thresholds
+    logger.info("Computing metrics with optimized thresholds...")
+    binary_predictions_opt = np.zeros_like(predictions, dtype=int)
+    for i, class_name in enumerate(toxicity_types):
+        opt_threshold = thresholds['global'][class_name]['threshold']
+        binary_predictions_opt[:, i] = (predictions[:, i] > opt_threshold).astype(int)
+    
+    # Calculate overall metrics with optimized thresholds
+    results['optimized_thresholds']['overall'] = calculate_overall_metrics(predictions, labels, binary_predictions_opt)
+    
+    # Calculate per-language metrics with optimized thresholds
+    logger.info(f"Computing per-language metrics with optimized thresholds...")
+    for lang in tqdm(unique_langs, desc="Language metrics (optimized)", ncols=100):
+        lang_mask = langs == lang
+        if not lang_mask.any():
+            continue
+            
+        lang_preds = predictions[lang_mask]
+        lang_labels = labels[lang_mask]
+        lang_binary_preds = binary_predictions_opt[lang_mask]
+        
+        results['optimized_thresholds']['per_language'][str(lang)] = calculate_overall_metrics(
+            lang_preds, lang_labels, lang_binary_preds
+        )
+        results['optimized_thresholds']['per_language'][str(lang)]['sample_count'] = int(lang_mask.sum())
+    
+    # Calculate per-class metrics with optimized thresholds
+    logger.info("Computing per-class metrics with optimized thresholds...")
+    for i, class_name in enumerate(tqdm(toxicity_types, desc="Class metrics (optimized)", ncols=100)):
+        opt_threshold = thresholds['global'][class_name]['threshold']
+        results['optimized_thresholds']['per_class'][class_name] = calculate_class_metrics(
+            labels[:, i],
+            predictions[:, i],
+            binary_predictions_opt[:, i],
+            opt_threshold
+        )
+    
+    # Store the thresholds used
+    results['thresholds'] = thresholds
     
     return results
 
-def calculate_overall_metrics(predictions, labels):
+def calculate_overall_metrics(predictions, labels, binary_predictions):
     """Calculate overall metrics for multi-label classification"""
-    binary_predictions = (predictions > 0.5).astype(int)
-    
     metrics = {}
     
-    # AUC scores
+    # AUC scores (threshold independent)
     metrics['auc_macro'] = roc_auc_score(labels, predictions, average='macro')
     metrics['auc_weighted'] = roc_auc_score(labels, predictions, average='weighted')
     
-    # Precision, recall, F1
+    # Precision, recall, F1 (threshold dependent)
     precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
         labels, binary_predictions, average='macro', zero_division=0
     )
@@ -387,16 +463,6 @@ def save_results(results, predictions, labels, langs, output_dir):
     """Save evaluation results and plots"""
     os.makedirs(output_dir, exist_ok=True)
     
-    # Calculate optimal thresholds
-    logger.info("\nCalculating optimal classification thresholds...")
-    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
-    
-    # Save thresholds
-    threshold_path = os.path.join(output_dir, 'optimal_thresholds.json')
-    logger.info(f"Saving optimal thresholds to {threshold_path}")
-    with open(threshold_path, 'w') as f:
-        json.dump(thresholds, f, indent=2)
-    
     # Save detailed metrics
     with open(os.path.join(output_dir, 'evaluation_results.json'), 'w') as f:
         json.dump(results, f, indent=2)
@@ -409,55 +475,72 @@ def save_results(results, predictions, labels, langs, output_dir):
         langs=langs
     )
     
-    # Log threshold summary
-    logger.info("\nOptimal global thresholds:")
-    for class_name, data in thresholds['global'].items():
-        logger.info(f"{class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
+    # Log summary of results
+    logger.info("\nResults Summary:")
+    logger.info("\nDefault Threshold (0.5):")
+    logger.info(f"Macro F1: {results['default_thresholds']['overall']['f1_macro']:.3f}")
+    logger.info(f"Weighted F1: {results['default_thresholds']['overall']['f1_weighted']:.3f}")
+    
+    logger.info("\nOptimized Thresholds:")
+    logger.info(f"Macro F1: {results['optimized_thresholds']['overall']['f1_macro']:.3f}")
+    logger.info(f"Weighted F1: {results['optimized_thresholds']['overall']['f1_weighted']:.3f}")
+    
+    # Log threshold comparison
+    if 'thresholds' in results:
+        logger.info("\nOptimal Thresholds:")
+        for class_name, data in results['thresholds']['global'].items():
+            logger.info(f"{class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
 
 def plot_metrics(results, output_dir, predictions=None, labels=None):
-    """Generate visualization plots"""
+    """Generate visualization plots comparing default vs optimized thresholds"""
     plots_dir = os.path.join(output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
     
-    # Plot per-class metrics
-    if results.get('per_class'):
-        plt.figure(figsize=(12, 6))
-        toxicity_types = list(results['per_class'].keys())
-        metrics = ['auc', 'precision', 'recall', 'f1']
+    # Plot comparison of metrics between default and optimized thresholds
+    if results.get('default_thresholds') and results.get('optimized_thresholds'):
+        plt.figure(figsize=(15, 8))
         
-        for metric in metrics:
-            values = [results['per_class'][c][metric] for c in toxicity_types]
-            plt.plot(toxicity_types, values, marker='o', label=metric.upper())
+        # Get metrics to compare
+        metrics = ['precision_macro', 'recall_macro', 'f1_macro']
+        default_values = [results['default_thresholds']['overall'][m] for m in metrics]
+        optimized_values = [results['optimized_thresholds']['overall'][m] for m in metrics]
         
-        plt.title('Per-Class Performance Metrics')
-        plt.xticks(rotation=45)
+        x = np.arange(len(metrics))
+        width = 0.35
+        
+        plt.bar(x - width/2, default_values, width, label='Default Threshold (0.5)')
+        plt.bar(x + width/2, optimized_values, width, label='Optimized Thresholds')
+        
+        plt.ylabel('Score')
+        plt.title('Comparison of Default vs Optimized Thresholds')
+        plt.xticks(x, [m.replace('_', ' ').title() for m in metrics])
         plt.legend()
-        plt.grid(True)
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'per_class_metrics.png'))
+        plt.savefig(os.path.join(plots_dir, 'threshold_comparison.png'))
         plt.close()
         
-        # Plot threshold optimization curves if predictions and labels are available
-        if predictions is not None and labels is not None:
-            plt.figure(figsize=(12, 6))
-            thresholds = np.linspace(0.01, 0.99, 100)
-            
-            for i, class_name in enumerate(toxicity_types):
-                f1_scores = []
-                for threshold in thresholds:
-                    binary_preds = (predictions[:, i] > threshold).astype(int)
-                    f1 = f1_score(labels[:, i], binary_preds)
-                    f1_scores.append(f1)
-                plt.plot(thresholds, f1_scores, label=class_name)
-            
-            plt.title('F1 Score vs. Threshold by Class')
-            plt.xlabel('Threshold')
-            plt.ylabel('F1 Score')
-            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(plots_dir, 'threshold_optimization.png'))
-            plt.close()
+        # Plot per-class comparison
+        plt.figure(figsize=(15, 8))
+        toxicity_types = list(results['default_thresholds']['per_class'].keys())
+        
+        default_f1 = [results['default_thresholds']['per_class'][c]['f1'] for c in toxicity_types]
+        optimized_f1 = [results['optimized_thresholds']['per_class'][c]['f1'] for c in toxicity_types]
+        
+        x = np.arange(len(toxicity_types))
+        width = 0.35
+        
+        plt.bar(x - width/2, default_f1, width, label='Default Threshold (0.5)')
+        plt.bar(x + width/2, optimized_f1, width, label='Optimized Thresholds')
+        
+        plt.ylabel('F1 Score')
+        plt.title('Per-Class F1 Score Comparison')
+        plt.xticks(x, toxicity_types, rotation=45)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'per_class_comparison.png'))
+        plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')

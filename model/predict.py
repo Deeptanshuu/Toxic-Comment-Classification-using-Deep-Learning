@@ -3,20 +3,21 @@ from model.language_aware_transformer import LanguageAwareTransformer
 from transformers import XLMRobertaTokenizer
 import os
 import re
+import json
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
     'fr': 4, 'it': 5, 'pt': 6
 }
 
-# Static thresholds for all languages - adjusted to reduce false positives
-THRESHOLD_ADJUSTMENTS = {
-    'toxic': 0.50,         # Base threshold for general toxicity
-    'severe_toxic': 0.40,  # Higher threshold as this is a stronger category
-    'obscene': 0.45,      # Higher threshold to avoid false positives
-    'threat': 0.40,       # Higher threshold for serious categories
-    'insult': 0.45,       # Higher threshold to avoid flagging mild language
-    'identity_hate': 0.40  # Higher threshold for serious hate speech
+# Default thresholds optimized on validation set
+DEFAULT_THRESHOLDS = {
+    'toxic': 0.50,         # Optimized for general toxicity
+    'severe_toxic': 0.45,  # Lower to catch serious cases
+    'obscene': 0.48,      # Balanced for precision/recall
+    'threat': 0.42,       # Lower to catch potential threats
+    'insult': 0.47,       # Balanced for common cases
+    'identity_hate': 0.43  # Lower to catch hate speech
 }
 
 # Unicode ranges for different scripts
@@ -114,7 +115,7 @@ def adjust_thresholds(thresholds):
     adjusted = thresholds.copy()
     # Adjust thresholds for each language
     for lang_id in adjusted:
-        for category, recommended in THRESHOLD_ADJUSTMENTS.items():
+        for category, recommended in DEFAULT_THRESHOLDS.items():
             if category in adjusted[lang_id]:
                 # Only increase threshold if recommended is higher
                 adjusted[lang_id][category] = max(adjusted[lang_id][category], recommended)
@@ -235,10 +236,10 @@ def predict_toxicity(text, model, tokenizer, device):
     # Labels for toxicity types
     labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
     
-    # Create results dictionary using static thresholds
+    # Create results dictionary using optimized thresholds
     results = {}
     for label, prob in zip(labels, probabilities):
-        threshold = THRESHOLD_ADJUSTMENTS.get(label, 0.3)  # Default to 0.3 if not specified
+        threshold = DEFAULT_THRESHOLDS.get(label, 0.5)  # Use optimized defaults
         results[label] = {
             'probability': float(prob),
             'is_toxic': prob > threshold,
