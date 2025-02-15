@@ -12,117 +12,158 @@ import os
 
 @dataclass
 class DynamicClassWeights:
-    """Handles class weights per language using pre-calculated values with focal loss"""
+    """Handles class weights per language using dynamic batch statistics"""
     weights_file: str = 'weights/language_class_weights.json'
     
-    def __post_init__(self):
+    def __init__(self, weights_file: str = 'weights/language_class_weights.json'):
+        self.weights_file = weights_file
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.language_columns = ['en', 'es', 'fr', 'it', 'tr', 'pt', 'ru']
-        self.weights = {}
-        self.default_weights = None
-        self.focal_params = {}
         
+        # Initialize base scaling factors from file if available
         try:
             with open(self.weights_file, 'r') as f:
                 data = json.load(f)
-                self.weights = data['weights']
-                self.metadata = data.get('metadata', {})
-                self.default_weights = torch.tensor([
-                    float(self.weights['en'][label]['1']) 
-                    for label in self.toxicity_labels
-                ])
-                
-                # Extract focal loss parameters from metadata
-                for lang in self.weights:
-                    self.focal_params[lang] = {}
-                    for label in self.weights[lang]:
-                        metadata = self.weights[lang][label].get('calculation_metadata', {})
-                        self.focal_params[lang][label] = {
-                            'gamma': metadata.get('gamma', 2.0),
-                            'alpha': metadata.get('alpha', 0.25)
-                        }
+                self.lang_scaling = {}
+                for lang in self.language_columns:
+                    if lang in data['weights']:
+                        # Calculate average scaling per language
+                        scales = [float(data['weights'][lang][label]['1']) 
+                                for label in self.toxicity_labels]
+                        self.lang_scaling[lang] = sum(scales) / len(scales)
+                    else:
+                        self.lang_scaling[lang] = 1.0
         except Exception as e:
-            print(f"Warning: Could not load weights from {self.weights_file}: {str(e)}")
-            print("Using default weights...")
-            self._initialize_default_weights()
+            logger.warning(f"Could not load weights from {self.weights_file}: {str(e)}")
+            self._initialize_defaults()
+        
+        # Initialize running statistics for each language
+        self.running_stats = {lang: {
+            'pos_counts': torch.zeros(len(self.toxicity_labels)),
+            'total_counts': torch.zeros(len(self.toxicity_labels)),
+            'smoothing_factor': 0.95  # EMA smoothing factor
+        } for lang in self.language_columns}
     
-    def _initialize_default_weights(self):
-        """Initialize safe default weights if loading fails"""
-        self.weights = {}
-        self.focal_params = {}
-        for lang in self.language_columns:
-            self.weights[lang] = {}
-            self.focal_params[lang] = {}
-            for label in self.toxicity_labels:
-                self.weights[lang][label] = {'0': 0.5, '1': 1.0}
-                self.focal_params[lang][label] = {'gamma': 2.0, 'alpha': 0.25}
-        self.default_weights = torch.tensor([1.0] * len(self.toxicity_labels))
+    def _initialize_defaults(self):
+        """Initialize safe default scaling factors"""
+        self.lang_scaling = {lang: 1.0 for lang in self.language_columns}
     
-    def get_weights_for_batch(self, langs: List[str], label_counts: torch.Tensor, device: torch.device) -> Dict[str, torch.Tensor]:
+    def _update_running_stats(self, langs, labels):
+        """Update running statistics for each language"""
+        unique_langs = set(langs)
+        for lang in unique_langs:
+            if lang not in self.running_stats:
+                continue
+                
+            lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool)
+            lang_labels = labels[lang_mask]
+            
+            if len(lang_labels) == 0:
+                continue
+            
+            # Calculate current batch statistics
+            pos_count = lang_labels.sum(dim=0).float()
+            total_count = torch.full_like(pos_count, len(lang_labels))
+            
+            # Update running statistics with EMA
+            alpha = self.running_stats[lang]['smoothing_factor']
+            self.running_stats[lang]['pos_counts'] = (
+                alpha * self.running_stats[lang]['pos_counts'] + 
+                (1 - alpha) * pos_count
+            )
+            self.running_stats[lang]['total_counts'] = (
+                alpha * self.running_stats[lang]['total_counts'] + 
+                (1 - alpha) * total_count
+            )
+    
+    def get_weights_for_batch(self, langs: List[str], labels: torch.Tensor, device: torch.device) -> Dict[str, torch.Tensor]:
         """
-        Get weights and focal loss parameters for batch
-        Returns dict with 'weights' tensor and 'focal_params' dict
+        Calculate dynamic weights and focal parameters based on batch and historical statistics
+        Args:
+            langs: List of language codes
+            labels: Binary labels tensor [batch_size, num_labels]
+            device: Target device for tensors
+        Returns:
+            Dict with weights, alpha, and gamma tensors
         """
         try:
-            batch_weights = []
-            batch_gamma = []
-            batch_alpha = []
+            batch_size = len(langs)
+            num_labels = labels.size(1)
             
-            for lang, counts in zip(langs, label_counts):
-                lang_weights = []
-                label_gamma = []
-                label_alpha = []
-                
-                for idx, label in enumerate(self.toxicity_labels):
-                    try:
-                        # Get base weight with English fallback
-                        base_weight = float(self.weights.get(lang, self.weights['en'])[label]['1'])
-                        
-                        # Get focal parameters
-                        focal_params = self.focal_params.get(lang, {}).get(label, {})
-                        gamma = focal_params.get('gamma', 2.0)
-                        alpha = focal_params.get('alpha', 0.25)
-                        
-                        # Calculate class frequency in current batch
-                        freq = counts[idx].float() / counts.sum().float()
-                        
-                        # Adjust weight based on batch distribution
-                        adjusted = base_weight * (1 + 2 * (1 - freq))
-                        
-                        lang_weights.append(adjusted)
-                        label_gamma.append(gamma)
-                        label_alpha.append(alpha)
-                        
-                    except (KeyError, ValueError) as e:
-                        logger.warning(f"Weight calculation failed for {lang}-{label}: {str(e)}")
-                        lang_weights.append(1.0)
-                        label_gamma.append(2.0)
-                        label_alpha.append(0.25)
-                
-                batch_weights.append(lang_weights)
-                batch_gamma.append(label_gamma)
-                batch_alpha.append(label_alpha)
+            # Update running statistics
+            self._update_running_stats(langs, labels)
             
-            # Convert to tensors and apply safety bounds
-            weights = torch.tensor(batch_weights, dtype=torch.float32, device=device)
-            gamma = torch.tensor(batch_gamma, dtype=torch.float32, device=device)
-            alpha = torch.tensor(batch_alpha, dtype=torch.float32, device=device)
+            # Calculate positive ratio per language in current batch
+            lang_pos_ratios = {}
+            batch_pos_ratios = torch.zeros(num_labels, device=device)
+            lang_counts = {}
+            
+            for lang in set(langs):
+                lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool, device=device)
+                if not lang_mask.any():
+                    continue
+                    
+                # Calculate language-specific positive ratio
+                lang_labels = labels[lang_mask]
+                lang_pos_ratio = lang_labels.float().mean(dim=0)
+                lang_pos_ratios[lang] = lang_pos_ratio
+                
+                # Weighted contribution to batch statistics
+                lang_count = lang_mask.sum()
+                lang_counts[lang] = lang_count
+                batch_pos_ratios += lang_pos_ratio * (lang_count / batch_size)
+            
+            # Combine batch and historical statistics
+            weights = torch.ones(batch_size, num_labels, device=device)
+            alpha = torch.zeros(num_labels, device=device)
+            gamma = torch.zeros(num_labels, device=device)
+            
+            for i, (lang, label_vec) in enumerate(zip(langs, labels)):
+                if lang not in self.running_stats:
+                    continue
+                
+                # Get historical statistics for this language
+                hist_pos_ratio = (
+                    self.running_stats[lang]['pos_counts'] / 
+                    (self.running_stats[lang]['total_counts'] + 1e-7)
+                ).to(device)
+                
+                # Combine historical and current batch statistics
+                current_pos_ratio = lang_pos_ratios.get(lang, batch_pos_ratios)
+                combined_pos_ratio = 0.7 * hist_pos_ratio + 0.3 * current_pos_ratio
+                
+                # Calculate stable weights using log-space
+                log_ratio = torch.log1p(1.0 / (combined_pos_ratio + 1e-7))
+                class_weights = torch.exp(log_ratio.clamp(-2, 2))
+                
+                # Apply language-specific scaling
+                weights[i] = class_weights * self.lang_scaling.get(lang, 1.0)
+                
+                # Update focal parameters
+                alpha_contrib = 1.0 / (combined_pos_ratio + 1e-7).clamp(0.05, 0.95)
+                gamma_contrib = log_ratio.clamp(1.0, 4.0)
+                
+                # Accumulate weighted contributions
+                weight = lang_counts.get(lang, 1) / batch_size
+                alpha += alpha_contrib * weight
+                gamma += gamma_contrib * weight
+            
+            # Normalize weights to prevent extreme values
+            weights = weights / weights.mean()
             
             return {
-                'weights': weights.clamp(0.1, 15.0),  # Prevent extreme values
-                'gamma': gamma.clamp(1.0, 5.0),
-                'alpha': alpha.clamp(0.1, 0.9)
+                'weights': weights.clamp(0.1, 10.0),  # Prevent extreme values
+                'alpha': alpha.clamp(0.1, 5.0),       # [num_labels]
+                'gamma': gamma.clamp(1.0, 4.0)        # [num_labels]
             }
             
         except Exception as e:
             logger.error(f"Error computing batch weights: {str(e)}")
             # Fallback to safe default values
-            batch_size = len(langs)
-            num_labels = len(self.toxicity_labels)
             return {
-                'weights': torch.ones((batch_size, num_labels), dtype=torch.float32, device=device),
-                'gamma': torch.full((batch_size, num_labels), 2.0, dtype=torch.float32, device=device),
-                'alpha': torch.full((batch_size, num_labels), 0.25, dtype=torch.float32, device=device)
+                'weights': torch.ones((batch_size, num_labels), device=device),
+                'alpha': torch.full((num_labels,), 0.25, device=device),
+                'gamma': torch.full((num_labels,), 2.0, device=device)
             }
 
 @dataclass

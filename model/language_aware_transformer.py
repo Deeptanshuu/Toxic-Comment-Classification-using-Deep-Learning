@@ -26,33 +26,26 @@ class LanguageAwareClassifier(nn.Module):
         super().__init__()
         self.lang_embed = nn.Embedding(7, 64)  # 7 languages
         
-        # Add language projection layer for residual connection
-        self.lang_projection = nn.Linear(64, hidden_size)
-        
-        # Base classifier layers
-        self.classifier = nn.ModuleDict({
-            'projection': nn.Linear(hidden_size + 64, 512),
-            'activation': nn.Tanh(),
-            'norm': nn.LayerNorm(512),
-            'dropout': nn.Dropout(0.0),
-            'output': nn.Linear(512, num_labels)
-        })
+        # Simplified classifier layers
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size + 64, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Linear(512, num_labels)
+        )
 
-        # Language-specific threshold adjustment
-        self.threshold_adjust = nn.ModuleDict({
-            str(lang_id): nn.Linear(64, 1) for lang_id in range(7)  # Using string keys for ModuleDict
-        })
+        # Vectorized language-specific thresholds
+        self.lang_thresholds = nn.Parameter(
+            torch.ones(len(SUPPORTED_LANGUAGES), num_labels)
+        )
+        # Initialize with small random values around 1
+        nn.init.normal_(self.lang_thresholds, mean=1.0, std=0.01)
         
         self._init_weights()
     
     def _init_weights(self):
         """Initialize weights with Xavier uniform"""
-        # Initialize language projection
-        nn.init.xavier_uniform_(self.lang_projection.weight)
-        if self.lang_projection.bias is not None:
-            nn.init.constant_(self.lang_projection.bias, 0)
-            
-        for module in self.classifier.values():
+        for module in self.classifier:
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
@@ -60,12 +53,6 @@ class LanguageAwareClassifier(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 nn.init.constant_(module.bias, 0)
                 nn.init.constant_(module.weight, 1.0)
-        
-        # Initialize threshold adjustment layers
-        for module in self.threshold_adjust.values():
-            nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
 
     def forward(self, x, lang_ids):
         # Ensure lang_ids is a tensor of integers
@@ -77,29 +64,15 @@ class LanguageAwareClassifier(nn.Module):
         # Get language embeddings
         lang_emb = self.lang_embed(lang_ids)  # Shape: [batch_size, 64]
         
-        # Project language embeddings for residual connection
-        lang_proj = self.lang_projection(lang_emb)  # Shape: [batch_size, hidden_size]
-        
-        # Add residual connection
-        x = x + lang_proj  # Shape: [batch_size, hidden_size]
-        
         # Concatenate features with language embeddings for classification
         combined = torch.cat([x, lang_emb], dim=-1)  # Shape: [batch_size, hidden_size + 64]
         
-        # Apply classifier layers
-        x = self.classifier['projection'](combined)  # Shape: [batch_size, 512]
-        x = self.classifier['activation'](x)
-        x = self.classifier['norm'](x)
-        x = self.classifier['dropout'](x)
-        logits = self.classifier['output'](x)  # Shape: [batch_size, num_labels]
+        # Apply simplified classifier
+        logits = self.classifier(combined)  # Shape: [batch_size, num_labels]
 
-        # Apply language-specific threshold adjustment
-        batch_thresholds = []
-        for i, lang_id in enumerate(lang_ids):
-            threshold = self.threshold_adjust[str(lang_id.item())](lang_emb[i:i+1])  # Use existing lang_emb
-            batch_thresholds.append(threshold)
-        lang_thresholds = torch.cat(batch_thresholds, dim=0)  # Shape: [batch_size, 1]
-        logits = logits * torch.sigmoid(lang_thresholds)  # Shape: [batch_size, num_labels]
+        # Apply language-specific thresholds using vectorized operations
+        thresholds = self.lang_thresholds[lang_ids]  # Shape: [batch_size, num_labels]
+        logits = logits * torch.sigmoid(thresholds)  # Shape: [batch_size, num_labels]
 
         return logits
 
@@ -130,6 +103,11 @@ class LanguageAwareTransformer(nn.Module):
     ):
         super().__init__()
         
+        # Validate supported languages
+        if not SUPPORTED_LANGUAGES:
+            raise ValueError("No supported languages defined")
+        logger.info(f"Initializing model with {len(SUPPORTED_LANGUAGES)} supported languages: {list(SUPPORTED_LANGUAGES.keys())}")
+        
         # Load pretrained model
         self.base_model = XLMRobertaModel.from_pretrained(model_name)
         self.config = self.base_model.config
@@ -147,47 +125,70 @@ class LanguageAwareTransformer(nn.Module):
         # Working hidden size
         self.working_hidden_size = hidden_size if self.needs_projection else self.original_hidden_size
         
-        # Language-aware layers
-        self.pre_attention = nn.Sequential(
-            nn.Linear(self.working_hidden_size + 64, self.working_hidden_size),
-            nn.LayerNorm(self.working_hidden_size),
-            nn.GELU()
+        # Language-aware attention components with dynamic language count
+        num_languages = len(SUPPORTED_LANGUAGES)
+        self.lang_embed = nn.Embedding(num_languages, 64)
+        
+        # Register supported languages for validation
+        self.register_buffer('valid_lang_ids', torch.arange(num_languages))
+        
+        # Optimized language projection for attention bias
+        self.lang_proj = nn.Sequential(
+            nn.Linear(64, num_attention_heads * hidden_size // num_attention_heads),
+            nn.LayerNorm(num_attention_heads * hidden_size // num_attention_heads),
+            nn.Tanh()  # Bounded activation for stable attention scores
         )
         
-        self.lang_attention = nn.MultiheadAttention(
-            embed_dim=self.working_hidden_size,
-            num_heads=num_attention_heads,
-            dropout=dropout,
-            batch_first=True
-        )
+        # Multi-head attention with optimized head dimension
+        head_dim = hidden_size // num_attention_heads
+        self.scale = head_dim ** -0.5  # Scaling factor for attention scores
+        
+        self.q_proj = nn.Linear(hidden_size, hidden_size)
+        self.k_proj = nn.Linear(hidden_size, hidden_size)
+        self.v_proj = nn.Linear(hidden_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
         
         self.post_attention = nn.Sequential(
-            nn.Linear(self.working_hidden_size, self.working_hidden_size),
-            nn.LayerNorm(self.working_hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU()
         )
         
-        # Output layer
-        self.output = LanguageAwareClassifier(
-            hidden_size=self.working_hidden_size,
-            num_labels=num_labels
+        # Output classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Linear(512, num_labels)
         )
         
         self._init_weights()
         self.gradient_checkpointing = False
     
     def _init_weights(self):
-        """Initialize weights of custom layers"""
-        for module in [self.pre_attention, self.post_attention]:
+        """Initialize weights with careful scaling"""
+        for module in [self.lang_proj, self.q_proj, self.k_proj, self.v_proj, 
+                      self.post_attention, self.classifier]:
             if isinstance(module, nn.Sequential):
                 for layer in module:
                     if isinstance(layer, nn.Linear):
-                        nn.init.xavier_uniform_(layer.weight)
+                        # Use scaled initialization for attention projections
+                        if layer in [self.q_proj, self.k_proj, self.v_proj]:
+                            nn.init.normal_(layer.weight, std=0.02)
+                        else:
+                            nn.init.xavier_uniform_(layer.weight)
                         if layer.bias is not None:
-                            nn.init.constant_(layer.bias, 0)
+                            nn.init.zeros_(layer.bias)
                     elif isinstance(layer, nn.LayerNorm):
-                        nn.init.constant_(layer.bias, 0)
-                        nn.init.constant_(layer.weight, 1.0)
+                        nn.init.ones_(layer.weight)
+                        nn.init.zeros_(layer.bias)
+            elif isinstance(module, nn.Linear):
+                if module in [self.q_proj, self.k_proj, self.v_proj]:
+                    nn.init.normal_(module.weight, std=0.02)
+                else:
+                    nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
     
     def gradient_checkpointing_enable(self):
         self.gradient_checkpointing = True
@@ -196,6 +197,42 @@ class LanguageAwareTransformer(nn.Module):
     def gradient_checkpointing_disable(self):
         self.gradient_checkpointing = False
         self.base_model.gradient_checkpointing_disable()
+    
+    def validate_lang_ids(self, lang_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Validate and normalize language IDs
+        Args:
+            lang_ids: Tensor of language IDs
+        Returns:
+            Validated and normalized language ID tensor
+        Raises:
+            ValueError if too many invalid IDs detected
+        """
+        if not isinstance(lang_ids, torch.Tensor):
+            lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=self.valid_lang_ids.device)
+        elif lang_ids.dtype != torch.long:
+            lang_ids = lang_ids.long()
+        
+        # Check for out-of-bounds IDs
+        invalid_mask = ~torch.isin(lang_ids, self.valid_lang_ids)
+        num_invalid = invalid_mask.sum().item()
+        
+        if num_invalid > 0:
+            invalid_ratio = num_invalid / lang_ids.numel()
+            if invalid_ratio > 0.1:  # More than 10% invalid
+                raise ValueError(
+                    f"Too many invalid language IDs detected ({num_invalid} out of {lang_ids.numel()}). "
+                    f"Valid range is 0-{len(SUPPORTED_LANGUAGES)-1}"
+                )
+            # Log warning and clamp invalid IDs
+            logger.warning(
+                f"Found {num_invalid} invalid language IDs. "
+                f"Valid range is 0-{len(SUPPORTED_LANGUAGES)-1}. "
+                "Invalid IDs will be clamped to valid range."
+            )
+            lang_ids = torch.clamp(lang_ids, min=0, max=len(SUPPORTED_LANGUAGES)-1)
+        
+        return lang_ids
     
     def forward(
         self, 
@@ -208,11 +245,17 @@ class LanguageAwareTransformer(nn.Module):
         device = input_ids.device
         batch_size = input_ids.size(0)
         
-        # Handle language IDs
+        # Handle language IDs with validation
         if lang_ids is None:
             lang_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
-        elif not isinstance(lang_ids, torch.Tensor):
-            lang_ids = torch.tensor(lang_ids, dtype=torch.long, device=device)
+        
+        # Validate and normalize language IDs
+        try:
+            lang_ids = self.validate_lang_ids(lang_ids)
+        except ValueError as e:
+            logger.error(f"Language ID validation failed: {str(e)}")
+            logger.error("Falling back to default language (0)")
+            lang_ids = torch.zeros_like(lang_ids)
         
         # Base model forward pass
         hidden_states = self.base_model(
@@ -230,27 +273,50 @@ class LanguageAwareTransformer(nn.Module):
         if self.needs_projection:
             hidden_states = self.dim_projection(hidden_states)
         
-        # Get language embeddings and expand to match sequence length
-        lang_embeddings = self.output.lang_embed(lang_ids)  # Shape: [batch_size, 64]
-        lang_embeddings = lang_embeddings.unsqueeze(1).expand(-1, hidden_states.size(1), -1)
+        # Generate language-aware attention bias
+        lang_emb = self.lang_embed(lang_ids)  # [batch_size, 64]
+        lang_bias = self.lang_proj(lang_emb)  # [batch_size, num_heads * head_dim]
         
-        # Combine features with language embeddings
-        combined = torch.cat([hidden_states, lang_embeddings], dim=-1)  # Shape: [batch_size, seq_len, hidden_size + 64]
-        features = self.pre_attention(combined)  # Shape: [batch_size, seq_len, hidden_size]
+        # Reshape for multi-head attention
+        batch_size, seq_len, hidden_size = hidden_states.shape
+        num_heads = self.config.num_attention_heads
+        head_dim = hidden_size // num_heads
         
-        # Apply attention using only the processed features
-        attention_output, _ = self.lang_attention(
-            query=features,
-            key=features,
-            value=features,
-            key_padding_mask=~attention_mask.bool() if attention_mask is not None else None
+        # Project queries, keys, and values
+        q = self.q_proj(hidden_states).view(batch_size, seq_len, num_heads, head_dim)
+        k = self.k_proj(hidden_states).view(batch_size, seq_len, num_heads, head_dim)
+        v = self.v_proj(hidden_states).view(batch_size, seq_len, num_heads, head_dim)
+        
+        # Transpose for attention computation
+        q = q.transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # Compute attention scores with language bias
+        attn_bias = lang_bias.view(batch_size, num_heads, head_dim, 1)
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        attn_scores = attn_scores + torch.matmul(q, attn_bias).squeeze(-1).unsqueeze(-1)
+        
+        # Apply attention mask
+        if attention_mask is not None:
+            attn_scores = attn_scores.masked_fill(
+                ~attention_mask.bool().unsqueeze(1).unsqueeze(2),
+                float('-inf')
+            )
+        
+        # Compute attention weights and apply to values
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        attention_output = torch.matmul(attn_weights, v)
+        
+        # Reshape and post-process
+        attention_output = attention_output.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, hidden_size
         )
-        
-        # Post-process attention output
-        output = self.post_attention(attention_output)  # Shape: [batch_size, seq_len, hidden_size]
+        output = self.post_attention(attention_output)
         
         # Get logits using the [CLS] token output
-        logits = self.output(output[:, 0], lang_ids)  # Use [CLS] token output
+        logits = self.classifier(output[:, 0])
         probabilities = torch.sigmoid(logits)
         
         # Prepare output dictionary
@@ -271,11 +337,11 @@ class LanguageAwareTransformer(nn.Module):
         torch.save(self.state_dict(), os.path.join(save_path, 'pytorch_model.bin'))
         
         config_dict = {
-            'num_labels': self.output.classifier['output'].out_features,
+            'num_labels': self.classifier[-1].out_features,
             'hidden_size': self.config.hidden_size,
             'num_attention_heads': self.config.num_attention_heads,
             'model_name': self.config.name_or_path,
-            'dropout': self.lang_attention.dropout
+            'dropout': self.dropout.p
         }
         
         with open(os.path.join(save_path, 'config.json'), 'w') as f:

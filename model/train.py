@@ -170,30 +170,55 @@ def get_grad_stats(model):
         return {}
 
 class LanguageAwareFocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+    def __init__(self, reduction='mean'):
         super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
         self.reduction = reduction
 
-    def forward(self, inputs, targets, lang_weights=None):
+    def forward(self, inputs, targets, lang_weights=None, alpha=None, gamma=None):
+        """
+        Compute focal loss with language-aware weighting and per-class parameters
+        Args:
+            inputs: Model predictions [batch_size, num_classes]
+            targets: Target labels [batch_size, num_classes]
+            lang_weights: Optional language weights [batch_size, num_classes]
+            alpha: Optional class-wise weight factor [num_classes] or [batch_size, num_classes]
+            gamma: Optional focusing parameter [num_classes] or [batch_size, num_classes]
+        """
+        if alpha is None:
+            alpha = torch.full_like(inputs, 0.25)
+        if gamma is None:
+            gamma = torch.full_like(inputs, 2.0)
+            
+        # Ensure alpha and gamma have correct shape [batch_size, num_classes]
+        if alpha.dim() == 1:
+            alpha = alpha.unsqueeze(0).expand(inputs.size(0), -1)
+        if gamma.dim() == 1:
+            gamma = gamma.unsqueeze(0).expand(inputs.size(0), -1)
+            
+        # Compute binary cross entropy without reduction
         bce_loss = F.binary_cross_entropy_with_logits(
             inputs, targets, reduction='none'
         )
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
         
+        # Compute probabilities for focusing
+        pt = torch.exp(-bce_loss)  # [batch_size, num_classes]
+        
+        # Compute focal weights with per-class gamma
+        focal_weights = (1 - pt) ** gamma  # [batch_size, num_classes]
+        
+        # Apply alpha weighting per-class
+        weighted_focal_loss = alpha * focal_weights * bce_loss
+        
+        # Apply language-specific weights if provided
         if lang_weights is not None:
-            # Expand lang_weights to match focal_loss dimensions
-            if lang_weights.dim() == 1:
-                lang_weights = lang_weights.unsqueeze(1).expand(-1, focal_loss.size(1))
-            focal_loss = focal_loss * lang_weights
+            weighted_focal_loss = weighted_focal_loss * lang_weights
             
+        # Reduce if needed
         if self.reduction == 'mean':
-            return focal_loss.mean()
+            return weighted_focal_loss.mean()
         elif self.reduction == 'sum':
-            return focal_loss.sum()
-        return focal_loss
+            return weighted_focal_loss.sum()
+        return weighted_focal_loss
 
 def training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx):
     """Execute a single training step with gradient accumulation"""
@@ -203,18 +228,23 @@ def training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx)
     
     # Calculate language weights and focal parameters
     lang_weights = None
+    alpha = None
+    gamma = None
+    
     if hasattr(config, 'lang_weights') and config.lang_weights is not None:
         weight_dict = config.lang_weights.get_weights_for_batch(
             [lang.item() for lang in batch['lang']],
             batch['labels'],
             config.device
         )
-        lang_weights = weight_dict['weights']
-        gamma = weight_dict['gamma']
-        alpha = weight_dict['alpha']
+        lang_weights = weight_dict['weights']  # [batch_size, num_classes]
+        alpha = weight_dict['alpha']           # [num_classes]
+        gamma = weight_dict['gamma']           # [num_classes]
     else:
-        gamma = torch.full_like(batch['labels'], 2.0, dtype=torch.float32)
-        alpha = torch.full_like(batch['labels'], 0.25, dtype=torch.float32)
+        # Default focal parameters if no language weights
+        num_classes = batch['labels'].size(1)
+        alpha = torch.full((num_classes,), 0.25, device=config.device)
+        gamma = torch.full((num_classes,), 2.0, device=config.device)
     
     # Forward pass
     with config.get_autocast_context():
@@ -225,42 +255,77 @@ def training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx)
             lang_ids=batch['lang']
         )
         
-        # Calculate loss with focal loss
-        loss_fct = LanguageAwareFocalLoss(
-            alpha=alpha.mean(),
-            gamma=gamma.mean()
+        # Calculate loss with per-class focal parameters
+        loss_fct = LanguageAwareFocalLoss()
+        loss = loss_fct(
+            outputs['logits'],
+            batch['labels'].float(),
+            lang_weights=lang_weights,
+            alpha=alpha,
+            gamma=gamma
         )
-        loss = loss_fct(outputs['logits'], batch['labels'].float(), lang_weights)
-        # Scale loss by gradient accumulation steps
-        loss = loss / config.grad_accum_steps
         outputs['loss'] = loss
         
         # Check for numerical instability
         if torch.isnan(loss).any() or torch.isinf(loss).any():
             logger.error(f"Numerical instability detected! Loss: {loss.item()}")
             logger.error(f"Batch stats - input_ids shape: {batch['input_ids'].shape}, labels shape: {batch['labels'].shape}")
-            logger.error(f"Weights stats - min: {lang_weights.min():.3f}, max: {lang_weights.max():.3f}")
-            logger.error(f"Focal params - gamma: {gamma.mean():.3f}, alpha: {alpha.mean():.3f}")
+            if lang_weights is not None:
+                logger.error(f"Weights stats - min: {lang_weights.min():.3f}, max: {lang_weights.max():.3f}")
+            logger.error(f"Focal params - gamma range: [{gamma.min():.3f}, {gamma.max():.3f}], alpha range: [{alpha.min():.3f}, {alpha.max():.3f}]")
             optimizer.zero_grad()
             return None
+        
+        # Scale loss for gradient accumulation
+        if config.grad_accum_steps > 1:
+            loss = loss / config.grad_accum_steps
     
-    # Scale loss and backward pass
+    # Backward pass with scaled loss
     scaler.scale(loss).backward()
     
     # Only update weights after accumulating enough gradients
     if (batch_idx + 1) % config.grad_accum_steps == 0:
+        # Log gradient stats before clipping
+        if batch_idx % 100 == 0:
+            grad_stats = get_grad_stats(model)
+            if grad_stats:
+                logger.debug("Gradient stats before clipping:")
+                for key, value in grad_stats.items():
+                    logger.debug(f"{key}: {value}")
+        
         # Gradient clipping
         if config.max_grad_norm > 0:
+            # Unscale gradients before clipping
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), 
+                config.max_grad_norm
+            )
+            if grad_norm.isnan() or grad_norm.isinf():
+                logger.warning(f"Gradient norm is {grad_norm}, skipping optimizer step")
+                optimizer.zero_grad()
+                return loss.item() * config.grad_accum_steps  # Return unscaled loss for logging
         
         # Optimizer step with scaler
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()
+        
+        # Zero gradients after optimizer step
+        optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+        
+        # Step scheduler after optimization
         scheduler.step()
+        
+        # Log gradient stats after update
+        if batch_idx % 100 == 0:
+            grad_stats = get_grad_stats(model)
+            if grad_stats:
+                logger.debug("Gradient stats after update:")
+                for key, value in grad_stats.items():
+                    logger.debug(f"{key}: {value}")
     
-    return loss.item() * config.grad_accum_steps  # Return unscaled loss for logging
+    # Return the original (unscaled) loss for logging
+    return loss.item() * config.grad_accum_steps if config.grad_accum_steps > 1 else loss.item()
 
 def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
     """Save model checkpoint with versioning and timestamps"""

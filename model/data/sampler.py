@@ -14,19 +14,22 @@ class MultilabelStratifiedSampler(Sampler):
         self.groups = np.array(groups)
         self.batch_size = batch_size
         
-        # Use cached size if provided, otherwise use labels length
-        self.num_samples = cached_size if cached_size is not None else len(labels)
+        # Validate input arrays
+        if len(self.labels) != len(self.groups):
+            raise ValueError(
+                f"Length mismatch: labels ({len(self.labels)}) != groups ({len(self.groups)})"
+            )
+        
+        # Use cached size if provided, otherwise use minimum of labels and groups length
+        self.num_samples = min(
+            cached_size if cached_size is not None else len(labels),
+            len(self.groups)
+        )
         
         if self.num_samples == 0:
             raise ValueError("Empty dataset")
         
-        # Validate lengths match if cached_size provided
-        if cached_size is not None and cached_size != len(labels):
-            raise ValueError(
-                f"Cached size {cached_size} does not match labels size {len(labels)}. "
-                "This likely indicates incomplete caching of the dataset."
-            )
-            
+        # Log dataset statistics
         logger.info(f"Dataset size: {self.num_samples}")
         logger.info(f"Batch size: {self.batch_size}")
         logger.info(f"Labels shape: {self.labels.shape}")
@@ -34,16 +37,58 @@ class MultilabelStratifiedSampler(Sampler):
         
         # Create indices per group with validation
         self.group_indices = defaultdict(list)
-        valid_indices = set(range(self.num_samples))
-        for idx, group in enumerate(self.groups):
-            if idx >= self.num_samples:
-                logger.warning(f"Skipping group assignment for index {idx} >= num_samples {self.num_samples}")
-                break
-            self.group_indices[group].append(idx)
-            if idx not in valid_indices:
-                raise ValueError(f"Invalid index {idx} found in groups")
         
-        # Validate group indices
+        # Calculate maximum valid index
+        max_valid_idx = min(len(self.groups), self.num_samples) - 1
+        valid_indices = np.arange(max_valid_idx + 1)
+        
+        # Validate group values are within valid range
+        unique_groups = np.unique(self.groups[:self.num_samples])
+        if len(unique_groups) == 0:
+            raise ValueError("No valid groups found in the dataset")
+        
+        min_group, max_group = unique_groups.min(), unique_groups.max()
+        logger.info(f"Group range: {min_group} to {max_group}")
+        
+        # Safely assign indices to groups
+        for idx in valid_indices:
+            try:
+                group = self.groups[idx]
+                if not np.isnan(group):  # Skip NaN groups
+                    self.group_indices[group].append(idx)
+            except IndexError as e:
+                raise ValueError(
+                    f"Index {idx} is out of bounds for groups array of size {len(self.groups)}"
+                ) from e
+        
+        # Verify all groups have at least one sample
+        empty_groups = [g for g, indices in self.group_indices.items() if not indices]
+        if empty_groups:
+            logger.warning(f"Found empty groups: {empty_groups}")
+        
+        # Verify all indices are within valid range
+        all_indices = set()
+        for group, indices in self.group_indices.items():
+            if not indices:  # Skip empty groups
+                continue
+            all_indices.update(indices)
+            max_idx = max(indices)
+            if max_idx > max_valid_idx:
+                raise ValueError(
+                    f"Invalid index {max_idx} found in group {group}. "
+                    f"Maximum valid index is {max_valid_idx}"
+                )
+        
+        # Verify no missing indices
+        expected_indices = set(range(self.num_samples))
+        missing_indices = expected_indices - all_indices
+        if missing_indices:
+            raise ValueError(
+                f"Missing indices in groups: {sorted(missing_indices)}. "
+                "This may indicate a gap in the dataset."
+            )
+        
+        # Validate total samples match
         total_group_samples = sum(len(indices) for indices in self.group_indices.values())
         if total_group_samples != self.num_samples:
             raise ValueError(
@@ -51,90 +96,89 @@ class MultilabelStratifiedSampler(Sampler):
                 f"does not match dataset size ({self.num_samples})"
             )
         
-        # Log group distribution
-        for group, indices in self.group_indices.items():
-            logger.info(f"Group {group}: {len(indices)} samples")
+        # Calculate group probabilities with validation
+        group_counts = np.array([len(indices) for indices in self.group_indices.values()])
+        if not group_counts.any():
+            raise ValueError("No valid samples found in any group")
         
-        # Calculate minimum samples per group to ensure representation
-        min_group_size = min(len(indices) for indices in self.group_indices.values())
-        samples_per_group = (min_group_size // batch_size) * batch_size
-        logger.info(f"Using {samples_per_group} samples per group to ensure balanced batches")
+        self.group_counts = group_counts
+        self.group_probs = group_counts / group_counts.sum()  # Normalize to sum to 1
         
-        # Calculate total batches and samples
-        num_groups = len(self.group_indices)
-        self.num_batches = (samples_per_group * num_groups) // batch_size
-        self.total_samples = self.num_batches * batch_size
+        # Log detailed group distribution
+        logger.info("\nGroup distribution:")
+        for group, count in sorted(zip(self.group_indices.keys(), self.group_counts)):
+            prob = count / self.num_samples
+            indices = self.group_indices[group]
+            min_idx = min(indices) if indices else -1
+            max_idx = max(indices) if indices else -1
+            logger.info(
+                f"Group {group}: {count} samples ({prob:.2%} of total) "
+                f"[index range: {min_idx}-{max_idx}]"
+            )
         
-        logger.info(f"Will use {self.total_samples} total samples in {self.num_batches} batches")
-        if self.total_samples < self.num_samples:
-            logger.warning(f"Note: Using {self.total_samples}/{self.num_samples} samples to maintain balanced batches")
+        # Calculate number of batches to maintain approximately same dataset size
+        self.num_batches = max(1, self.num_samples // self.batch_size)
+        self.total_samples = self.num_batches * self.batch_size
+        
+        logger.info(f"\nWill generate {self.total_samples} samples in {self.num_batches} batches")
+        
+        # Validate batch size
+        if self.batch_size > self.num_samples:
+            raise ValueError(
+                f"Batch size ({self.batch_size}) cannot be larger than "
+                f"dataset size ({self.num_samples})"
+            )
     
     def __iter__(self):
         try:
-            # Shuffle indices within each group
-            all_indices = []
-            samples_per_group = self.total_samples // len(self.group_indices)
+            # Initialize arrays for batch construction
+            batch_indices = []
+            current_batch_size = 0
             
-            for group in sorted(self.group_indices.keys()):
-                group_idx = np.array(self.group_indices[group])
+            # Generate batches using dynamic ratio-based sampling
+            while len(batch_indices) < self.total_samples:
+                # Select group based on probabilities
+                selected_group = np.random.choice(
+                    len(self.group_indices),
+                    p=self.group_probs
+                )
                 
-                # Validate indices for this group
-                if np.any(group_idx >= self.num_samples):
-                    raise ValueError(
-                        f"Group {group} contains invalid indices: "
-                        f"max={group_idx.max()} >= num_samples={self.num_samples}"
-                    )
+                # Get indices for selected group
+                group_indices = self.group_indices[selected_group]
                 
-                np.random.shuffle(group_idx)
-                selected_indices = group_idx[:samples_per_group]
+                # Randomly sample from selected group
+                selected_idx = np.random.choice(group_indices)
                 
-                # Validate selected indices
-                if len(selected_indices) > 0:
-                    if selected_indices.max() >= self.num_samples:
-                        raise ValueError(
-                            f"Invalid index selected for group {group}: "
-                            f"{selected_indices.max()} >= {self.num_samples}"
-                        )
+                batch_indices.append(selected_idx)
+                current_batch_size += 1
                 
-                all_indices.extend(selected_indices)
-            
-            # Verify we have the right number of indices
-            if len(all_indices) != self.total_samples:
-                logger.error(f"Generated {len(all_indices)} indices but expected {self.total_samples}")
-                # Adjust if needed by truncating or padding
-                if len(all_indices) > self.total_samples:
-                    all_indices = all_indices[:self.total_samples]
-                else:
-                    # Pad with random indices if we're short
-                    padding_needed = self.total_samples - len(all_indices)
-                    padding_indices = np.random.choice(all_indices, size=padding_needed, replace=True)
-                    all_indices.extend(padding_indices)
-            
-            # Convert to numpy array and shuffle
-            indices = np.array(all_indices)
-            np.random.shuffle(indices)
-            
-            # Reshape into batches and shuffle batch order
-            batches = indices.reshape(self.num_batches, self.batch_size)
-            np.random.shuffle(batches)
-            
-            # Flatten and verify final indices
-            final_indices = batches.flatten()
+                # When batch is full, shuffle it
+                if current_batch_size == self.batch_size:
+                    batch_start = len(batch_indices) - self.batch_size
+                    batch = batch_indices[batch_start:len(batch_indices)]
+                    np.random.shuffle(batch)
+                    batch_indices[batch_start:len(batch_indices)] = batch
+                    current_batch_size = 0
             
             # Final validation
-            if len(final_indices) != self.total_samples:
-                raise ValueError(f"Generated {len(final_indices)} indices but expected {self.total_samples}")
-            if np.any(final_indices >= self.num_samples):
-                raise ValueError(f"Invalid indices generated: max index {final_indices.max()} >= dataset size {self.num_samples}")
+            if len(batch_indices) != self.total_samples:
+                raise ValueError(f"Generated {len(batch_indices)} indices but expected {self.total_samples}")
+            if np.any(np.array(batch_indices) >= self.num_samples):
+                raise ValueError(f"Invalid indices generated: max index {max(batch_indices)} >= dataset size {self.num_samples}")
             
             # Log distribution of groups in final indices
             group_counts = defaultdict(int)
-            for idx in final_indices:
+            for idx in batch_indices:
                 group_counts[self.groups[idx]] += 1
-            for group, count in sorted(group_counts.items()):
-                logger.debug(f"Group {group} has {count} samples in final indices")
             
-            return iter(final_indices.tolist())
+            for group, count in sorted(group_counts.items()):
+                actual_prob = count / len(batch_indices)
+                target_prob = self.group_probs[group]
+                logger.debug(
+                    f"Group {group}: {count} samples ({actual_prob:.2%} vs target {target_prob:.2%})"
+                )
+            
+            return iter(batch_indices)
             
         except Exception as e:
             logger.error(f"Error in sampler iteration: {str(e)}")
