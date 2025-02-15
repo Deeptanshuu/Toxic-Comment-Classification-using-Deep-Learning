@@ -596,8 +596,16 @@ def create_dataloaders(train_dataset, val_dataset, config):
     logger.info(f"Batch size: {config.batch_size}")
     logger.info(f"Number of workers: {config.num_workers}")
     
-    # Start with no workers for initial test
-    logger.info("Creating test DataLoader with single worker...")
+    # Set multiprocessing start method
+    if config.num_workers > 0:
+        import multiprocessing as mp
+        if mp.get_start_method(allow_none=True) != 'spawn':
+            try:
+                mp.set_start_method('spawn', force=True)
+                logger.info("Set multiprocessing start method to 'spawn'")
+            except RuntimeError:
+                logger.warning("Could not set multiprocessing start method to 'spawn'")
+    
     try:
         # Create sampler
         train_sampler = MultilabelStratifiedSampler(
@@ -607,52 +615,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
             cached_size=len(train_dataset)
         )
         
-        # Test DataLoader with minimal settings
-        test_loader = DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            sampler=train_sampler,
-            num_workers=0,
-            pin_memory=False,
-            persistent_workers=False,
-            prefetch_factor=None,
-            drop_last=False
-        )
-        
-        # Verify basic functionality
-        logger.info("Testing basic DataLoader functionality...")
-        test_batch = next(iter(test_loader))
-        logger.info("Basic DataLoader test successful")
-        
-        # If basic test passes, try with workers
-        if config.num_workers > 0:
-            logger.info("Testing with multiple workers...")
-            # Start with 2 workers and gradually increase
-            for num_workers in range(2, config.num_workers + 1, 2):
-                try:
-                    logger.info(f"Attempting with {num_workers} workers...")
-                    temp_loader = DataLoader(
-                        train_dataset,
-                        batch_size=config.batch_size,
-                        sampler=train_sampler,
-                        num_workers=num_workers,
-                        pin_memory=torch.cuda.is_available(),
-                        persistent_workers=True,
-                        prefetch_factor=2,
-                        drop_last=False,
-                        timeout=60
-                    )
-                    
-                    # Test batch loading with timeout
-                    test_batch = next(iter(temp_loader))
-                    logger.info(f"Successfully tested with {num_workers} workers")
-                    config.num_workers = num_workers
-                except Exception as e:
-                    logger.warning(f"Failed with {num_workers} workers: {str(e)}")
-                    break
-        
-        # Create final DataLoader with tested settings
-        logger.info("Creating final DataLoader...")
+        # Create DataLoader with optimized settings
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
@@ -661,12 +624,17 @@ def create_dataloaders(train_dataset, val_dataset, config):
             pin_memory=torch.cuda.is_available(),
             persistent_workers=config.num_workers > 0,
             prefetch_factor=2 if config.num_workers > 0 else None,
+            multiprocessing_context='spawn' if config.num_workers > 0 else None,
             drop_last=False
         )
         
-        logger.info(f"Final DataLoader created with {config.num_workers} workers")
-        logger.info(f"DataLoader has {len(train_loader)} batches")
-        logger.info(f"Effective samples per epoch: {len(train_loader) * config.batch_size}")
+        # Verify DataLoader functionality
+        logger.info("Verifying DataLoader...")
+        test_batch = next(iter(train_loader))
+        logger.info(f"Successfully loaded test batch with shapes:")
+        for k, v in test_batch.items():
+            if isinstance(v, torch.Tensor):
+                logger.info(f"- {k}: {v.shape}")
         
         return train_loader
         
@@ -674,7 +642,7 @@ def create_dataloaders(train_dataset, val_dataset, config):
         logger.error(f"Error in DataLoader creation: {str(e)}")
         logger.error("Falling back to single worker mode")
         
-        # Final fallback loader
+        # Create fallback DataLoader with minimal settings
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,

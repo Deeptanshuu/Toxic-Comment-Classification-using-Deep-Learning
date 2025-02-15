@@ -68,16 +68,23 @@ class MultilabelStratifiedSampler(Sampler):
                     f"Index {idx} is out of bounds for groups array of size {len(self.groups)}"
                 ) from e
         
-        # Verify all groups have at least one sample
-        empty_groups = [g for g, indices in self.group_indices.items() if not indices]
-        if empty_groups:
-            logger.warning(f"Found empty groups: {empty_groups}")
+        # Validate group indices
+        valid_groups = []
+        for group in self.group_indices:
+            if not self.group_indices[group]:
+                logger.warning(f"Group {group} has no valid indices - will be excluded from sampling")
+                continue
+            valid_groups.append(group)
+        
+        if not valid_groups:
+            raise ValueError("No valid groups found with indices")
+        
+        # Keep only valid groups
+        self.group_indices = {g: self.group_indices[g] for g in valid_groups}
         
         # Verify all indices are within valid range
         all_indices = set()
         for group, indices in self.group_indices.items():
-            if not indices:  # Skip empty groups
-                continue
             all_indices.update(indices)
             max_idx = max(indices)
             if max_idx > max_valid_idx:
@@ -95,42 +102,33 @@ class MultilabelStratifiedSampler(Sampler):
                 "This may indicate a gap in the dataset."
             )
         
-        # Validate total samples match
-        total_group_samples = sum(len(indices) for indices in self.group_indices.values())
-        if total_group_samples != self.num_samples:
-            raise ValueError(
-                f"Total samples in groups ({total_group_samples}) "
-                f"does not match dataset size ({self.num_samples})"
-            )
-        
         # Calculate group probabilities with validation
         group_counts = np.array([len(indices) for indices in self.group_indices.values()])
-        if not group_counts.any():
-            raise ValueError("No valid samples found in any group")
-        
         self.group_counts = group_counts
         self.group_probs = group_counts / group_counts.sum()  # Normalize to sum to 1
         
+        # Store valid groups for sampling
+        self.valid_groups = np.array(list(self.group_indices.keys()))
+        
         # Log detailed group distribution
         logger.info("\nGroup distribution:")
-        for group, count in sorted(zip(self.group_indices.keys(), self.group_counts)):
+        for group, count in sorted(zip(self.valid_groups, self.group_counts)):
             prob = count / self.num_samples
             indices = self.group_indices[group]
-            min_idx = min(indices) if indices else -1
-            max_idx = max(indices) if indices else -1
+            min_idx = min(indices)
+            max_idx = max(indices)
             orig_group = next((k for k, v in self.group_to_id.items() if v == group), group) if hasattr(self, 'group_to_id') else group
             logger.info(
                 f"Group {orig_group}: {count} samples ({prob:.2%} of total) "
                 f"[index range: {min_idx}-{max_idx}]"
             )
         
-        # Calculate number of batches to maintain approximately same dataset size
+        # Calculate number of batches
         self.num_batches = max(1, self.num_samples // self.batch_size)
         self.total_samples = self.num_batches * self.batch_size
         
         logger.info(f"\nWill generate {self.total_samples} samples in {self.num_batches} batches")
         
-        # Validate batch size
         if self.batch_size > self.num_samples:
             raise ValueError(
                 f"Batch size ({self.batch_size}) cannot be larger than "
@@ -141,69 +139,55 @@ class MultilabelStratifiedSampler(Sampler):
         try:
             logger.info("Starting batch index generation...")
             batch_indices = []
-            max_attempts = 3 * self.total_samples  # Safety limit
-            attempts = 0
             
-            # Generate batches using dynamic ratio-based sampling
+            # Generate batches using controlled iteration
             for batch_num in range(self.num_batches):
                 batch = []
-                batch_attempts = 0
-                max_batch_attempts = 3 * self.batch_size
+                logger.debug(f"Generating batch {batch_num + 1}/{self.num_batches}")
                 
-                print(f"Generating batch {batch_num + 1}/{self.num_batches}")
-                
-                while len(batch) < self.batch_size:
-                    batch_attempts += 1
-                    if batch_attempts > max_batch_attempts:
-                        logger.error(f"Failed to generate batch after {max_batch_attempts} attempts")
-                        raise RuntimeError("Failed to generate balanced batch")
-                    
+                # Generate fixed-size batch
+                for _ in range(self.batch_size):
                     # Select group based on probabilities
                     selected_group = np.random.choice(
-                        len(self.group_indices),
+                        self.valid_groups,
                         p=self.group_probs
                     )
                     
                     # Get indices for selected group
                     group_indices = self.group_indices[selected_group]
-                    if not group_indices:  # Skip empty groups
-                        continue
                     
                     # Randomly sample from selected group
                     selected_idx = np.random.choice(group_indices)
-                    
-                    # Validate index
-                    if selected_idx >= self.num_samples:
-                        logger.warning(f"Invalid index {selected_idx} generated, skipping")
-                        continue
-                    
                     batch.append(selected_idx)
                 
                 # Shuffle the batch
                 np.random.shuffle(batch)
                 batch_indices.extend(batch)
                 
-                # Print progress
-                print(f"Generated {len(batch_indices)} of {self.total_samples} indices")
-                if len(batch_indices) % 1000 == 0:
-                    print(f"Progress: {len(batch_indices)/self.total_samples:.1%}")
+                # Log progress
+                if (batch_num + 1) % 10 == 0:
+                    logger.debug(
+                        f"Generated {len(batch_indices)}/{self.total_samples} indices "
+                        f"({(len(batch_indices)/self.total_samples)*100:.1f}%)"
+                    )
             
-            # Final validation
+            # Validate final indices
             if len(batch_indices) != self.total_samples:
                 raise ValueError(f"Generated {len(batch_indices)} indices but expected {self.total_samples}")
-            if np.any(np.array(batch_indices) >= self.num_samples):
-                raise ValueError(f"Invalid indices generated: max index {max(batch_indices)} >= dataset size {self.num_samples}")
             
-            # Log distribution of groups in final indices
-            group_counts = defaultdict(int)
+            # Log final distribution
+            final_counts = defaultdict(int)
             for idx in batch_indices:
-                group_counts[self.groups[idx]] += 1
+                group = self.groups[idx]
+                final_counts[group] += 1
             
-            for group, count in sorted(group_counts.items()):
+            logger.debug("\nFinal group distribution:")
+            for group, count in sorted(final_counts.items()):
                 actual_prob = count / len(batch_indices)
-                target_prob = self.group_probs[group]
+                target_prob = self.group_probs[np.where(self.valid_groups == group)[0][0]]
                 logger.debug(
-                    f"Group {group}: {count} samples ({actual_prob:.2%} vs target {target_prob:.2%})"
+                    f"Group {group}: {count} samples "
+                    f"(actual: {actual_prob:.2%} vs target: {target_prob:.2%})"
                 )
             
             return iter(batch_indices)
