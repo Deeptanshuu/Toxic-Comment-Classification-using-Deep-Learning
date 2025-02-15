@@ -590,71 +590,35 @@ def train(model, train_loader, config):
             logger.error(f"Could not log epoch metrics to wandb: {str(e)}")
 
 def create_dataloaders(train_dataset, val_dataset, config):
-    """Create optimized DataLoaders"""
-    logger.info("Creating data loaders...")
-    logger.info(f"Dataset size: {len(train_dataset)} samples")
-    logger.info(f"Batch size: {config.batch_size}")
-    logger.info(f"Number of workers: {config.num_workers}")
+    """Create DataLoader with simplified settings"""
+    logger.info("Creating data loader...")
     
-    # Set multiprocessing start method
-    if config.num_workers > 0:
-        import multiprocessing as mp
-        if mp.get_start_method(allow_none=True) != 'spawn':
-            try:
-                mp.set_start_method('spawn', force=True)
-                logger.info("Set multiprocessing start method to 'spawn'")
-            except RuntimeError:
-                logger.warning("Could not set multiprocessing start method to 'spawn'")
+    # Create sampler
+    train_sampler = MultilabelStratifiedSampler(
+        labels=train_dataset.labels,
+        groups=train_dataset.langs,
+        batch_size=config.batch_size
+    )
     
+    # Create DataLoader with minimal settings
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        sampler=train_sampler,
+        num_workers=0,  # Disable multiprocessing for now
+        pin_memory=torch.cuda.is_available(),
+        drop_last=False
+    )
+    
+    # Verify DataLoader
+    logger.info("Testing DataLoader...")
     try:
-        # Create sampler
-        train_sampler = MultilabelStratifiedSampler(
-            labels=train_dataset.labels,
-            groups=train_dataset.langs,
-            batch_size=config.batch_size,
-            cached_size=len(train_dataset)
-        )
-        
-        # Create DataLoader with optimized settings
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            sampler=train_sampler,
-            num_workers=config.num_workers,
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=config.num_workers > 0,
-            prefetch_factor=2 if config.num_workers > 0 else None,
-            multiprocessing_context='spawn' if config.num_workers > 0 else None,
-            drop_last=False
-        )
-        
-        # Verify DataLoader functionality
-        logger.info("Verifying DataLoader...")
         test_batch = next(iter(train_loader))
-        logger.info(f"Successfully loaded test batch with shapes:")
-        for k, v in test_batch.items():
-            if isinstance(v, torch.Tensor):
-                logger.info(f"- {k}: {v.shape}")
-        
+        logger.info("DataLoader test successful")
         return train_loader
-        
     except Exception as e:
-        logger.error(f"Error in DataLoader creation: {str(e)}")
-        logger.error("Falling back to single worker mode")
-        
-        # Create fallback DataLoader with minimal settings
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=config.batch_size,
-            sampler=train_sampler,
-            num_workers=0,
-            pin_memory=torch.cuda.is_available(),
-            persistent_workers=False,
-            prefetch_factor=None,
-            drop_last=False
-        )
-        
-        return train_loader
+        logger.error(f"DataLoader test failed: {str(e)}")
+        raise
 
 def main():
     try:
