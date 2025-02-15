@@ -40,8 +40,23 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
+        # Ensure label columns are defined
+        if not hasattr(config, 'label_columns'):
+            self.label_columns = [
+                'toxic', 'severe_toxic', 'obscene', 
+                'threat', 'insult', 'identity_hate'
+            ]
+            logger.warning("Label columns not provided in config, using defaults")
+        else:
+            self.label_columns = config.label_columns
+        
+        # Verify all label columns exist in DataFrame
+        missing_columns = [col for col in self.label_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing label columns in dataset: {missing_columns}")
+        
         # Convert labels to numpy array for efficiency
-        self.labels = df[config.label_columns].values
+        self.labels = df[self.label_columns].values
         
         # Create language mapping
         self.lang_to_id = {
@@ -54,7 +69,7 @@ class ToxicDataset(Dataset):
         
         print(f"Initialized dataset with {len(self)} samples")
         logger.info(f"Dataset initialized with {len(self)} samples")
-        logger.info(f"Label columns: {config.label_columns}")
+        logger.info(f"Label columns: {self.label_columns}")
         logger.info(f"Unique languages: {np.unique(df['lang'])}")
         logger.info(f"Language mapping: {self.lang_to_id}")
     
@@ -644,6 +659,9 @@ def main():
                       help='Maximum sequence length for tokenization')
     parser.add_argument('--gc_frequency', type=int, default=500,
                       help='Frequency of garbage collection')
+    parser.add_argument('--label_columns', nargs='+', 
+                      default=['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'],
+                      help='List of label column names')
     
     args = parser.parse_args()
     
@@ -664,7 +682,8 @@ def main():
         'force_retokenize': args.force_retokenize,
         'prefetch_factor': args.prefetch_factor,
         'max_length': args.max_length,
-        'gc_frequency': args.gc_frequency
+        'gc_frequency': args.gc_frequency,
+        'label_columns': args.label_columns
     }
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
@@ -682,11 +701,16 @@ def main():
         test_df = pd.read_csv(args.test_file)
         print(f"Loaded {len(test_df):,} test samples")
         
+        # Verify label columns exist in the DataFrame
+        missing_columns = [col for col in args.label_columns if col not in test_df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing label columns in dataset: {missing_columns}")
+        
         # Create test dataset
         test_dataset = ToxicDataset(
             test_df, 
             tokenizer, 
-            config=args
+            args
         )
         
         # Configure DataLoader with optimized settings
