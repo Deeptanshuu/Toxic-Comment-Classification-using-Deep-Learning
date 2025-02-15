@@ -428,4 +428,23 @@ class TrainingConfig:
             return 1.5  # BF16 can handle slightly higher gradients than FP16
         if self.mixed_precision == "fp16":
             return 1.0  # Most conservative for FP16 due to lower precision
-        return 5.0  # Full precision can handle larger gradients 
+        return 5.0  # Full precision can handle larger gradients
+
+    @property
+    def num_workers(self):
+        """Dynamically adjust workers based on system resources"""
+        if self._num_workers is None:
+            cpu_count = os.cpu_count()
+            if cpu_count is None:
+                self._num_workers = 0
+            else:
+                # Leave at least 2 CPUs free, max 4 workers
+                self._num_workers = min(4, max(0, cpu_count - 2))
+            logger.info(f"Dynamically set num_workers to {self._num_workers} (CPU count: {cpu_count})")
+        return self._num_workers
+    
+    @num_workers.setter
+    def num_workers(self, value):
+        """Allow manual override of num_workers"""
+        self._num_workers = value
+        logger.info(f"Manually set num_workers to {value}") 

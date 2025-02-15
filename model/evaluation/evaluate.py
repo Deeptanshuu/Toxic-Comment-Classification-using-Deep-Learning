@@ -40,56 +40,45 @@ class ToxicDataset(Dataset):
         self.tokenizer = tokenizer
         self.config = config
         
-        # Language mapping
-        self.lang_to_id = {
-            'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
-            'fr': 4, 'it': 5, 'pt': 6
-        }
+        # Convert labels to numpy array for efficiency
+        self.labels = df[config.label_columns].values
+        self.langs = df['lang'].values
         
-        # Convert language codes to IDs
-        if 'lang_id' not in df.columns:
-            if 'lang' not in df.columns:
-                raise ValueError("Neither 'lang_id' nor 'lang' column found in DataFrame")
-            logger.info("Converting language codes to IDs...")
-            lang_ids = [self.lang_to_id.get(lang, 0) for lang in df['lang']]
-            self.df['lang_id'] = lang_ids
-        
-        # Extract labels and language IDs for the sampler
-        self.labels = torch.tensor(df[['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']].values)
-        self.langs = torch.tensor(df['lang_id'].values)
-        
-        logger.info(f"Dataset initialized with {len(df)} samples")
-        logger.info(f"Labels shape: {self.labels.shape}")
-        logger.info(f"Languages shape: {self.langs.shape}")
-        logger.info(f"Language distribution: {df['lang_id'].value_counts().to_dict()}")
+        print(f"Initialized dataset with {len(self)} samples")
+        logger.info(f"Dataset initialized with {len(self)} samples")
+        logger.info(f"Label columns: {config.label_columns}")
+        logger.info(f"Unique languages: {np.unique(self.langs)}")
     
     def __len__(self):
         return len(self.df)
     
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
+        if idx % 1000 == 0:
+            print(f"Loading sample {idx}")
+            logger.debug(f"Loading sample {idx}")
+        
+        # Get text and labels
+        text = self.df.iloc[idx]['comment_text']
+        labels = torch.FloatTensor(self.labels[idx])
+        lang = torch.tensor(self.langs[idx])
         
         # Tokenize text
         encoding = self.tokenizer(
-            row['comment_text'],
+            text,
+            add_special_tokens=True,
             max_length=self.config.max_length,
             padding='max_length',
             truncation=True,
+            return_attention_mask=True,
             return_tensors='pt'
         )
         
-        # Create sample dictionary
-        sample = {
+        return {
             'input_ids': encoding['input_ids'].squeeze(0),
             'attention_mask': encoding['attention_mask'].squeeze(0),
-            'labels': torch.tensor([
-                row['toxic'], row['severe_toxic'], row['obscene'],
-                row['threat'], row['insult'], row['identity_hate']
-            ], dtype=torch.float32),
-            'lang': torch.tensor(row['lang_id'], dtype=torch.long)
+            'labels': labels,
+            'lang': lang
         }
-        
-        return sample
 
 class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
     """Custom estimator for threshold optimization"""

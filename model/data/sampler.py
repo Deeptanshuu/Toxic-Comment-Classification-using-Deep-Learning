@@ -131,49 +131,54 @@ class MultilabelStratifiedSampler(Sampler):
     
     def __iter__(self):
         try:
-            # Initialize arrays for batch construction
+            logger.info("Starting batch index generation...")
             batch_indices = []
-            current_batch_size = 0
             max_attempts = 3 * self.total_samples  # Safety limit
             attempts = 0
             
             # Generate batches using dynamic ratio-based sampling
-            while len(batch_indices) < self.total_samples:
-                attempts += 1
-                if attempts > max_attempts:
-                    logger.error(f"Failed to generate indices after {max_attempts} attempts")
-                    logger.error(f"Generated {len(batch_indices)}/{self.total_samples} indices")
-                    raise RuntimeError("Failed to generate balanced batches")
+            for batch_num in range(self.num_batches):
+                batch = []
+                batch_attempts = 0
+                max_batch_attempts = 3 * self.batch_size
                 
-                # Select group based on probabilities
-                selected_group = np.random.choice(
-                    len(self.group_indices),
-                    p=self.group_probs
-                )
+                print(f"Generating batch {batch_num + 1}/{self.num_batches}")
                 
-                # Get indices for selected group
-                group_indices = self.group_indices[selected_group]
-                if not group_indices:  # Skip empty groups
-                    continue
+                while len(batch) < self.batch_size:
+                    batch_attempts += 1
+                    if batch_attempts > max_batch_attempts:
+                        logger.error(f"Failed to generate batch after {max_batch_attempts} attempts")
+                        raise RuntimeError("Failed to generate balanced batch")
+                    
+                    # Select group based on probabilities
+                    selected_group = np.random.choice(
+                        len(self.group_indices),
+                        p=self.group_probs
+                    )
+                    
+                    # Get indices for selected group
+                    group_indices = self.group_indices[selected_group]
+                    if not group_indices:  # Skip empty groups
+                        continue
+                    
+                    # Randomly sample from selected group
+                    selected_idx = np.random.choice(group_indices)
+                    
+                    # Validate index
+                    if selected_idx >= self.num_samples:
+                        logger.warning(f"Invalid index {selected_idx} generated, skipping")
+                        continue
+                    
+                    batch.append(selected_idx)
                 
-                # Randomly sample from selected group
-                selected_idx = np.random.choice(group_indices)
+                # Shuffle the batch
+                np.random.shuffle(batch)
+                batch_indices.extend(batch)
                 
-                # Validate index
-                if selected_idx >= self.num_samples:
-                    logger.warning(f"Invalid index {selected_idx} generated, skipping")
-                    continue
-                
-                batch_indices.append(selected_idx)
-                current_batch_size += 1
-                
-                # When batch is full, shuffle it
-                if current_batch_size == self.batch_size:
-                    batch_start = len(batch_indices) - self.batch_size
-                    batch = batch_indices[batch_start:len(batch_indices)]
-                    np.random.shuffle(batch)
-                    batch_indices[batch_start:len(batch_indices)] = batch
-                    current_batch_size = 0
+                # Print progress
+                print(f"Generated {len(batch_indices)} of {self.total_samples} indices")
+                if len(batch_indices) % 1000 == 0:
+                    print(f"Progress: {len(batch_indices)/self.total_samples:.1%}")
             
             # Final validation
             if len(batch_indices) != self.total_samples:
