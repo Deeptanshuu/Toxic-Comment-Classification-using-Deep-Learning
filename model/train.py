@@ -520,10 +520,10 @@ def train(model, train_loader, config):
                 
                 # Update progress bar with detailed metrics
                 progress_bar.set_postfix({
-                    'loss': f'{loss:.4f}' if loss is not None else 'N/A',
-                    'lr': f'{scheduler.get_last_lr()[0]:.2e}',
-                    'batch_time': f'{batch_time:.2f}s',
-                    'processed': f'{(batch_idx + 1) * config.batch_size}'
+                    'loss': f"{loss:.4f}" if loss is not None else "N/A",
+                    'lr': f"{scheduler.get_last_lr()[0]:.2e}",
+                    'batch_time': f"{batch_time:.2f}s",
+                    'processed': f"{(batch_idx + 1) * config.batch_size}"
                 })
                 
                 # Log to wandb with more frequent updates
