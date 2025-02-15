@@ -488,12 +488,17 @@ def calculate_class_metrics(labels, predictions, binary_predictions, threshold):
     except ValueError:
         auc = 0.0
     
+    # Calculate metrics with zero_division=1
+    precision = precision_score(labels, binary_predictions, zero_division=1)
+    recall = recall_score(labels, binary_predictions, zero_division=1)
+    f1 = f1_score(labels, binary_predictions, zero_division=1)
+    
     metrics = {
         'auc': auc,
         'threshold': threshold,
-        'precision': precision_score(labels, binary_predictions, zero_division=1),
-        'recall': recall_score(labels, binary_predictions, zero_division=1),
-        'f1': f1_score(labels, binary_predictions, zero_division=1),
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
         'support': int(labels.sum()),
         'brier': brier_score_loss(labels, predictions)
     }
