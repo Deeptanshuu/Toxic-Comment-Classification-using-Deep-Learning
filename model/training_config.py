@@ -228,10 +228,10 @@ class TrainingConfig:
     
     # Training parameters
     batch_size: int = 256
-    grad_accum_steps: int = 2
-    epochs: int = 20
-    lr: float = 1e-5
-    weight_decay: float = 2e-6
+    grad_accum_steps: int = 1
+    epochs: int = 10
+    lr: float = 2e-5
+    weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
     label_smoothing: float = 0.01
