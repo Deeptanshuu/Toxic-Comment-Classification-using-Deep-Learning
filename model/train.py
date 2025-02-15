@@ -16,6 +16,7 @@ import json
 from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 
 from transformers import (
     XLMRobertaTokenizer
@@ -466,59 +467,102 @@ def train(model, train_loader, config):
     logger.info("Starting training loop...")
     # Training loop
     model.train()
+    
+    # Verify data loader is properly initialized
+    try:
+        logger.info("Verifying data loader...")
+        test_batch = next(iter(train_loader))
+        logger.info(f"Data loader test successful. Batch keys: {list(test_batch.keys())}")
+        logger.info(f"Input shape: {test_batch['input_ids'].shape}")
+        logger.info(f"Label shape: {test_batch['labels'].shape}")
+    except Exception as e:
+        logger.error(f"Data loader verification failed: {str(e)}")
+        raise
+    
     for epoch in range(config.epochs):
         epoch_loss = 0
         num_batches = 0
         
         logger.info(f"Starting epoch {epoch + 1}/{config.epochs}")
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
         
-        optimizer.zero_grad()  # Zero gradients at start of epoch
+        # Create progress bar with additional metrics
+        progress_bar = tqdm(
+            train_loader, 
+            desc=f"Epoch {epoch + 1}/{config.epochs}",
+            dynamic_ncols=True,  # Adapt to terminal width
+            leave=True  # Keep progress bar after completion
+        )
+        
+        optimizer.zero_grad(set_to_none=True)  # More efficient gradient clearing
         
         logger.info("Iterating through batches...")
+        batch_start_time = time.time()
+        
         for batch_idx, batch in enumerate(progress_bar):
             try:
+                # Log first batch details
                 if batch_idx == 0:
                     logger.info("Successfully loaded first batch")
                     logger.info(f"Batch shapes - input_ids: {batch['input_ids'].shape}, "
                               f"attention_mask: {batch['attention_mask'].shape}, "
                               f"labels: {batch['labels'].shape}")
+                    logger.info(f"Memory usage: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
                 
+                # Execute training step
                 loss = training_step(batch, model, optimizer, scheduler, config, scaler, batch_idx)
+                
                 if loss is not None:
                     epoch_loss += loss
                     num_batches += 1
                 
-                # Update progress bar
+                # Calculate batch processing time
+                batch_time = time.time() - batch_start_time
+                
+                # Update progress bar with detailed metrics
                 progress_bar.set_postfix({
                     'loss': f'{loss:.4f}' if loss is not None else 'N/A',
-                    'lr': f'{scheduler.get_last_lr()[0]:.2e}'
+                    'lr': f'{scheduler.get_last_lr()[0]:.2e}',
+                    'batch_time': f'{batch_time:.2f}s',
+                    'processed': f'{(batch_idx + 1) * config.batch_size}'
                 })
                 
-                # Log to wandb
-                if (batch_idx + 1) % config.grad_accum_steps == 0:
+                # Log to wandb with more frequent updates
+                if (batch_idx + 1) % max(1, config.grad_accum_steps // 2) == 0:
                     try:
                         wandb.log({
                             'batch_loss': loss if loss is not None else 0,
-                            'learning_rate': scheduler.get_last_lr()[0]
+                            'learning_rate': scheduler.get_last_lr()[0],
+                            'batch_time': batch_time,
+                            'gpu_memory': torch.cuda.memory_allocated() / 1024**2
                         })
                     except Exception as e:
                         logger.warning(f"Could not log to wandb: {str(e)}")
                 
-                if batch_idx % 100 == 0:
-                    logger.info(f"Completed {batch_idx}/{len(train_loader)} batches")
-                    # Explicit memory cleanup
+                # More frequent logging for debugging
+                if batch_idx % 10 == 0:
+                    logger.debug(
+                        f"Batch {batch_idx}/{len(train_loader)}: "
+                        f"Loss={loss:.4f if loss is not None else 'N/A'}, "
+                        f"Time={batch_time:.2f}s"
+                    )
+                
+                # Memory management
+                if batch_idx % config.gc_frequency == 0:
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
+                
+                batch_start_time = time.time()
                 
             except Exception as e:
                 logger.error(f"Error in batch {batch_idx}: {str(e)}")
                 logger.error("Batch contents:")
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
-                        logger.error(f"{k}: shape={v.shape}, dtype={v.dtype}")
+                        logger.error(f"{k}: shape={v.shape}, dtype={v.dtype}, device={v.device}")
                     else:
                         logger.error(f"{k}: type={type(v)}")
+                if torch.cuda.is_available():
+                    logger.error(f"GPU Memory: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
                 continue
         
         # Calculate average epoch loss
@@ -538,7 +582,9 @@ def train(model, train_loader, config):
             wandb.log({
                 'epoch': epoch + 1,
                 'epoch_loss': avg_epoch_loss,
-                'best_auc': metrics.best_auc
+                'best_auc': metrics.best_auc,
+                'learning_rate': scheduler.get_last_lr()[0],
+                'gpu_memory': torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
             })
         except Exception as e:
             logger.error(f"Could not log epoch metrics to wandb: {str(e)}")
