@@ -23,6 +23,7 @@ import multiprocessing
 from pathlib import Path
 import hashlib
 import logging
+from sklearn.metrics import make_scorer
 
 # Set matplotlib to non-interactive backend
 plt.switch_backend('agg')
@@ -108,9 +109,23 @@ class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
     def score(self, X, y):
         # Return F1 score with proper handling of edge cases
         predictions = self.predict(X)
-        if y.sum() == 0 and predictions.sum() == 0:
-            return 1.0  # Perfect prediction when no positive samples
-        return f1_score(y, predictions, zero_division=1)
+        
+        # Handle edge case where all samples are negative
+        if y.sum() == 0:
+            return 1.0 if predictions.sum() == 0 else 0.0
+            
+        # Calculate metrics with zero_division=1
+        try:
+            precision = precision_score(y, predictions, zero_division=1)
+            recall = recall_score(y, predictions, zero_division=1)
+            
+            # Calculate F1 manually to avoid warnings
+            if precision + recall == 0:
+                return 0.0
+            f1 = 2 * (precision * recall) / (precision + recall)
+            return f1
+        except Exception:
+            return 0.0
 
 def load_model(model_path):
     """Load model and tokenizer from versioned checkpoint directory"""
@@ -179,6 +194,15 @@ def optimize_threshold(y_true, y_pred_proba, n_steps=50):
     """
     Optimize threshold using grid search to maximize F1 score
     """
+    # Handle edge case where all samples are negative
+    if y_true.sum() == 0:
+        return {
+            'threshold': 0.5,  # Use default threshold
+            'f1_score': 1.0,   # Perfect score for all negative samples
+            'support': 0,
+            'total_samples': len(y_true)
+        }
+    
     # Create parameter grid
     param_grid = {
         'threshold': np.linspace(0.3, 0.7, n_steps)
@@ -187,11 +211,11 @@ def optimize_threshold(y_true, y_pred_proba, n_steps=50):
     # Initialize optimizer
     optimizer = ThresholdOptimizer()
     
-    # Run grid search
+    # Run grid search with custom scoring
     grid_search = GridSearchCV(
         optimizer,
         param_grid,
-        scoring='f1',
+        scoring=make_scorer(f1_score, zero_division=1),
         cv=5,
         n_jobs=-1,
         verbose=0
