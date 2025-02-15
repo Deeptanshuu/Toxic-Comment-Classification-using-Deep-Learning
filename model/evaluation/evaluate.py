@@ -163,12 +163,14 @@ def optimize_threshold(y_true, y_pred_proba, n_iter=50):
         # Return negative since BayesSearchCV minimizes
         return -f1
     
-    # Define the search space
-    search_space = [Real(0.3, 0.7, name='threshold')]
+    # Define the search space as a dictionary
+    search_space = {
+        'threshold': Real(0.3, 0.7, prior='uniform', transform='identity')
+    }
     
     # Run Bayesian optimization
     opt = BayesSearchCV(
-        lambda x: objective(x[0]),  # Wrapper for objective function
+        lambda params: objective(params['threshold']),  # Wrapper for objective function
         search_space,
         n_iter=n_iter,
         random_state=42,
