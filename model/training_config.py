@@ -266,6 +266,7 @@ class TrainingConfig:
     
     # Dataset parameters
     cache_dir: str = 'cached_dataset'
+    label_columns: List[str] = None  # Will be initialized in __post_init__
     
     # Training parameters
     batch_size: int = 256
@@ -281,7 +282,7 @@ class TrainingConfig:
     # Memory optimization
     activation_checkpointing: bool = True
     mixed_precision: str = "fp16"
-    num_workers: int = 16
+    _num_workers: int = None  # Private storage for num_workers
     gc_frequency: int = 500
     tensor_float_32: bool = True
     
@@ -290,6 +291,12 @@ class TrainingConfig:
 
     def __post_init__(self):
         """Initialize and validate configuration"""
+        # Initialize label columns
+        self.label_columns = [
+            'toxic', 'severe_toxic', 'obscene', 
+            'threat', 'insult', 'identity_hate'
+        ]
+        
         # Set environment variables for memory optimization
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
         
