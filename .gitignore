@@ -11,7 +11,8 @@ venv.bak/
 
 # Weights and Biases
 weights/*
-dataset/*
+dataset/processed/*
+dataset/raw/*
 cache/*
 wandb/*
 
