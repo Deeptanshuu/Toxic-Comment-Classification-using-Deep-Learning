@@ -75,13 +75,21 @@ UNICODE_RANGES = {
 def load_model(model_path):
     """Load the trained model and tokenizer"""
     try:
-        # Convert to Path object and resolve any symlinks
-        model_dir = Path(model_path).resolve()
+        # Convert to absolute Path object
+        model_dir = Path(model_path).absolute()
+        
         if model_dir.is_dir():
             # Check for 'latest' symlink first
             latest_link = model_dir / 'latest'
             if latest_link.exists() and latest_link.is_symlink():
-                model_dir = latest_link.resolve()
+                # Get the target of the symlink
+                target = latest_link.readlink()
+                # If target is absolute, use it directly
+                if target.is_absolute():
+                    model_dir = target
+                else:
+                    # If target is relative, resolve it relative to the symlink's directory
+                    model_dir = (latest_link.parent / target).resolve()
                 logger.info(f"Using latest checkpoint: {model_dir}")
             else:
                 # Find most recent checkpoint
@@ -96,6 +104,10 @@ def load_model(model_path):
                     logger.info("No checkpoints found, using base directory")
         
         logger.info(f"Loading model from: {model_dir}")
+        
+        # Verify the directory exists
+        if not model_dir.exists():
+            raise FileNotFoundError(f"Model directory not found: {model_dir}")
         
         # Initialize the custom model architecture
         model = LanguageAwareTransformer(
