@@ -235,7 +235,7 @@ def analyze_language_distribution():
     
     # Read the dataset
     print("Reading dataset...")
-    input_file = 'dataset/processed/MULTILINGUAL_TOXIC_DATASET_AUGMENTED.csv'
+    input_file = 'dataset/split/train.csv'
     df = pd.read_csv(input_file)
     
     # Get language distribution
@@ -245,6 +245,7 @@ def analyze_language_distribution():
     # Print basic statistics
     print("\nDataset Overview:")
     print("-" * 50)
+    print("Input file: ", input_file)
     print(f"Total number of comments: {len(df):,}")
     print(f"Number of languages: {df['lang'].nunique()}")
     

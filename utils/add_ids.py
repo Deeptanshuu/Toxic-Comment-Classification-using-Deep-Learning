@@ -72,7 +72,7 @@ def add_dataset_ids(input_file, output_file=None):
     return df
 
 if __name__ == "__main__":
-    input_file = "dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv"
+    input_file = "dataset/raw/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary.csv"
     output_file = "dataset/processed/MULTILINGUAL_TOXIC_DATASET_360K_7LANG_binary_with_ids.csv"
     
     df_with_ids = add_dataset_ids(input_file, output_file) 

@@ -258,7 +258,7 @@ class TrainingConfig:
     """Basic training configuration with consolidated default values"""
     # Model parameters
     model_name: str = "xlm-roberta-large"
-    max_length: int = 128
+    max_length: int = 256
     hidden_size: int = 1024
     num_attention_heads: int = 16
     model_dropout: float = 0.0
@@ -269,9 +269,9 @@ class TrainingConfig:
     label_columns: List[str] = None  # Will be initialized in __post_init__
     
     # Training parameters
-    batch_size: int = 256
+    batch_size: int = 128
     grad_accum_steps: int = 1
-    epochs: int = 6
+    epochs: int = 3
     lr: float = 2e-5
     weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
