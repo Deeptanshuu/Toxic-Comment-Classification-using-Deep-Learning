@@ -10,17 +10,30 @@ from langdetect import detect, DetectorFactory
 from langdetect.lang_detect_exception import LangDetectException
 import sys
 import locale
+import io
 
-# Configure system encoding for input/output
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
-if sys.stdin.encoding != 'utf-8':
-    sys.stdin.reconfigure(encoding='utf-8')
+# Force UTF-8 encoding for stdin/stdout
+if sys.platform == 'win32':
+    # Windows-specific handling
+    import msvcrt
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    # Set console to UTF-8 mode
+    os.system('chcp 65001')
+else:
+    # Unix-like systems
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    if sys.stdin.encoding != 'utf-8':
+        sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
 
-# Set up logging
+# Set up logging with UTF-8 encoding
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -341,7 +354,18 @@ def main():
         try:
             # Get input text with proper Unicode handling
             print("\nEnter text to analyze (or 'q' to quit):")
-            text = input().strip()
+            try:
+                if sys.platform == 'win32':
+                    # Windows-specific input handling
+                    text = sys.stdin.buffer.readline().decode('utf-8').strip()
+                else:
+                    text = input().strip()
+            except UnicodeDecodeError:
+                # Fallback to latin-1 if UTF-8 fails
+                if sys.platform == 'win32':
+                    text = sys.stdin.buffer.readline().decode('latin-1').strip()
+                else:
+                    text = sys.stdin.buffer.readline().decode('latin-1').strip()
             
             if text.lower() == 'q':
                 break
@@ -383,10 +407,6 @@ def main():
             else:
                 print("✅  This text appears to be non-toxic")
                 
-        except UnicodeDecodeError as e:
-            logger.error("Error reading input: Invalid Unicode characters")
-            print("\nError: Unable to process input due to invalid characters. Please try again.")
-            continue
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
             print("\nAn unexpected error occurred. Please try again.")
