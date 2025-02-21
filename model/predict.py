@@ -8,6 +8,14 @@ from pathlib import Path
 import logging
 from langdetect import detect, DetectorFactory
 from langdetect.lang_detect_exception import LangDetectException
+import sys
+import locale
+
+# Configure system encoding for input/output
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stdin.encoding != 'utf-8':
+    sys.stdin.reconfigure(encoding='utf-8')
 
 # Set up logging
 logging.basicConfig(
@@ -330,49 +338,59 @@ def main():
         return
     
     while True:
-        # Get input text
-        print("\nEnter text to analyze (or 'q' to quit):")
-        text = input().strip().lower()
-        
-        if text.lower() == 'q':
-            break
-        
-        if not text:
-            print("Please enter some text to analyze.")
+        try:
+            # Get input text with proper Unicode handling
+            print("\nEnter text to analyze (or 'q' to quit):")
+            text = input().strip()
+            
+            if text.lower() == 'q':
+                break
+            
+            if not text:
+                print("Please enter some text to analyze.")
+                continue
+            
+            # Make prediction
+            print("\nAnalyzing text...")
+            predictions, lang_id = predict_toxicity(text, model, tokenizer, device)
+            
+            # Get language name
+            lang_name = [k for k, v in SUPPORTED_LANGUAGES.items() if v == lang_id][0]
+            
+            # Print results
+            print("\nResults:")
+            print("-" * 50)
+            print(f"Text: {text}")
+            print(f"Detected Language: {lang_name}")
+            print("\nToxicity Analysis:")
+            
+            any_toxic = False
+            for label, result in predictions.items():
+                if result['is_toxic']:
+                    any_toxic = True
+                    print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ⚠️")
+            
+            # Print non-toxic results with lower emphasis
+            print("\nOther categories:")
+            for label, result in predictions.items():
+                if not result['is_toxic']:
+                    print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ✓")
+            
+            # Overall assessment
+            print("\nOverall Assessment:")
+            if any_toxic:
+                print("⚠️  This text contains toxic content")
+            else:
+                print("✅  This text appears to be non-toxic")
+                
+        except UnicodeDecodeError as e:
+            logger.error("Error reading input: Invalid Unicode characters")
+            print("\nError: Unable to process input due to invalid characters. Please try again.")
             continue
-        
-        # Make prediction
-        print("\nAnalyzing text...")
-        predictions, lang_id = predict_toxicity(text, model, tokenizer, device)
-        
-        # Get language name
-        lang_name = [k for k, v in SUPPORTED_LANGUAGES.items() if v == lang_id][0]
-        
-        # Print results
-        print("\nResults:")
-        print("-" * 50)
-        print(f"Text: {text}")
-        print(f"Detected Language: {lang_name}")
-        print("\nToxicity Analysis:")
-        
-        any_toxic = False
-        for label, result in predictions.items():
-            if result['is_toxic']:
-                any_toxic = True
-                print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ⚠️")
-        
-        # Print non-toxic results with lower emphasis
-        print("\nOther categories:")
-        for label, result in predictions.items():
-            if not result['is_toxic']:
-                print(f"- {label}: {result['probability']:.2%} (threshold: {result['threshold']:.2%}) ✓")
-        
-        # Overall assessment
-        print("\nOverall Assessment:")
-        if any_toxic:
-            print("⚠️  This text contains toxic content")
-        else:
-            print("✅  This text appears to be non-toxic")
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            print("\nAn unexpected error occurred. Please try again.")
+            continue
 
 if __name__ == "__main__":
     main() 
