@@ -6,6 +6,8 @@ import re
 import json
 from pathlib import Path
 import logging
+from langdetect import detect, DetectorFactory
+from langdetect.lang_detect_exception import LangDetectException
 
 # Set up logging
 logging.basicConfig(
@@ -13,6 +15,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Ensure reproducibility with langdetect
+DetectorFactory.seed = 0
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
@@ -212,24 +217,45 @@ def analyze_tokenizer_stats(text, tokenizer):
 
 def detect_language(text, tokenizer):
     """
-    Enhanced language detection using multiple methods:
-    1. Unicode range analysis
-    2. Tokenizer statistics
-    3. ASCII analysis for English
+    Enhanced language detection using langdetect with multiple fallback methods:
+    1. Primary: langdetect library
+    2. Fallback 1: ASCII analysis for English
+    3. Fallback 2: Unicode range analysis
+    4. Fallback 3: Tokenizer statistics
     """
     try:
         # Clean text
         text = text.strip()
         
-        # If empty or just punctuation
+        # If empty or just punctuation, default to English
         if not text or not re.search(r'\w', text):
             return SUPPORTED_LANGUAGES['en']
             
-        # If text is ASCII only, likely English
+        # Primary method: Use langdetect
+        try:
+            detected_code = detect(text)
+            # Map some common language codes that might differ
+            lang_mapping = {
+                'eng': 'en',
+                'rus': 'ru',
+                'tur': 'tr',
+                'spa': 'es',
+                'fra': 'fr',
+                'ita': 'it',
+                'por': 'pt'
+            }
+            detected_code = lang_mapping.get(detected_code, detected_code)
+            
+            if detected_code in SUPPORTED_LANGUAGES:
+                return SUPPORTED_LANGUAGES[detected_code]
+        except LangDetectException:
+            pass  # Continue to fallback methods
+            
+        # Fallback 1: If text is ASCII only, likely English
         if all(ord(c) < 128 for c in text):
             return SUPPORTED_LANGUAGES['en']
         
-        # Get scores from different methods
+        # Fallback 2 & 3: Combine Unicode analysis and tokenizer statistics
         unicode_scores = analyze_unicode_ranges(text)
         tokenizer_scores = analyze_tokenizer_stats(text, tokenizer)
         
@@ -250,7 +276,7 @@ def detect_language(text, tokenizer):
         return SUPPORTED_LANGUAGES['en']
         
     except Exception as e:
-        print(f"Note: Language detection failed ({str(e)}). Using English.")
+        logger.warning(f"Language detection failed ({str(e)}). Using English.")
         return SUPPORTED_LANGUAGES['en']
 
 def predict_toxicity(text, model, tokenizer, device):
