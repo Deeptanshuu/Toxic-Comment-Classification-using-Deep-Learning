@@ -21,7 +21,7 @@ SUPPORTED_LANGUAGES = {
 
 # Default thresholds optimized on validation set
 DEFAULT_THRESHOLDS = {
-    'toxic': 0.50,         # Optimized for general toxicity
+    'toxic': 0.80,         # Optimized for general toxicity
     'severe_toxic': 0.45,  # Lower to catch serious cases
     'obscene': 0.48,      # Balanced for precision/recall
     'threat': 0.42,       # Lower to catch potential threats
