@@ -25,7 +25,7 @@ DEFAULT_THRESHOLDS = {
     'severe_toxic': 0.45,  # Lower to catch serious cases
     'obscene': 0.48,      # Balanced for precision/recall
     'threat': 0.42,       # Lower to catch potential threats
-    'insult': 0.47,       # Balanced for common cases
+    'insult': 0.70,       # Balanced for common cases
     'identity_hate': 0.43  # Lower to catch hate speech
 }
 
