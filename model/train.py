@@ -369,26 +369,6 @@ def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
             json.dump(config.to_serializable_dict(), f, indent=2)
         logger.info(f"Saved config to {config_save_path}")
         
-        # Create latest symlink
-        latest_path = base_dir / 'latest'
-        target_path = checkpoint_dir.relative_to(base_dir)
-        
-        # Remove existing symlink and target if they exist
-        try:
-            if latest_path.exists():
-                if latest_path.is_symlink():
-                    latest_path.unlink()
-                else:
-                    import shutil
-                    shutil.rmtree(latest_path)
-            
-            # Create new symlink
-            latest_path.symlink_to(target_path, target_is_directory=True)
-            logger.info(f"Updated 'latest' symlink to point to {checkpoint_dir.name}")
-        except Exception as e:
-            logger.warning(f"Failed to create symlink: {str(e)}")
-            # Continue execution even if symlink creation fails
-        
         # Save checkpoint metadata
         metadata = {
             'timestamp': timestamp,
@@ -404,6 +384,15 @@ def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
         with open(meta_save_path, 'w') as f:
             json.dump(metadata, f, indent=2)
         logger.info(f"Saved checkpoint metadata to {meta_save_path}")
+        
+        # Only create symlink after all files are saved successfully
+        latest_path = base_dir / 'latest'
+        if latest_path.exists():
+            latest_path.unlink()  # Remove existing symlink if it exists
+            
+        # Create relative symlink
+        os.symlink(checkpoint_dir.name, latest_path)
+        logger.info(f"Updated 'latest' symlink to point to {checkpoint_dir.name}")
         
         # Cleanup old checkpoints if needed
         keep_last_n = 3  # Keep last 3 checkpoints
@@ -423,6 +412,10 @@ def save_checkpoint(model, optimizer, scheduler, metrics, config, epoch):
     except Exception as e:
         logger.error(f"Error saving checkpoint: {str(e)}")
         logger.error("Checkpoint save failed with traceback:", exc_info=True)
+        # If checkpoint save fails, ensure we don't leave a broken symlink
+        latest_path = base_dir / 'latest'
+        if latest_path.exists():
+            latest_path.unlink()
         raise
 
 def train(model, train_loader, config):

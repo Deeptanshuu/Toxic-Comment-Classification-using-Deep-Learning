@@ -273,6 +273,7 @@ class TrainingConfig:
     grad_accum_steps: int = 1
     epochs: int = 3
     lr: float = 2e-5
+    num_cycles: int = 2
     weight_decay: float = 2e-7
     max_grad_norm: float = 1.0
     warmup_ratio: float = 0.1
