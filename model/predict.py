@@ -4,6 +4,15 @@ from transformers import XLMRobertaTokenizer
 import os
 import re
 import json
+from pathlib import Path
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES = {
     'en': 0, 'ru': 1, 'tr': 2, 'es': 3,
@@ -65,13 +74,29 @@ UNICODE_RANGES = {
 
 def load_model(model_path):
     """Load the trained model and tokenizer"""
-    # Check if model path exists
-    if not os.path.exists(model_path):
-        print(f"Warning: Model path {model_path} not found.")
-        print("Please make sure you have trained the model first.")
-        return None, None, None
-        
     try:
+        # Convert to Path object and resolve any symlinks
+        model_dir = Path(model_path).resolve()
+        if model_dir.is_dir():
+            # Check for 'latest' symlink first
+            latest_link = model_dir / 'latest'
+            if latest_link.exists() and latest_link.is_symlink():
+                model_dir = latest_link.resolve()
+                logger.info(f"Using latest checkpoint: {model_dir}")
+            else:
+                # Find most recent checkpoint
+                checkpoints = sorted([
+                    d for d in model_dir.iterdir() 
+                    if d.is_dir() and d.name.startswith('checkpoint_epoch')
+                ])
+                if checkpoints:
+                    model_dir = checkpoints[-1]
+                    logger.info(f"Using most recent checkpoint: {model_dir}")
+                else:
+                    logger.info("No checkpoints found, using base directory")
+        
+        logger.info(f"Loading model from: {model_dir}")
+        
         # Initialize the custom model architecture
         model = LanguageAwareTransformer(
             num_labels=6,
@@ -81,28 +106,37 @@ def load_model(model_path):
         )
         
         # Load the trained weights
-        state_dict = torch.load(os.path.join(model_path, 'pytorch_model.bin'))
+        weights_path = model_dir / 'pytorch_model.bin'
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Model weights not found at {weights_path}")
+            
+        state_dict = torch.load(weights_path)
         model.load_state_dict(state_dict)
+        logger.info("Model weights loaded successfully")
         
-        # For tokenizer, first try to load from model path, if fails, load base model tokenizer
-        try:
-            tokenizer = XLMRobertaTokenizer.from_pretrained(model_path)
-        except:
-            print("Loading base XLM-RoBERTa tokenizer...")
-            tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
+        # Load base XLM-RoBERTa tokenizer directly
+        logger.info("Loading XLM-RoBERTa tokenizer...")
+        tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
         
-        # Move model to GPU if available
+        # Load training metadata if available
+        metadata_path = model_dir / 'metadata.json'
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+            logger.info(f"Loaded checkpoint metadata: Epoch {metadata.get('epoch', 'unknown')}")
+        
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = model.to(device)
         model.eval()
         
         return model, tokenizer, device
+        
     except Exception as e:
-        print(f"Error loading model: {str(e)}")
-        print("\nPlease ensure that:")
-        print("1. You have trained the model first using train.py")
-        print("2. The model weights are saved in the correct location")
-        print("3. You have sufficient permissions to access the model files")
+        logger.error(f"Error loading model: {str(e)}")
+        logger.error("\nPlease ensure that:")
+        logger.error("1. You have trained the model first using train.py")
+        logger.error("2. The model weights are saved in the correct location")
+        logger.error("3. You have sufficient permissions to access the model files")
         return None, None, None
 
 def adjust_thresholds(thresholds):
