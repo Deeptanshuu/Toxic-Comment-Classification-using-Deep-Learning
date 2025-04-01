@@ -20,6 +20,8 @@ import langid
 from typing import List, Dict
 import time
 import base64
+import psutil
+import platform
 from streamlit_extras.colored_header import colored_header
 from streamlit_extras.add_vertical_space import add_vertical_space
 from streamlit_extras.stylable_container import stylable_container
@@ -30,6 +32,103 @@ from streamlit_extras.metric_cards import style_metric_cards
 ONNX_MODEL_PATH = os.environ.get("ONNX_MODEL_PATH", "weights/toxic_classifier.onnx")
 PYTORCH_MODEL_DIR = os.environ.get("PYTORCH_MODEL_DIR", "weights/toxic_classifier_xlm-roberta-large")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Get GPU info if available
+def get_gpu_info():
+    if DEVICE == "cuda":
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # Convert to GB
+            gpu_memory_allocated = torch.cuda.memory_allocated(0) / 1024**3  # Convert to GB
+            cuda_version = torch.version.cuda
+            
+            memory_info = f"{gpu_memory_allocated:.1f}/{gpu_memory_total:.1f} GB"
+            return f"{gpu_name} (CUDA {cuda_version}, Memory: {memory_info})"
+        except Exception as e:
+            return "CUDA device"
+    return "CPU"
+
+# Get CPU information
+def get_cpu_info():
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_count = psutil.cpu_count(logical=True)
+        cpu_freq = psutil.cpu_freq()
+        
+        if cpu_freq:
+            freq_info = f"{cpu_freq.current/1000:.2f} GHz"
+        else:
+            freq_info = "Unknown"
+            
+        cpu_model = platform.processor()
+        if not cpu_model:  # Sometimes platform.processor() returns empty on some systems
+            try:
+                # Try another method on Linux systems
+                import subprocess
+                cpu_model = subprocess.check_output("cat /proc/cpuinfo | grep 'model name' | uniq", shell=True).decode().strip()
+                if "model name" in cpu_model:
+                    cpu_model = cpu_model.split(":", 1)[1].strip()
+            except:
+                cpu_model = "CPU"
+        
+        return {
+            "name": cpu_model[:30] + "..." if len(cpu_model) > 30 else cpu_model,
+            "cores": cpu_count,
+            "freq": freq_info,
+            "usage": f"{cpu_percent:.1f}%"
+        }
+    except Exception as e:
+        return {
+            "name": "CPU",
+            "cores": "Unknown",
+            "freq": "Unknown",
+            "usage": "Unknown"
+        }
+
+# Get RAM information
+def get_ram_info():
+    try:
+        ram = psutil.virtual_memory()
+        ram_total = ram.total / (1024**3)  # Convert to GB
+        ram_used = ram.used / (1024**3)    # Convert to GB
+        ram_percent = ram.percent
+        
+        return {
+            "total": f"{ram_total:.1f} GB",
+            "used": f"{ram_used:.1f} GB",
+            "percent": f"{ram_percent:.1f}%"
+        }
+    except Exception as e:
+        return {
+            "total": "Unknown",
+            "used": "Unknown",
+            "percent": "Unknown"
+        }
+
+# Update system resource information
+def update_system_resources():
+    cpu_info = get_cpu_info()
+    ram_info = get_ram_info()
+    
+    return {
+        "cpu": cpu_info,
+        "ram": ram_info
+    }
+
+# Initialize system information
+GPU_INFO = get_gpu_info()
+SYSTEM_INFO = update_system_resources()
+
+# Add a function to update GPU memory info in real-time
+def update_gpu_info():
+    if DEVICE == "cuda":
+        try:
+            gpu_memory_allocated = torch.cuda.memory_allocated(0) / 1024**3  # Convert to GB
+            gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # Convert to GB
+            return f"{gpu_memory_allocated:.1f}/{gpu_memory_total:.1f} GB"
+        except:
+            return "N/A"
+    return "N/A"
 
 # Helper function to convert hex to rgba
 def hex_to_rgba(hex_color, alpha=1.0):
@@ -50,15 +149,106 @@ SUPPORTED_LANGUAGES = {
     'pt': {'name': 'Portuguese', 'flag': '🇵🇹'}
 }
 
-# Language examples - toxic content examples for testing
+# Language examples - expanded with multiple examples per language, categorized as toxic or non-toxic
 LANGUAGE_EXAMPLES = {
-    'en': "You are such an idiot, nobody likes your stupid content.",
-    'ru': "Ты полный придурок, твой контент никому не нравится.",
-    'tr': "Sen tam bir aptalsın, kimse senin aptalca içeriğini beğenmiyor.",
-    'es': "Eres un completo idiota y nadie te quiere.",
-    'fr': "Tu es tellement stupide, personne n'aime ton contenu minable.",
-    'it': "Sei un tale idiota, a nessuno piace il tuo contenuto stupido.",
-    'pt': "Você é um idiota completo, ninguém gosta do seu conteúdo estúpido."
+    'en': {
+        'toxic': [
+            "You are such an idiot, nobody likes your stupid content.",
+            "Shut up you worthless piece of garbage. Everyone hates you.",
+            "This is the most pathetic thing I've ever seen. Only losers would think this is good.",
+            "Just kill yourself already, the world would be better without you."
+        ],
+        'non_toxic': [
+            "I disagree with your opinion, but I appreciate your perspective.",
+            "This content could use some improvement, but I see the effort you put into it.",
+            "While I don't personally enjoy this type of content, others might find it valuable.",
+            "Thank you for sharing your thoughts on this complex topic."
+        ]
+    },
+    'ru': {
+        'toxic': [
+            "Ты полный придурок, твой контент никому не нравится.",
+            "Заткнись, бесполезный кусок мусора. Все тебя ненавидят.",
+            "Это самая жалкая вещь, которую я когда-либо видел. Только неудачники думают, что это хорошо.",
+            "Почему бы тебе просто не исчезнуть нахрен? Никто не будет скучать по тебе."
+        ],
+        'non_toxic': [
+            "Я не согласен с вашим мнением, но уважаю вашу точку зрения.",
+            "Этот контент можно улучшить, но я вижу, сколько усилий вы в него вложили.",
+            "Хотя мне лично не нравится такой контент, другие могут найти его полезным.",
+            "Спасибо, что поделились своими мыслями на эту сложную тему."
+        ]
+    },
+    'tr': {
+        'toxic': [
+            "Sen tam bir aptalsın, kimse senin aptalca içeriğini beğenmiyor.",
+            "Kapa çeneni değersiz çöp parçası. Herkes senden nefret ediyor.",
+            "Bu gördüğüm en acıklı şey. Sadece lanet olası kaybedenler bunun iyi olduğunu düşünür.",
+            "Dünya sensiz daha iyi olurdu, kaybol git."
+        ],
+        'non_toxic': [
+            "Fikrinize katılmıyorum ama bakış açınızı takdir ediyorum.",
+            "Bu içerik biraz geliştirilebilir, ancak gösterdiğiniz çabayı görüyorum.",
+            "Şahsen bu tür içerikten hoşlanmasam da, başkaları bunu değerli bulabilir.",
+            "Bu karmaşık konu hakkındaki düşüncelerinizi paylaştığınız için teşekkür ederim."
+        ]
+    },
+    'es': {
+        'toxic': [
+            "Eres un completo idiota y nadie te quiere.",
+            "Cállate, pedazo de basura inútil. Todos te odian.",
+            "Esto es lo más patético que he visto nunca. Solo los perdedores pensarían que esto es bueno.",
+            "El mundo estaría mejor sin ti, deberías desaparecer, joder."
+        ],
+        'non_toxic': [
+            "No estoy de acuerdo con tu opinión, pero aprecio tu perspectiva.",
+            "Este contenido podría mejorarse, pero veo el esfuerzo que has puesto en él.",
+            "Aunque personalmente no disfruto este tipo de contenido, otros podrían encontrarlo valioso.",
+            "Gracias por compartir tus pensamientos sobre este tema tan complejo."
+        ]
+    },
+    'fr': {
+        'toxic': [
+            "Tu es tellement stupide, personne n'aime ton contenu minable.",
+            "Ferme-la, espèce de déchet inutile. Tout le monde te déteste.",
+            "C'est la chose la plus pathétique que j'ai jamais vue. Seuls les loosers penseraient que c'est bien.",
+            "Le monde serait meilleur sans toi, connard, va-t'en."
+        ],
+        'non_toxic': [
+            "Je ne suis pas d'accord avec ton opinion, mais j'apprécie ta perspective.",
+            "Ce contenu pourrait être amélioré, mais je vois l'effort que tu y as mis.",
+            "Bien que personnellement je n'apprécie pas ce type de contenu, d'autres pourraient le trouver précieux.",
+            "Merci d'avoir partagé tes réflexions sur ce sujet complexe."
+        ]
+    },
+    'it': {
+        'toxic': [
+            "Sei un tale idiota, a nessuno piace il tuo contenuto stupido.",
+            "Chiudi quella bocca, pezzo di spazzatura inutile. Tutti ti odiano.",
+            "Questa è la cosa più patetica che abbia mai visto. Solo i perdenti penserebbero che sia buona.",
+            "Il mondo sarebbe migliore senza di te, sparisci."
+        ],
+        'non_toxic': [
+            "Non sono d'accordo con la tua opinione, ma apprezzo la tua prospettiva.",
+            "Questo contenuto potrebbe essere migliorato, ma vedo lo sforzo che ci hai messo.",
+            "Anche se personalmente non apprezzo questo tipo di contenuto, altri potrebbero trovarlo utile.",
+            "Grazie per aver condiviso i tuoi pensieri su questo argomento complesso."
+        ]
+    },
+    'pt': {
+        'toxic': [
+            "Você é um idiota completo, ninguém gosta do seu conteúdo estúpido.",
+            "Cale a boca, seu pedaço de lixo inútil. Todos te odeiam.",
+            "Isso é a coisa mais patética que eu já vi. Só perdedores pensariam que isso é bom.",
+            "O mundo seria melhor sem você, desapareça."
+        ],
+        'non_toxic': [
+            "Eu discordo da sua opinião, mas aprecio sua perspectiva.",
+            "Este conteúdo poderia ser melhorado, mas vejo o esforço que você colocou nele.",
+            "Embora eu pessoalmente não goste deste tipo de conteúdo, outros podem achá-lo valioso.",
+            "Obrigado por compartilhar seus pensamentos sobre este tema complexo."
+        ]
+    }
 }
 
 # Theme colors - Dark theme
@@ -101,6 +291,117 @@ st.markdown(f"""
         font-weight: 600;
     }}
 
+    /* Examples section styling */
+    .examples-section {{
+        margin-top: 15px;
+    }}
+    
+    .example-button {{
+        text-align: left;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        margin-bottom: 5px;
+        transition: all 0.2s ease;
+    }}
+    
+    .example-button:hover {{
+        transform: translateX(3px);
+    }}
+    
+    .example-button.toxic {{
+        border-left: 3px solid {THEME["toxic"]};
+    }}
+    
+    .example-button.non-toxic {{
+        border-left: 3px solid {THEME["non_toxic"]};
+    }}
+    
+    /* Style tab content */
+    .stTabs [data-baseweb="tab-panel"] {{
+        padding-top: 1rem;
+    }}
+    
+    /* Tab content styling */
+    .stTabs [data-baseweb="tab"] {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 500;
+    }}
+    
+    /* Style expandable sections */
+    div[data-testid="stExpander"] {{
+        margin-bottom: 10px !important;
+    }}
+    
+    div[data-testid="stExpander"] div[data-testid="stExpanderContent"] {{
+        max-height: 300px;
+        overflow-y: auto;
+        padding: 5px 10px;
+    }}
+    
+    /* Styling for the example used banner */
+    .example-used-banner {{
+        margin-top: 10px;
+        padding: 12px;
+        border-radius: 8px;
+        background-color: rgba(0, 0, 0, 0.1);
+        border-left: 3px solid;
+        font-size: 0.9rem;
+    }}
+    
+    .example-badge {{
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: 500;
+        font-size: 0.8rem;
+        display: inline-block;
+        margin: 0 5px;
+    }}
+
+    /* Hardware info styles */
+    .hardware-info {{
+        background-color: {hex_to_rgba(THEME["primary"], 0.1)};
+        border-radius: 10px;
+        padding: 12px;
+        margin: 8px 0;
+        border-left: 3px solid {THEME["primary"]};
+    }}
+    
+    .hardware-title {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 600;
+        font-size: 1.1rem;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        color: {THEME["primary"]};
+    }}
+    
+    .hardware-title .icon {{
+        margin-right: 6px;
+    }}
+    
+    .hardware-stat {{
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+        font-size: 0.9rem;
+    }}
+    
+    .hardware-stat .label {{
+        color: {hex_to_rgba(THEME["text"], 0.9)};
+    }}
+    
+    .hardware-stat .value {{
+        font-weight: 500;
+        color: {THEME["text"]};
+    }}
+    
+    .hardware-resource {{
+        margin-top: 8px;
+        margin-bottom: 10px;
+    }}
+    
     /* Override Streamlit's default background */
     .stApp {{
         background-color: {THEME["background"]};
@@ -553,16 +854,24 @@ def predict_toxicity(text: str, selected_language: str = "Auto-detect") -> Dict:
             }
 
 # Function to set example text
-def set_example(lang_code):
+def set_example(lang_code, example_type, example_index=0):
     st.session_state['use_example'] = True
-    st.session_state['example_text'] = LANGUAGE_EXAMPLES[lang_code]
+    # Get the example based on the language, type and index
+    example = LANGUAGE_EXAMPLES[lang_code][example_type][example_index]
+    st.session_state['example_text'] = example
     st.session_state['detected_lang'] = lang_code
+    st.session_state['example_info'] = {
+        'type': example_type,
+        'lang': lang_code,
+        'index': example_index
+    }
 
 # Initialize session state for example selection if not present
 if 'use_example' not in st.session_state:
     st.session_state['use_example'] = False
     st.session_state['example_text'] = ""
     st.session_state['detected_lang'] = "Auto-detect"
+    st.session_state['example_info'] = None
 
 # Sidebar content
 with st.sidebar:
@@ -600,26 +909,110 @@ with st.sidebar:
     # Examples moved to sidebar
     st.markdown("### 📝 Try with examples:")
     
+    # Create tabs for toxic and non-toxic examples
+    example_tabs = st.tabs(["Toxic Examples", "Non-Toxic Examples"])
+    
     # Order languages by putting the most common ones first
     ordered_langs = ['en', 'es', 'fr', 'pt', 'it', 'ru', 'tr']
     
-    # Create columns in the sidebar for examples
-    sidebar_example_cols = st.columns(1)
+    # Toxic examples tab
+    with example_tabs[0]:
+        st.markdown('<div class="examples-section">', unsafe_allow_html=True)
+        for lang_code in ordered_langs:
+            info = SUPPORTED_LANGUAGES[lang_code]
+            with st.expander(f"{info['flag']} {info['name']} examples"):
+                for i, example in enumerate(LANGUAGE_EXAMPLES[lang_code]['toxic']):
+                    # Display a preview of the example
+                    preview = example[:40] + "..." if len(example) > 40 else example
+                    button_key = f"toxic_{lang_code}_{i}"
+                    button_help = f"Try with this {info['name']} toxic example"
+                    
+                    # We can't directly apply CSS classes to Streamlit buttons, but we can wrap them
+                    if st.button(f"Example {i+1}: {preview}", 
+                            key=button_key,
+                            use_container_width=True,
+                            help=button_help):
+                        set_example(lang_code, 'toxic', i)
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    for lang_code in ordered_langs:
-        info = SUPPORTED_LANGUAGES[lang_code]
-        with sidebar_example_cols[0]:
-            if st.button(f"{info['flag']} {info['name']}", 
-                       use_container_width=True, 
-                       help=f"Try with a {info['name']} example of toxic content"):
-                set_example(lang_code)
+    # Non-toxic examples tab
+    with example_tabs[1]:
+        st.markdown('<div class="examples-section">', unsafe_allow_html=True)
+        for lang_code in ordered_langs:
+            info = SUPPORTED_LANGUAGES[lang_code]
+            with st.expander(f"{info['flag']} {info['name']} examples"):
+                for i, example in enumerate(LANGUAGE_EXAMPLES[lang_code]['non_toxic']):
+                    # Display a preview of the example
+                    preview = example[:40] + "..." if len(example) > 40 else example
+                    button_key = f"non_toxic_{lang_code}_{i}"
+                    button_help = f"Try with this {info['name']} non-toxic example"
+                    
+                    if st.button(f"Example {i+1}: {preview}", 
+                            key=button_key,
+                            use_container_width=True,
+                            help=button_help):
+                        set_example(lang_code, 'non_toxic', i)
+        st.markdown('</div>', unsafe_allow_html=True)
     
     st.divider()
     
-    # Model information - simplified to only show device
-    st.markdown("<div class='model-info'>", unsafe_allow_html=True)
-    st.markdown(f"**Device:** {DEVICE}")
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Model and Hardware information in the sidebar with improved layout
+    st.markdown("### 💻 System Information", unsafe_allow_html=True)
+    
+    # Update system resources info
+    current_sys_info = update_system_resources()
+    
+    # GPU section
+    if DEVICE == "cuda":
+        st.markdown("""
+        <div class="hardware-info">
+            <div class="hardware-title"><span class="icon">🎮</span> GPU</div>
+            <div class="hardware-resource">
+        """, unsafe_allow_html=True)
+        
+        gpu_name = GPU_INFO.split(" (")[0]
+        st.markdown(f"<div class='hardware-stat'><span class='label'>Model:</span> <span class='value'>{gpu_name}</span></div>", unsafe_allow_html=True)
+        
+        cuda_version = "Unknown"
+        if "CUDA" in GPU_INFO:
+            cuda_version = GPU_INFO.split("CUDA ")[1].split(",")[0]
+        st.markdown(f"<div class='hardware-stat'><span class='label'>CUDA:</span> <span class='value'>{cuda_version}</span></div>", unsafe_allow_html=True)
+        
+        current_gpu_memory = update_gpu_info()
+        st.markdown(f"<div class='hardware-stat'><span class='label'>Memory:</span> <span class='value'>{current_gpu_memory}</span></div>", unsafe_allow_html=True)
+        
+        st.markdown("</div></div>", unsafe_allow_html=True)
+    
+    # CPU section
+    st.markdown("""
+    <div class="hardware-info">
+        <div class="hardware-title"><span class="icon">⚙️</span> CPU</div>
+        <div class="hardware-resource">
+    """, unsafe_allow_html=True)
+    
+    cpu_info = current_sys_info["cpu"]
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Model:</span> <span class='value'>{cpu_info['name']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Cores:</span> <span class='value'>{cpu_info['cores']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Frequency:</span> <span class='value'>{cpu_info['freq']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Usage:</span> <span class='value'>{cpu_info['usage']}</span></div>", unsafe_allow_html=True)
+    
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    
+    # RAM section
+    st.markdown("""
+    <div class="hardware-info">
+        <div class="hardware-title"><span class="icon">🧠</span> RAM</div>
+        <div class="hardware-resource">
+    """, unsafe_allow_html=True)
+    
+    ram_info = current_sys_info["ram"]
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Total:</span> <span class='value'>{ram_info['total']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Used:</span> <span class='value'>{ram_info['used']}</span></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='hardware-stat'><span class='label'>Usage:</span> <span class='value'>{ram_info['percent']}</span></div>", unsafe_allow_html=True)
+    
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    
+    st.divider()
     
     # Toxicity Thresholds - Moved from results section to sidebar
     st.markdown("### ⚙️ Toxicity Thresholds")
@@ -644,7 +1037,7 @@ if 'model_loaded' not in st.session_state:
         classifier = load_classifier()
         if classifier:
             st.session_state['model_loaded'] = True
-            st.success(f"✅ Model loaded successfully on {DEVICE}")
+            st.success(f"✅ Model loaded successfully on {GPU_INFO}")
         else:
             st.session_state['model_loaded'] = False
             st.error("❌ Failed to load model. Please check logs.")
@@ -703,7 +1096,28 @@ analyze_button = st.button(
 if analyze_button or (text_input and 'last_analyzed' not in st.session_state or st.session_state.get('last_analyzed') != text_input):
     if text_input:
         st.session_state['last_analyzed'] = text_input
+        
+        # Get system resource info before prediction
+        pre_prediction_resources = update_system_resources()
+        
+        # Make prediction
         prediction = predict_toxicity(text_input, selected_language)
+        
+        # Update resource usage after prediction
+        post_prediction_resources = update_system_resources()
+        
+        # Calculate resource usage delta
+        resource_delta = {
+            "cpu_usage": float(post_prediction_resources["cpu"]["usage"].rstrip("%")) - float(pre_prediction_resources["cpu"]["usage"].rstrip("%")),
+            "ram_usage": float(post_prediction_resources["ram"]["percent"].rstrip("%")) - float(pre_prediction_resources["ram"]["percent"].rstrip("%"))
+        }
+        
+        # Update GPU memory info after prediction
+        if DEVICE == "cuda":
+            new_memory_info = update_gpu_info()
+            # Note: Ideally we would update the displayed memory usage here,
+            # but Streamlit doesn't support dynamic updates without a rerun,
+            # so we'll just include memory info in our metrics
         
         # Set analysis status flags but remove celebration effect code
         st.session_state['is_analysis_complete'] = True
@@ -777,6 +1191,26 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     <h3>Language: {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}</h3>
                     """, unsafe_allow_html=True)
                     
+                    # If this was an example, show that information
+                    if st.session_state.get('example_info') is not None and st.session_state.get('example_info')['lang'] == lang_code:
+                        example_info = st.session_state.get('example_info')
+                        example_type = example_info['type']
+                        example_index = example_info['index']
+                        
+                        type_label = "TOXIC" if example_type == "toxic" else "NON-TOXIC"
+                        type_color = THEME["toxic"] if example_type == "toxic" else THEME["non_toxic"]
+                        
+                        st.markdown(f"""
+                        <div class="example-used-banner" style="border-color: {type_color}; background-color: {hex_to_rgba(type_color, 0.1)};">
+                            <span style="font-weight: 600;">Example Used:</span> {lang_info['flag']} {lang_info['name']} 
+                            <span class="example-badge" style="background-color: {hex_to_rgba(type_color, 0.2)}; color: {type_color};">{type_label}</span>
+                            <span>Example #{example_index + 1}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Clear the example info to avoid showing it for the next analysis if not an example
+                        st.session_state['example_info'] = None
+                    
                     # Display detected categories if toxic
                     if is_toxic:
                         st.markdown("### Detected toxic categories:")
@@ -844,13 +1278,37 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         inference_time = performance.get("model_inference_time", 0)
                         lang_detection_time = performance.get("lang_detection_time", 0)
                         
-                        cols = st.columns(3)
-                        with cols[0]:
-                            st.metric("Total Time", f"{total_time:.3f}s", delta=None)
-                        with cols[1]:
-                            st.metric("Model Inference", f"{inference_time:.3f}s", delta=None)
-                        with cols[2]:
-                            st.metric("Language Detection", f"{lang_detection_time:.3f}s", delta=None)
+                        # Create tabs for different types of metrics
+                        perf_tab1, perf_tab2 = st.tabs(["Time Metrics", "Resource Usage"])
+                        
+                        with perf_tab1:
+                            time_cols = st.columns(3)
+                            with time_cols[0]:
+                                st.metric("Total Time", f"{total_time:.3f}s", delta=None)
+                            with time_cols[1]:
+                                st.metric("Model Inference", f"{inference_time:.3f}s", delta=None)
+                            with time_cols[2]:
+                                st.metric("Language Detection", f"{lang_detection_time:.3f}s", delta=None)
+                        
+                        with perf_tab2:
+                            # Display system resource metrics
+                            current_sys_info = update_system_resources()
+                            
+                            resource_cols = st.columns(3)
+                            with resource_cols[0]:
+                                # Format delta: add + sign for positive values
+                                cpu_delta = f"{resource_delta['cpu_usage']:+.1f}%" if abs(resource_delta['cpu_usage']) > 0.1 else None
+                                st.metric("CPU Usage", current_sys_info["cpu"]["usage"], delta=cpu_delta)
+                            
+                            with resource_cols[1]:
+                                ram_delta = f"{resource_delta['ram_usage']:+.1f}%" if abs(resource_delta['ram_usage']) > 0.1 else None
+                                st.metric("RAM Usage", current_sys_info["ram"]["percent"], delta=ram_delta)
+                            
+                            with resource_cols[2]:
+                                if DEVICE == "cuda":
+                                    st.metric("GPU Memory", update_gpu_info(), delta=None)
+                                else:
+                                    st.metric("System RAM", f"{current_sys_info['ram']['used']} / {current_sys_info['ram']['total']}", delta=None)
             
             with col2:
                 # Create a horizontal bar chart with Plotly
