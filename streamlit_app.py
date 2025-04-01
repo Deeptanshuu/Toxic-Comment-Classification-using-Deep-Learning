@@ -1,4 +1,22 @@
-import streamlit as st
+# Fix for torch.classes watchdog errors
+import sys
+class ModuleProtector:
+    def __init__(self, module_name):
+        self.module_name = module_name
+        self.original_module = sys.modules.get(module_name)
+        
+    def __enter__(self):
+        if self.module_name in sys.modules:
+            self.original_module = sys.modules[self.module_name]
+            sys.modules[self.module_name] = None
+            
+    def __exit__(self, *args):
+        if self.original_module is not None:
+            sys.modules[self.module_name] = self.original_module
+
+# Temporarily remove torch.classes from sys.modules to prevent Streamlit's file watcher from accessing it
+with ModuleProtector('torch.classes'):
+    import streamlit as st
 
 # Set page configuration - MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(
@@ -10,18 +28,19 @@ st.set_page_config(
 
 # Now import all other dependencies
 import torch
-import numpy as np
 import os
-import json
 import plotly.graph_objects as go
 import pandas as pd
 from model.inference_optimized import OptimizedToxicityClassifier
 import langid
 from typing import List, Dict
 import time
-import base64
 import psutil
 import platform
+try:
+    import cpuinfo
+except ImportError:
+    cpuinfo = None
 from streamlit_extras.colored_header import colored_header
 from streamlit_extras.add_vertical_space import add_vertical_space
 from streamlit_extras.stylable_container import stylable_container
@@ -60,19 +79,53 @@ def get_cpu_info():
         else:
             freq_info = "Unknown"
             
-        cpu_model = platform.processor()
-        if not cpu_model:  # Sometimes platform.processor() returns empty on some systems
+        # Try multiple methods to get CPU model name
+        cpu_model = None
+        
+        # Method 1: Try reading from /proc/cpuinfo directly
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                for line in f:
+                    if 'model name' in line:
+                        cpu_model = line.split(':', 1)[1].strip()
+                        break
+        except:
+            pass
+            
+        # Method 2: If Method 1 fails, try using platform.processor()
+        if not cpu_model:
+            cpu_model = platform.processor()
+            
+        # Method 3: If still no result, try using platform.machine()
+        if not cpu_model or cpu_model == '':
+            cpu_model = platform.machine()
+            
+        # Method 4: Final fallback to using psutil
+        if not cpu_model or cpu_model == '':
             try:
-                # Try another method on Linux systems
-                import subprocess
-                cpu_model = subprocess.check_output("cat /proc/cpuinfo | grep 'model name' | uniq", shell=True).decode().strip()
-                if "model name" in cpu_model:
-                    cpu_model = cpu_model.split(":", 1)[1].strip()
+                import cpuinfo
+                cpu_model = cpuinfo.get_cpu_info()['brand_raw']
             except:
-                cpu_model = "CPU"
+                pass
+        
+        # Clean up the model name
+        if cpu_model:
+            # Remove common unnecessary parts
+            replacements = [
+                '(R)', '(TM)', '(r)', '(tm)', 'CPU', '@', '  ', 'Processor'
+            ]
+            for r in replacements:
+                cpu_model = cpu_model.replace(r, ' ')
+            # Clean up extra spaces
+            cpu_model = ' '.join(cpu_model.split())
+            # Limit length
+            if len(cpu_model) > 40:
+                cpu_model = cpu_model[:37] + "..."
+        else:
+            cpu_model = "Unknown CPU"
         
         return {
-            "name": cpu_model[:30] + "..." if len(cpu_model) > 30 else cpu_model,
+            "name": cpu_model,
             "cores": cpu_count,
             "freq": freq_info,
             "usage": f"{cpu_percent:.1f}%"
@@ -284,6 +337,10 @@ st.markdown(f"""
         letter-spacing: -0.02em;
     }}
     
+    .st-emotion{{
+        background-color: {THEME["background"]};
+    }}
+    
     [data-testid="stMarkdownContainer"] h1,
     [data-testid="stMarkdownContainer"] h2,
     [data-testid="stMarkdownContainer"] h3 {{
@@ -466,14 +523,15 @@ st.markdown(f"""
     }}
     
     .toxic-category {{
-        padding: 4px 12px;
-        border-radius: 15px;
+        padding: 3px 8px;
+        border-radius: 12px;
         background-color: {hex_to_rgba(THEME["toxic"], 0.13)};
         border: 1px solid {hex_to_rgba(THEME["toxic"], 0.31)};
         margin-right: 5px;
         font-weight: 500;
         display: inline-block;
         margin-bottom: 5px;
+        font-size: 0.9rem;
         color: {THEME["toxic"]};
         transition: all 0.3s ease;
     }}
@@ -485,10 +543,10 @@ st.markdown(f"""
     
     .toxic-result {{
         font-family: 'Space Grotesk', sans-serif;
-        font-size: 1.8rem;
+        font-size: 1.2rem;
         font-weight: 700;
-        padding: 5px 15px;
-        border-radius: 10px;
+        padding: 4px 12px;
+        border-radius: 8px;
         display: inline-block;
         box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         transition: all 0.3s ease;
@@ -1182,13 +1240,19 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                             border-left: 5px solid {result_color};
                             margin-bottom: 20px;
                             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                            height: 100%;
                         }}
                     """
                 ):
                     # Overall result with animated highlight
                     st.markdown(f"""
-                    <h2>Analysis Result: <span class='toxic-result pulse' style='background-color: {hex_to_rgba(result_color, 0.13)}; color: {result_color};'>{result_text}</span></h2>
-                    <h3>Language: {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}</h3>
+                    <div style="margin-bottom: 10px;">
+                    <h3 style="margin: 0; display: inline-block; margin-right: 10px;">Analysis Result:</h3>
+                    <span class='toxic-result pulse' style='background-color: {hex_to_rgba(result_color, 0.13)}; color: {result_color};'>{result_text}</span>
+                    </div>
+                    <div style="margin: 10px 0;">
+                    <h4 style="margin: 0;">Language: {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}</h4>
+                    </div>
                     """, unsafe_allow_html=True)
                     
                     # If this was an example, show that information
@@ -1213,67 +1277,33 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     
                     # Display detected categories if toxic
                     if is_toxic:
-                        st.markdown("### Detected toxic categories:")
-                        st.markdown("<div>", unsafe_allow_html=True)
+                        st.markdown("""
+                        <div style="margin-top: 10px;">
+                        <h4 style="margin: 0 0 5px 0;">Detected toxic categories:</h4>
+                        <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                        """, unsafe_allow_html=True)
                         for category in results["toxic_categories"]:
                             formatted_category = category.replace('_', ' ').title()
                             st.markdown(f"<span class='toxic-category'>{formatted_category}</span>", unsafe_allow_html=True)
-                        st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Create a DataFrame for detailed results
-                categories = []
-                probabilities = []
-                statuses = []
-                
-                for label, prob in results["probabilities"].items():
-                    categories.append(label.replace('_', ' ').title())
-                    probabilities.append(round(prob * 100, 1))
-                    statuses.append("DETECTED" if prob >= 0.5 else "Not Detected")
-                
-                df = pd.DataFrame({
-                    "Category": categories,
-                    "Probability (%)": probabilities,
-                    "Status": statuses
-                })
-                
-                # Sort by probability
-                df = df.sort_values(by="Probability (%)", ascending=False)
-                
-                # Display as a styled table
-                st.markdown("### Detailed Results:")
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Category": st.column_config.TextColumn("Category"),
-                        "Probability (%)": st.column_config.ProgressColumn(
-                            "Probability (%)",
-                            format="%f%%",
-                            min_value=0,
-                            max_value=100,
-                            help="Percentage likelihood of toxicity category"
-                        ),
-                        "Status": st.column_config.TextColumn("Status", 
-                                                             help="Whether the category was detected"),
-                    }
-                )
-                
-                # Performance metrics card (replacing text length and word count)
+                        st.markdown("</div></div>", unsafe_allow_html=True)
+            
+            with col2:
+                # Performance metrics card
                 if performance:
                     with stylable_container(
                         key="performance_metrics_card",
                         css_styles=f"""
                             {{
-                                border-radius: 8px;
-                                padding: 15px;
+                                border-radius: 10px;
+                                padding: 20px;
                                 background-color: {THEME["card_bg"]};
                                 border-left: 3px solid {THEME["primary"]};
-                                margin-top: 20px;
+                                height: 100%;
+                                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
                             }}
                         """
                     ):
-                        st.markdown("### Performance Metrics:")
+                        st.markdown("<h3 style='margin-top: 0;'>Performance Metrics</h3>", unsafe_allow_html=True)
                         total_time = performance.get("total_time", 0)
                         inference_time = performance.get("model_inference_time", 0)
                         lang_detection_time = performance.get("lang_detection_time", 0)
@@ -1282,125 +1312,120 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         perf_tab1, perf_tab2 = st.tabs(["Time Metrics", "Resource Usage"])
                         
                         with perf_tab1:
-                            time_cols = st.columns(3)
+                            time_cols = st.columns(1)
                             with time_cols[0]:
                                 st.metric("Total Time", f"{total_time:.3f}s", delta=None)
-                            with time_cols[1]:
                                 st.metric("Model Inference", f"{inference_time:.3f}s", delta=None)
-                            with time_cols[2]:
                                 st.metric("Language Detection", f"{lang_detection_time:.3f}s", delta=None)
                         
                         with perf_tab2:
                             # Display system resource metrics
                             current_sys_info = update_system_resources()
                             
-                            resource_cols = st.columns(3)
-                            with resource_cols[0]:
-                                # Format delta: add + sign for positive values
-                                cpu_delta = f"{resource_delta['cpu_usage']:+.1f}%" if abs(resource_delta['cpu_usage']) > 0.1 else None
-                                st.metric("CPU Usage", current_sys_info["cpu"]["usage"], delta=cpu_delta)
+                            # Format delta: add + sign for positive values
+                            cpu_delta = f"{resource_delta['cpu_usage']:+.1f}%" if abs(resource_delta['cpu_usage']) > 0.1 else None
+                            st.metric("CPU Usage", current_sys_info["cpu"]["usage"], delta=cpu_delta)
                             
-                            with resource_cols[1]:
-                                ram_delta = f"{resource_delta['ram_usage']:+.1f}%" if abs(resource_delta['ram_usage']) > 0.1 else None
-                                st.metric("RAM Usage", current_sys_info["ram"]["percent"], delta=ram_delta)
+                            ram_delta = f"{resource_delta['ram_usage']:+.1f}%" if abs(resource_delta['ram_usage']) > 0.1 else None
+                            st.metric("RAM Usage", current_sys_info["ram"]["percent"], delta=ram_delta)
                             
-                            with resource_cols[2]:
-                                if DEVICE == "cuda":
-                                    st.metric("GPU Memory", update_gpu_info(), delta=None)
-                                else:
-                                    st.metric("System RAM", f"{current_sys_info['ram']['used']} / {current_sys_info['ram']['total']}", delta=None)
+                            if DEVICE == "cuda":
+                                st.metric("GPU Memory", update_gpu_info(), delta=None)
+                            else:
+                                st.metric("System RAM", f"{current_sys_info['ram']['used']} / {current_sys_info['ram']['total']}", delta=None)
             
-            with col2:
-                # Create a horizontal bar chart with Plotly
-                fig = go.Figure()
+            # Create data for visualization but don't display the table
+            categories = []
+            probabilities = []
+            statuses = []
+            
+            for label, prob in results["probabilities"].items():
+                categories.append(label.replace('_', ' ').title())
+                probabilities.append(round(prob * 100, 1))
+                statuses.append("DETECTED" if prob >= 0.5 else "Not Detected")
+            
+            # Sort by probability for the chart
+            chart_data = sorted(zip(categories, probabilities, statuses), key=lambda x: x[1], reverse=True)
+            chart_cats, chart_probs, chart_statuses = zip(*chart_data)
+            
+            # Move the chart to full width for better visibility
+            st.markdown("### Toxicity Probabilities:")
+            
+            # Create a horizontal bar chart with Plotly
+            fig = go.Figure()
+            
+            # Add bars with different colors based on toxicity
+            for i, (cat, prob, status) in enumerate(zip(chart_cats, chart_probs, chart_statuses)):
+                color = THEME["toxic"] if status == "DETECTED" else THEME["non_toxic"]
+                border_color = hex_to_rgba(color, 0.85)  # Using rgba for border
                 
-                # Sort data for the chart to match table sorting
-                chart_data = sorted(zip(categories, probabilities, statuses), key=lambda x: x[1], reverse=True)
-                chart_cats, chart_probs, chart_statuses = zip(*chart_data)
-                
-                # Add bars with different colors based on toxicity
-                for i, (cat, prob, status) in enumerate(zip(chart_cats, chart_probs, chart_statuses)):
-                    color = THEME["toxic"] if status == "DETECTED" else THEME["non_toxic"]
-                    border_color = hex_to_rgba(color, 0.85)  # Using rgba for border
-                    
-                    fig.add_trace(go.Bar(
-                        y=[cat],
-                        x=[prob],
-                        orientation='h',
-                        name=cat,
-                        marker=dict(
-                            color=color,
-                            line=dict(
-                                color=border_color,
-                                width=1
-                            )
-                        ),
-                        text=[f"{prob}%"],
-                        textposition='auto',
-                        hoverinfo='text',
-                        hovertext=[f"{cat}: {prob}%"]
-                    ))
-                
-                # Update layout
-                fig.update_layout(
-                    title={
-                        'text': "Toxicity Probabilities",
-                        'y':0.95,
-                        'x':0.5,
-                        'xanchor': 'center',
-                        'yanchor': 'top',
-                        'font': dict(
-                            size=18,
-                            family="Poppins, sans-serif",
-                            color=THEME["text"]
+                fig.add_trace(go.Bar(
+                    y=[cat],
+                    x=[prob],
+                    orientation='h',
+                    name=cat,
+                    marker=dict(
+                        color=color,
+                        line=dict(
+                            color=border_color,
+                            width=1
                         )
-                    },
-                    xaxis_title="Probability (%)",
-                    yaxis_title="Category",
-                    height=400,
-                    margin=dict(l=10, r=10, t=40, b=30),
-                    xaxis=dict(
-                        range=[0, 100],
-                        gridcolor=hex_to_rgba(THEME["text"], 0.13),
-                        zerolinecolor=hex_to_rgba(THEME["text"], 0.2),
-                        color=THEME["text"]
                     ),
-                    yaxis=dict(
-                        gridcolor=hex_to_rgba(THEME["text"], 0.13),
-                        color=THEME["text"]
-                    ),
-                    bargap=0.2,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
+                    text=[f"{prob}%"],
+                    textposition='auto',
+                    hoverinfo='text',
+                    hovertext=[f"{cat}: {prob}%"]
+                ))
+            
+            # Update layout
+            fig.update_layout(
+                title=None,  # Remove title since we now have a header above
+                xaxis_title="Probability (%)",
+                yaxis_title="Category",
+                height=350,
+                margin=dict(l=10, r=10, t=10, b=30),
+                xaxis=dict(
+                    range=[0, 100],
+                    gridcolor=hex_to_rgba(THEME["text"], 0.13),
+                    zerolinecolor=hex_to_rgba(THEME["text"], 0.2),
+                    color=THEME["text"]
+                ),
+                yaxis=dict(
+                    gridcolor=hex_to_rgba(THEME["text"], 0.13),
+                    color=THEME["text"]
+                ),
+                bargap=0.2,
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(
+                    family="Poppins, sans-serif",
+                    color=THEME["text"]
+                ),
+                hoverlabel=dict(
                     font=dict(
                         family="Poppins, sans-serif",
-                        color=THEME["text"]
+                        size=14
                     ),
-                    hoverlabel=dict(
-                        font=dict(
-                            family="Poppins, sans-serif",
-                            size=14
-                        ),
-                        bordercolor=hex_to_rgba(THEME["text"], 0.13),
-                    )
+                    bordercolor=hex_to_rgba(THEME["text"], 0.13),
                 )
-                
-                # Add a light grid
-                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=hex_to_rgba(THEME["text"], 0.07))
-                
-                # Display the plot
-                st.plotly_chart(fig, use_container_width=True, config={
-                    'displayModeBar': True,
-                    'displaylogo': False,
-                    'modeBarButtonsToRemove': ['lasso2d', 'select2d']
-                })
+            )
+            
+            # Add a light grid
+            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=hex_to_rgba(THEME["text"], 0.07))
+            
+            # Display the plot
+            st.plotly_chart(fig, use_container_width=True, config={
+                'displayModeBar': True,
+                'displaylogo': False,
+                'modeBarButtonsToRemove': ['lasso2d', 'select2d']
+            })
     else:
-        st.info("Please enter some text to analyze.")
+        pass  # Remove the info message
 
 # Bottom section with improved styling for usage guide
 st.divider()
 colored_header(
-    label="How to use this tool",
+    label="How to use this AI Model",
     description="Follow these steps to analyze text for toxicity",
     color_name="blue-70"
 )

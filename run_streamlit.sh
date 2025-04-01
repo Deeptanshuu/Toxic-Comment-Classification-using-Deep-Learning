@@ -21,6 +21,14 @@ fi
 export ONNX_MODEL_PATH=${ONNX_MODEL_PATH:-"weights/toxic_classifier.onnx"}
 export PYTORCH_MODEL_DIR=${PYTORCH_MODEL_DIR:-"weights/toxic_classifier_xlm-roberta-large"}
 
-# Run the Streamlit app
+# Set Streamlit environment variables to reduce errors
+export STREAMLIT_SERVER_WATCH_ONLY_USER_CONTENT=true
+export STREAMLIT_SERVER_HEADLESS=true
+
+# Suppress TensorFlow warnings
+export TF_CPP_MIN_LOG_LEVEL=2
+export TF_ENABLE_ONEDNN_OPTS=0
+
+# Run the Streamlit app with disabled hot-reload to avoid PyTorch class errors
 echo "✅ Launching Streamlit application..."
-streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 "$@" 
+streamlit run streamlit_app.py --server.port=8501 --server.address=0.0.0.0 --server.runOnSave=false "$@" 
