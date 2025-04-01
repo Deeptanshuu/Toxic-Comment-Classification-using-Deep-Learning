@@ -9,10 +9,12 @@ env/
 env.bak/
 venv.bak/
 
+# Gradio 
+.gradio/*
+
 # Weights and Biases
 weights/*
-dataset/processed/*
-dataset/raw/*
+dataset/*
 cache/*
 wandb/*
 
@@ -76,3 +78,6 @@ Pipfile.lock
 
 #Logging
 *.log
+logs/
+
+*.csv

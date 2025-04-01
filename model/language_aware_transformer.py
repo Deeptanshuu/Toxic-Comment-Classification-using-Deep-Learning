@@ -317,6 +317,27 @@ class LanguageAwareTransformer(nn.Module):
         
         # Get logits using the [CLS] token output
         logits = self.classifier(output[:, 0])
+        
+        # Apply language-specific threshold adjustments based on statistical patterns
+        LANG_THRESHOLD_ADJUSTMENTS = {
+            0: [0.00, 0.00, 0.00, 0.00, 0.00, 0.00],  # en (baseline)
+            1: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # ru (higher insult tendency)
+            2: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # tr
+            3: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # es
+            4: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # fr
+            5: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # it
+            6: [-0.02, 0.00, 0.02, 0.00, -0.03, 0.00],  # pt
+        }
+        
+        # Get threshold adjustments for each instance in batch
+        if mode == 'inference':
+            threshold_adj = torch.tensor(
+                [LANG_THRESHOLD_ADJUSTMENTS[lang.item()] for lang in lang_ids],
+                device=logits.device
+            )
+            # Apply adjustment to logits
+            logits = logits + threshold_adj
+        
         probabilities = torch.sigmoid(logits)
         
         # Prepare output dictionary

@@ -148,6 +148,24 @@ class DynamicClassWeights:
                 alpha += alpha_contrib * weight
                 gamma += gamma_contrib * weight
             
+            # Apply class-specific adjustments based on statistical analysis
+            # Order: toxic, severe_toxic, obscene, threat, insult, identity_hate
+            class_adjustments = {
+                'en': [1.0, 1.0, 0.9, 0.85, 1.1, 1.0],   # English has more obscene/threat
+                'ru': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Russian has more insults
+                'tr': [1.0, 1.0, 1.0, 1.0, 0.9, 0.95],   # Turkish pattern
+                'es': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Spanish pattern
+                'fr': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # French pattern 
+                'it': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Italian pattern
+                'pt': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0]     # Portuguese pattern
+            }
+            
+            # Apply adjustments to weights
+            for i, lang in enumerate(langs):
+                if lang in class_adjustments:
+                    # Multiply weights by language-specific class adjustments
+                    weights[i] *= torch.tensor(class_adjustments[lang], device=device)
+            
             # Normalize weights to prevent extreme values
             weights = weights / weights.mean()
             
