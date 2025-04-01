@@ -19,7 +19,7 @@ fi
 
 # Set default environment variables if not already set
 export ONNX_MODEL_PATH=${ONNX_MODEL_PATH:-"weights/toxic_classifier.onnx"}
-export PYTORCH_MODEL_PATH=${PYTORCH_MODEL_PATH:-"weights/toxic_classifier_xlm-roberta-large/pytorch_model.bin"}
+export PYTORCH_MODEL_DIR=${PYTORCH_MODEL_DIR:-"weights/toxic_classifier_xlm-roberta-large"}
 
 # Run the Streamlit app
 echo "✅ Launching Streamlit application..."

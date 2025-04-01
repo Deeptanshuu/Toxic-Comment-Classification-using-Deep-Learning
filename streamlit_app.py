@@ -1,4 +1,14 @@
 import streamlit as st
+
+# Set page configuration - MUST BE THE FIRST STREAMLIT COMMAND
+st.set_page_config(
+    page_title="Toxicity Analyzer",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Now import all other dependencies
 import torch
 import numpy as np
 import os
@@ -15,20 +25,19 @@ from streamlit_extras.add_vertical_space import add_vertical_space
 from streamlit_extras.stylable_container import stylable_container
 from streamlit_extras.card import card
 from streamlit_extras.metric_cards import style_metric_cards
-from streamlit_extras.let_it_rain import rain
-
-# Set page configuration
-st.set_page_config(
-    page_title="Toxicity Analyzer",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Configure paths
 ONNX_MODEL_PATH = os.environ.get("ONNX_MODEL_PATH", "weights/toxic_classifier.onnx")
-PYTORCH_MODEL_PATH = os.environ.get("PYTORCH_MODEL_PATH", "weights/toxic_classifier_xlm-roberta-large/pytorch_model.bin")
+PYTORCH_MODEL_DIR = os.environ.get("PYTORCH_MODEL_DIR", "weights/toxic_classifier_xlm-roberta-large")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Helper function to convert hex to rgba
+def hex_to_rgba(hex_color, alpha=1.0):
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return f'rgba({r}, {g}, {b}, {alpha})'
 
 # Supported languages with emoji flags
 SUPPORTED_LANGUAGES = {
@@ -52,44 +61,102 @@ LANGUAGE_EXAMPLES = {
     'pt': "Você é um idiota completo, ninguém gosta do seu conteúdo estúpido."
 }
 
-# Theme colors - Fixed light theme
+# Theme colors - Dark theme
 THEME = {
-    "primary": "#4361EE",
-    "secondary": "#3A0CA3",
-    "background": "#FFFFFF",
-    "surface": "#F8F9FA",
-    "text": "#212529",
+    "primary": "#00ADB5",
+    "secondary": "#00ADB5",
+    "background": "#222831",
+    "surface": "#222831",
+    "text": "#EEEEEE",
     "toxic": "#FF6B6B",
-    "non_toxic": "#4CC9F0",
+    "non_toxic": "#00ADB5",
     "warning": "#F9C74F",
-    "info": "#90BE6D"
+    "info": "#90BE6D",
+    "sidebar_bg": "#393E46",
+    "card_bg": "#393E46",
+    "input_bg": "#393E46"
 }
 
 # Custom CSS for better styling
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
     
     html, body, [class*="css"] {{
         font-family: 'Poppins', sans-serif;
         color: {THEME["text"]};
     }}
     
+    /* Heading font styling */
+    h1, h2, h3, h4, h5, h6 {{
+        font-family: 'Space Grotesk', sans-serif;
+        letter-spacing: -0.02em;
+    }}
+    
+    [data-testid="stMarkdownContainer"] h1,
+    [data-testid="stMarkdownContainer"] h2,
+    [data-testid="stMarkdownContainer"] h3 {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 600;
+    }}
+
+    /* Override Streamlit's default background */
+    .stApp {{
+        background-color: {THEME["background"]};
+    }}
+    
+    .st-emotion-cache-h4xjwg{{
+        background-color: {THEME["background"]};
+    }}
+    
+    /* Code editor and text areas */
+    .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
+        background-color: {THEME["input_bg"]};
+        color: {THEME["text"]};
+    }}
+
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {{
+        background-color: {THEME["sidebar_bg"]};
+    }}
+    
+    section[data-testid="stSidebar"] [data-testid="stMarkdown"] {{
+        color: white;
+    }}
+    
+    section[data-testid="stSidebar"] .stSelectbox label,
+    section[data-testid="stSidebar"] .stButton label {{
+        color: white !important;
+    }}
+    
+    section[data-testid="stSidebar"] h3 {{
+        color: white;
+    }}
+    
+    section[data-testid="stSidebar"] .main-title {{
+        color: white;
+        -webkit-text-fill-color: white;
+    }}
+    
+    section[data-testid="stSidebar"] h1 {{
+        color: white;
+    }}
+    
     .main-title {{
-        font-family: 'Poppins', sans-serif;
+        font-family: 'Space Grotesk', sans-serif;
         font-size: 2.8rem;
         font-weight: 700;
-        background: linear-gradient(90deg, {THEME["primary"]} 0%, {THEME["secondary"]} 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+        color: white;
         margin-bottom: 1rem;
+        letter-spacing: -0.03em;
     }}
     
     .subtitle {{
         font-family: 'Poppins', sans-serif;
         font-size: 1.2rem;
         font-weight: 400;
-        color: {THEME["text"]}aa;
+        color: {THEME["text"]};
         margin-bottom: 2rem;
     }}
     
@@ -100,8 +167,8 @@ st.markdown(f"""
     .toxic-category {{
         padding: 4px 12px;
         border-radius: 15px;
-        background-color: {THEME["toxic"]}20;
-        border: 1px solid {THEME["toxic"]}50;
+        background-color: {hex_to_rgba(THEME["toxic"], 0.13)};
+        border: 1px solid {hex_to_rgba(THEME["toxic"], 0.31)};
         margin-right: 5px;
         font-weight: 500;
         display: inline-block;
@@ -111,18 +178,20 @@ st.markdown(f"""
     }}
     
     .toxic-category:hover {{
-        background-color: {THEME["toxic"]}40;
+        background-color: {hex_to_rgba(THEME["toxic"], 0.25)};
         transform: scale(1.05);
     }}
     
     .toxic-result {{
+        font-family: 'Space Grotesk', sans-serif;
         font-size: 1.8rem;
-        font-weight: 600;
+        font-weight: 700;
         padding: 5px 15px;
         border-radius: 10px;
         display: inline-block;
         box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         transition: all 0.3s ease;
+        letter-spacing: -0.02em;
     }}
     
     .toxic-result:hover {{
@@ -138,7 +207,7 @@ st.markdown(f"""
     
     .model-info:hover {{
         border-left-width: 5px;
-        background-color: {THEME["primary"]}10;
+        background-color: {hex_to_rgba(THEME["primary"], 0.06)};
     }}
     
     .stButton button {{
@@ -154,7 +223,7 @@ st.markdown(f"""
     }}
     
     .example-btn {{
-        background: linear-gradient(90deg, {THEME["primary"]}88 0%, {THEME["secondary"]}88 100%);
+        background: linear-gradient(90deg, {hex_to_rgba(THEME["primary"], 0.53)} 0%, {hex_to_rgba(THEME["primary"], 0.7)} 100%);
         color: white;
         border: none;
         padding: 6px 12px;
@@ -173,22 +242,25 @@ st.markdown(f"""
     
     .stTextArea textarea {{
         border-radius: 8px;
-        border: 1px solid {THEME["primary"]}66;
+        border: 1px solid {hex_to_rgba(THEME["primary"], 0.4)};
         padding: 8px;
         font-family: 'Poppins', sans-serif;
         transition: all 0.3s ease;
+        background-color: {THEME["input_bg"]};
+        color: {THEME["text"]};
     }}
     
     .stTextArea textarea:focus {{
         border-color: {THEME["primary"]};
-        box-shadow: 0 0 0 2px {THEME["primary"]}33;
+        box-shadow: 0 0 0 2px {hex_to_rgba(THEME["primary"], 0.2)};
     }}
     
     div[data-testid="stExpander"] {{
         border-radius: 8px;
-        border: 1px solid {THEME["text"]}22;
+        border: 1px solid {hex_to_rgba(THEME["text"], 0.13)};
         overflow: hidden;
         transition: all 0.3s ease;
+        background-color: {THEME["card_bg"]};
     }}
     
     div[data-testid="stExpander"]:hover {{
@@ -214,8 +286,8 @@ st.markdown(f"""
     .threshold-bg {{
         padding: 15px;
         border-radius: 10px;
-        background-color: {THEME["info"]}11;
-        border-left: 3px solid {THEME["info"]};
+        background-color: {hex_to_rgba(THEME["primary"], 0.07)};
+        border-left: 3px solid {THEME["primary"]};
     }}
     
     .usage-step {{
@@ -224,21 +296,22 @@ st.markdown(f"""
         margin-bottom: 15px;
         padding: 10px;
         border-radius: 8px;
-        background-color: {THEME["secondary"]}08;
+        background-color: {THEME["card_bg"]};
         transition: all 0.3s ease;
     }}
     
     .usage-step:hover {{
-        background-color: {THEME["secondary"]}15;
+        background-color: {hex_to_rgba(THEME["primary"], 0.15)};
         transform: translateX(5px);
     }}
     
     .step-number {{
+        font-family: 'Space Grotesk', sans-serif;
         font-size: 24px;
         font-weight: 700;
         color: {THEME["primary"]};
         margin-right: 15px;
-        background-color: {THEME["primary"]}15;
+        background-color: {hex_to_rgba(THEME["primary"], 0.08)};
         height: 40px;
         width: 40px;
         display: flex;
@@ -259,13 +332,13 @@ st.markdown(f"""
     
     @keyframes pulse {{
         0% {{
-            box-shadow: 0 0 0 0 {THEME["primary"]}80;
+            box-shadow: 0 0 0 0 {hex_to_rgba(THEME["primary"], 0.5)};
         }}
         70% {{
-            box-shadow: 0 0 0 10px {THEME["primary"]}00;
+            box-shadow: 0 0 0 10px {hex_to_rgba(THEME["primary"], 0)};
         }}
         100% {{
-            box-shadow: 0 0 0 0 {THEME["primary"]}00;
+            box-shadow: 0 0 0 0 {hex_to_rgba(THEME["primary"], 0)};
         }}
     }}
     
@@ -278,6 +351,7 @@ st.markdown(f"""
         opacity: 0.7;
         padding: 20px;
         transition: all 0.3s ease;
+        color: {THEME["text"]};
     }}
     
     .footer:hover {{
@@ -286,10 +360,10 @@ st.markdown(f"""
     
     /* Card styling */
     .info-card {{
-        background-color: {THEME["surface"]};
+        background-color: {THEME["card_bg"]};
         border-radius: 10px;
         padding: 20px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         transition: all 0.3s ease;
         border-left: 4px solid {THEME["primary"]};
         margin-bottom: 20px;
@@ -297,10 +371,11 @@ st.markdown(f"""
     
     .info-card:hover {{
         transform: translateY(-5px);
-        box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
     }}
     
     .info-card h4 {{
+        font-family: 'Space Grotesk', sans-serif;
         font-size: 1.2rem;
         font-weight: 600;
         margin-bottom: 10px;
@@ -314,8 +389,79 @@ st.markdown(f"""
         margin-bottom: 20px;
     }}
     
+    /* Cards for metrics at top */
+    div[data-testid="metric-container"] {{
+        background-color: {THEME["card_bg"]};
+        border-radius: 10px;
+        padding: 15px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }}
+    
+    div[data-testid="metric-container"] > div:nth-child(1) {{
+        color: {THEME["text"]};
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 600;
+    }}
+    
+    div[data-testid="metric-container"] .stMetricValue {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 700;
+    }}
+    
+    /* Remove default Streamlit menu and footer */
     #MainMenu {{visibility: hidden;}}
     footer {{visibility: hidden;}}
+    
+    /* Style dataframe */
+    .stDataFrame {{
+        background-color: {THEME["card_bg"]};
+    }}
+    
+    /* Style for analysis result card */
+    .analysis-result-card {{
+        background-color: {THEME["card_bg"]};
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border-left: 5px solid {THEME["toxic"]};
+    }}
+    
+    /* Performance metrics */
+    .performance-metrics {{
+        background-color: {THEME["card_bg"]};
+        border-radius: 8px;
+        padding: 12px;
+        margin-top: 15px;
+        border-left: 3px solid {THEME["primary"]};
+    }}
+    
+    .performance-metric {{
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }}
+    
+    .metric-value {{
+        font-weight: 600;
+        color: {THEME["primary"]};
+        font-family: 'Space Grotesk', sans-serif;
+    }}
+    
+    /* Streamlit native elements */
+    .stButton > button {{
+        background-color: {THEME["primary"]} !important;
+        color: white !important;
+        font-weight: 500 !important;
+    }}
+    
+    .stButton > button:hover {{
+        background-color: {hex_to_rgba(THEME["primary"], 0.85)} !important;
+        border-color: {THEME["primary"]} !important;
+    }}
+    
+    .stProgress > div > div > div > div {{
+        background-color: {THEME["primary"]} !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -325,14 +471,19 @@ def load_classifier():
     try:
         if os.path.exists(ONNX_MODEL_PATH):
             classifier = OptimizedToxicityClassifier(onnx_path=ONNX_MODEL_PATH, device=DEVICE)
-            st.session_state['model_type'] = 'ONNX'
+            st.session_state['model_type'] = 'Loaded'
+            return classifier
+        elif os.path.exists(PYTORCH_MODEL_DIR):
+            classifier = OptimizedToxicityClassifier(pytorch_path=PYTORCH_MODEL_DIR, device=DEVICE)
+            st.session_state['model_type'] = 'Loaded'
             return classifier
         else:
-            classifier = OptimizedToxicityClassifier(pytorch_path=PYTORCH_MODEL_PATH, device=DEVICE)
-            st.session_state['model_type'] = 'PyTorch'
-            return classifier
+            st.error(f"❌ No model found at {ONNX_MODEL_PATH} or {PYTORCH_MODEL_DIR}")
+            return None
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 def detect_language(text: str) -> str:
@@ -359,27 +510,39 @@ def predict_toxicity(text: str, selected_language: str = "Auto-detect") -> Dict:
     
     # Add a spinner while processing
     with st.spinner("Analyzing text..."):
-        # Simulate a small delay to show the spinner (can be removed in production)
-        time.sleep(0.5)
+        # Record start time for inference metrics
+        start_time = time.time()
         
         # Detect language if auto-detect is selected
         if selected_language == "Auto-detect":
+            lang_detection_start = time.time()
             lang_code = detect_language(text)
+            lang_detection_time = time.time() - lang_detection_start
             detected = True
         else:
             # Get language code from the display name without flag
             selected_name = selected_language.split(' ')[1] if len(selected_language.split(' ')) > 1 else selected_language
             lang_code = next((code for code, info in SUPPORTED_LANGUAGES.items() 
                             if info['name'] == selected_name), 'en')
+            lang_detection_time = 0
             detected = False
         
         # Run prediction
         try:
+            model_inference_start = time.time()
             results = classifier.predict([text], langs=[lang_code])[0]
+            model_inference_time = time.time() - model_inference_start
+            total_time = time.time() - start_time
+            
             return {
                 "results": results,
                 "detected": detected,
-                "lang_code": lang_code
+                "lang_code": lang_code,
+                "performance": {
+                    "total_time": total_time,
+                    "lang_detection_time": lang_detection_time,
+                    "model_inference_time": model_inference_time
+                }
             }
         except Exception as e:
             import traceback
@@ -389,12 +552,17 @@ def predict_toxicity(text: str, selected_language: str = "Auto-detect") -> Dict:
                 "results": None
             }
 
-# Conditionally apply a different particle effect on successful analysis
-def celebration_effect():
-    if st.session_state.get('is_analysis_complete', False) and st.session_state.get('is_first_celebration', True):
-        if not st.session_state.get('analysis_has_error', False):
-            rain(emoji="🎉", font_size=40, falling_speed=5, animation_length=1)
-            st.session_state['is_first_celebration'] = False
+# Function to set example text
+def set_example(lang_code):
+    st.session_state['use_example'] = True
+    st.session_state['example_text'] = LANGUAGE_EXAMPLES[lang_code]
+    st.session_state['detected_lang'] = lang_code
+
+# Initialize session state for example selection if not present
+if 'use_example' not in st.session_state:
+    st.session_state['use_example'] = False
+    st.session_state['example_text'] = ""
+    st.session_state['detected_lang'] = "Auto-detect"
 
 # Sidebar content
 with st.sidebar:
@@ -416,50 +584,59 @@ with st.sidebar:
             st.markdown(f"<div class='language-option'><span class='language-flag'>{info['flag']}</span> {info['name']}</div>", 
                       unsafe_allow_html=True)
     
-    with st.expander("📊 Toxicity Categories", expanded=False):
-        categories = {
-            "Toxic": "General toxicity in language",
-            "Severe Toxic": "Extreme forms of harmful content",
-            "Obscene": "Content containing obscene language/references",
-            "Threat": "Content implying threats or intimidation",
-            "Insult": "Content aimed at insulting individuals/groups",
-            "Identity Hate": "Content targeting specific identities"
-        }
-        
-        for cat, desc in categories.items():
-            st.markdown(f"""
-            <div style='margin-bottom:10px;'>
-                <strong>{cat}:</strong> {desc}
-            </div>
-            """, unsafe_allow_html=True)
+    st.divider()
     
-    with st.expander("🔍 How it works", expanded=False):
-        st.markdown("""
-        This model uses XLM-RoBERTa with language-aware fine-tuning to detect toxicity across multiple languages.
-        
-        The classifier has been optimized for performance using ONNX Runtime for fast inference.
-        """)
-        
-        st.markdown("""
-        <div class='info-card' style='background-color: #172d43;'>
-            <h4>Technical Details</h4>
-            <ul>
-                <li>Architecture: XLM-RoBERTa Large</li>
-                <li>Languages: 7 supported languages</li>
-                <li>Max Sequence Length: 128 tokens</li>
-                <li>Training Dataset: Multilingual toxicity data</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
+    # Language selection dropdown moved to sidebar
+    st.markdown("### 🌐 Select Language")
+    language_options = ["Auto-detect"] + [f"{info['flag']} {info['name']}" for code, info in SUPPORTED_LANGUAGES.items()]
+    selected_language = st.selectbox(
+        "Choose language or use auto-detect",
+        language_options,
+        index=0,
+        key="selected_language",
+        help="Choose a specific language or use auto-detection"
+    )
+    
+    # Examples moved to sidebar
+    st.markdown("### 📝 Try with examples:")
+    
+    # Order languages by putting the most common ones first
+    ordered_langs = ['en', 'es', 'fr', 'pt', 'it', 'ru', 'tr']
+    
+    # Create columns in the sidebar for examples
+    sidebar_example_cols = st.columns(1)
+    
+    for lang_code in ordered_langs:
+        info = SUPPORTED_LANGUAGES[lang_code]
+        with sidebar_example_cols[0]:
+            if st.button(f"{info['flag']} {info['name']}", 
+                       use_container_width=True, 
+                       help=f"Try with a {info['name']} example of toxic content"):
+                set_example(lang_code)
     
     st.divider()
     
-    # Model information
+    # Model information - simplified to only show device
     st.markdown("<div class='model-info'>", unsafe_allow_html=True)
-    model_type = st.session_state.get('model_type', 'Loading...')
-    st.markdown(f"**Model type:** {model_type}")
     st.markdown(f"**Device:** {DEVICE}")
     st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Toxicity Thresholds - Moved from results section to sidebar
+    st.markdown("### ⚙️ Toxicity Thresholds")
+    st.markdown("""
+    <div class='threshold-bg'>
+    The model uses language-specific thresholds to determine if a text is toxic (increased by 20% for more conservative flagging):
+    
+    - **Toxic**: 58-60%
+    - **Severe Toxic**: 54%
+    - **Obscene**: 56-60%
+    - **Threat**: 48-50%
+    - **Insult**: 55-60%
+    - **Identity Hate**: 48-50%
+    
+    These increased thresholds reduce false positives but may miss borderline toxic content.
+    </div>
+    """, unsafe_allow_html=True)
 
 # Display model loading status
 if 'model_loaded' not in st.session_state:
@@ -467,10 +644,7 @@ if 'model_loaded' not in st.session_state:
         classifier = load_classifier()
         if classifier:
             st.session_state['model_loaded'] = True
-            model_type = st.session_state.get('model_type', 'Unknown')
-            st.success(f"✅ {model_type} model loaded successfully on {DEVICE}")
-            # Trigger celebration only first time
-            st.session_state['is_first_celebration'] = True
+            st.success(f"✅ Model loaded successfully on {DEVICE}")
         else:
             st.session_state['model_loaded'] = False
             st.error("❌ Failed to load model. Please check logs.")
@@ -480,76 +654,21 @@ else:
 
 # Main app
 st.markdown("<h1 class='main-title'>Multilingual Toxicity Analyzer</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle' style='color: white;'>Detect toxic content in multiple languages with state-of-the-art accuracy</p>", unsafe_allow_html=True)
-
-# # Header card with instructions
-# with stylable_container(
-#     key="header_container",
-#     css_styles="""
-#         {
-#             border-radius: 10px;
-#             padding: 15px;
-#             background-color: rgba(67, 97, 238, 0.1);
-#             margin-bottom: 20px;
-#         }
-#     """
-# ):
-#     st.markdown("""
-#     Enter text in any supported language to analyze it for toxic content. The model detects six different categories of toxicity 
-#     with high accuracy and is optimized for cross-lingual performance.
-#     """)
-
-# Initialize session state for example selection if not present
-if 'use_example' not in st.session_state:
-    st.session_state['use_example'] = False
-    st.session_state['example_text'] = ""
-    st.session_state['detected_lang'] = "Auto-detect"
-
-# Language selection dropdown (in a separate row)
-language_options = ["Auto-detect"] + [f"{info['flag']} {info['name']}" for code, info in SUPPORTED_LANGUAGES.items()]
-selected_language = st.selectbox(
-    "Select Language",
-    language_options,
-    index=0,
-    key="selected_language",
-    help="Choose a specific language or use auto-detection"
-)
-
-# Display all examples in a grid layout
-st.markdown("### Try with examples:")
-
-# Create a 4x2 grid for all language examples
-example_cols = st.columns(4)
-
-# Order languages by putting the most common ones first
-ordered_langs = ['en', 'es', 'fr', 'pt', 'it', 'ru', 'tr']
-
-# Function to set example text
-def set_example(lang_code):
-    st.session_state['use_example'] = True
-    st.session_state['example_text'] = LANGUAGE_EXAMPLES[lang_code]
-    st.session_state['detected_lang'] = lang_code
-
-for i, lang_code in enumerate(ordered_langs):
-    info = SUPPORTED_LANGUAGES[lang_code]
-    col_idx = i % 4
-    
-    with example_cols[col_idx]:
-        if st.button(f"{info['flag']} {info['name']}", 
-                   use_container_width=True, 
-                   help=f"Try with a {info['name']} example of toxic content"):
-            set_example(lang_code)
+st.markdown("<p class='subtitle'>Detect toxic content in multiple languages with state-of-the-art accuracy</p>", unsafe_allow_html=True)
 
 # Text input area with interactive styling
 with stylable_container(
     key="text_input_container",
-    css_styles="""
-        {
+    css_styles=f"""
+        {{
             border-radius: 10px;
             overflow: hidden;
             transition: all 0.3s ease;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        }
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            background-color: {THEME["card_bg"]};
+            padding: 15px;
+            margin-bottom: 20px;
+        }}
     """
 ):
     # Set the text input value from example if one was selected
@@ -586,17 +705,18 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
         st.session_state['last_analyzed'] = text_input
         prediction = predict_toxicity(text_input, selected_language)
         
-        # Set analysis status flags for celebration effect
+        # Set analysis status flags but remove celebration effect code
         st.session_state['is_analysis_complete'] = True
         st.session_state['analysis_has_error'] = "error" in prediction and prediction["error"]
         
         if "error" in prediction and prediction["error"]:
             st.error(prediction["error"])
         elif prediction["results"]:
-            # Trigger celebration effect
-            celebration_effect()
+            # Remove celebration effect call
+            # celebration_effect()
             
             results = prediction["results"]
+            performance = prediction.get("performance", {})
             
             # Create metrics at the top
             metric_cols = st.columns(3)
@@ -625,9 +745,9 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                 
             # Apply styling to metrics
             style_metric_cards(
-                background_color=f"{result_color}20",
+                background_color=hex_to_rgba(result_color, 0.13),
                 border_left_color=result_color,
-                border_color=f"{result_color}50", 
+                border_color=hex_to_rgba(result_color, 0.31), 
                 box_shadow=True
             )
             
@@ -644,7 +764,7 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         {{
                             border-radius: 10px;
                             padding: 20px;
-                            background-color: {result_color}10;
+                            background-color: {THEME["card_bg"]};
                             border-left: 5px solid {result_color};
                             margin-bottom: 20px;
                             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
@@ -653,7 +773,7 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                 ):
                     # Overall result with animated highlight
                     st.markdown(f"""
-                    <h2>Analysis Result: <span class='toxic-result pulse' style='background-color: {result_color}20; color: {result_color};'>{result_text}</span></h2>
+                    <h2>Analysis Result: <span class='toxic-result pulse' style='background-color: {hex_to_rgba(result_color, 0.13)}; color: {result_color};'>{result_text}</span></h2>
                     <h3>Language: {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}</h3>
                     """, unsafe_allow_html=True)
                     
@@ -704,6 +824,33 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                                                              help="Whether the category was detected"),
                     }
                 )
+                
+                # Performance metrics card (replacing text length and word count)
+                if performance:
+                    with stylable_container(
+                        key="performance_metrics_card",
+                        css_styles=f"""
+                            {{
+                                border-radius: 8px;
+                                padding: 15px;
+                                background-color: {THEME["card_bg"]};
+                                border-left: 3px solid {THEME["primary"]};
+                                margin-top: 20px;
+                            }}
+                        """
+                    ):
+                        st.markdown("### Performance Metrics:")
+                        total_time = performance.get("total_time", 0)
+                        inference_time = performance.get("model_inference_time", 0)
+                        lang_detection_time = performance.get("lang_detection_time", 0)
+                        
+                        cols = st.columns(3)
+                        with cols[0]:
+                            st.metric("Total Time", f"{total_time:.3f}s", delta=None)
+                        with cols[1]:
+                            st.metric("Model Inference", f"{inference_time:.3f}s", delta=None)
+                        with cols[2]:
+                            st.metric("Language Detection", f"{lang_detection_time:.3f}s", delta=None)
             
             with col2:
                 # Create a horizontal bar chart with Plotly
@@ -716,6 +863,8 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                 # Add bars with different colors based on toxicity
                 for i, (cat, prob, status) in enumerate(zip(chart_cats, chart_probs, chart_statuses)):
                     color = THEME["toxic"] if status == "DETECTED" else THEME["non_toxic"]
+                    border_color = hex_to_rgba(color, 0.85)  # Using rgba for border
+                    
                     fig.add_trace(go.Bar(
                         y=[cat],
                         x=[prob],
@@ -724,7 +873,7 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         marker=dict(
                             color=color,
                             line=dict(
-                                color=color + "dd",
+                                color=border_color,
                                 width=1
                             )
                         ),
@@ -744,7 +893,8 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         'yanchor': 'top',
                         'font': dict(
                             size=18,
-                            family="Poppins, sans-serif"
+                            family="Poppins, sans-serif",
+                            color=THEME["text"]
                         )
                     },
                     xaxis_title="Probability (%)",
@@ -753,11 +903,13 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     margin=dict(l=10, r=10, t=40, b=30),
                     xaxis=dict(
                         range=[0, 100],
-                        gridcolor=f"{THEME['text']}22",
-                        zerolinecolor=f"{THEME['text']}33",
+                        gridcolor=hex_to_rgba(THEME["text"], 0.13),
+                        zerolinecolor=hex_to_rgba(THEME["text"], 0.2),
+                        color=THEME["text"]
                     ),
                     yaxis=dict(
-                        gridcolor=f"{THEME['text']}22",
+                        gridcolor=hex_to_rgba(THEME["text"], 0.13),
+                        color=THEME["text"]
                     ),
                     bargap=0.2,
                     paper_bgcolor='rgba(0,0,0,0)',
@@ -771,12 +923,12 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                             family="Poppins, sans-serif",
                             size=14
                         ),
-                        bordercolor=f"{THEME['text']}22",
+                        bordercolor=hex_to_rgba(THEME["text"], 0.13),
                     )
                 )
                 
                 # Add a light grid
-                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=f"{THEME['text']}11")
+                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=hex_to_rgba(THEME["text"], 0.07))
                 
                 # Display the plot
                 st.plotly_chart(fig, use_container_width=True, config={
@@ -784,46 +936,6 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     'displaylogo': False,
                     'modeBarButtonsToRemove': ['lasso2d', 'select2d']
                 })
-                
-                # Add a section for threshold information with better styling
-                with st.expander("About Toxicity Thresholds"):
-                    st.markdown("""
-                    <div class='threshold-bg'>
-                    The model uses language-specific thresholds to determine if a text is toxic:
-                    
-                    - **Toxic**: 48-50%
-                    - **Severe Toxic**: 45%
-                    - **Obscene**: 47-50%
-                    - **Threat**: 40-42%
-                    - **Insult**: 46-50%
-                    - **Identity Hate**: 40-42%
-                    
-                    These thresholds are optimized for best precision/recall balance based on evaluation data.
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                # Small card with text info
-                with stylable_container(
-                    key="text_info_card",
-                    css_styles=f"""
-                        {{
-                            border-radius: 8px;
-                            padding: 15px;
-                            background-color: {THEME["surface"]};
-                            border: 1px solid {THEME["text"]}22;
-                            margin-top: 20px;
-                        }}
-                    """
-                ):
-                    text_length = len(text_input)
-                    word_count = len(text_input.split())
-                    
-                    st.markdown(f"""
-                    <div style='display: flex; justify-content: space-between;'>
-                        <div><strong>Text Length:</strong> {text_length} characters</div>
-                        <div><strong>Word Count:</strong> {word_count} words</div>
-                    </div>
-                    """, unsafe_allow_html=True)
     else:
         st.info("Please enter some text to analyze.")
 
@@ -844,7 +956,7 @@ st.markdown("""
 
 <div class='usage-step'>
     <div class='step-number'>2</div>
-    <div>Select a specific language or use the auto-detect feature if you're unsure.</div>
+    <div>Select a specific language from the sidebar or use the auto-detect feature if you're unsure.</div>
 </div>
 
 <div class='usage-step'>
@@ -856,12 +968,17 @@ st.markdown("""
     <div class='step-number'>4</div>
     <div>Examine the breakdown of toxicity categories, probabilities, and visualization.</div>
 </div>
+
+<div class='usage-step'>
+    <div class='step-number'>5</div>
+    <div>Try different examples from the sidebar to see how the model performs with various languages.</div>
+</div>
 """, unsafe_allow_html=True)
 
 # Adding footer with credits and improved styling
 st.markdown("""
 <div class='footer'>
     <div>Powered by XLM-RoBERTa | Enhanced Streamlit UI</div>
-    <div style='font-size: 0.9rem; margin-top: 5px;'>v2.0.0 - Toxicity Analyzer</div>
+    <div style='font-size: 0.9rem; margin-top: 5px;'>Made with ❤️ by Deeptanshu</div>
 </div>
 """, unsafe_allow_html=True) 

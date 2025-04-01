@@ -2,6 +2,7 @@ import torch
 import onnxruntime as ort
 from transformers import XLMRobertaTokenizer
 import numpy as np
+import os
 
 class OptimizedToxicityClassifier:
     """High-performance toxicity classifier for production"""
@@ -22,7 +23,7 @@ class OptimizedToxicityClassifier:
         ]
         
         # Load ONNX model if path provided
-        if onnx_path:
+        if onnx_path and os.path.exists(onnx_path):
             # Use ONNX Runtime for inference
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] \
                 if device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers() \
@@ -34,13 +35,47 @@ class OptimizedToxicityClassifier:
         # Fall back to PyTorch if ONNX not available
         elif pytorch_path:
             from model.language_aware_transformer import LanguageAwareTransformer
+            
+            # Handle directory structure with checkpoint folders and 'latest' symlink
+            if os.path.isdir(pytorch_path):
+                # Check if there's a 'latest' symlink
+                latest_path = os.path.join(pytorch_path, 'latest')
+                if os.path.islink(latest_path) and os.path.exists(latest_path):
+                    checkpoint_dir = latest_path
+                else:
+                    # If no 'latest' symlink, look for checkpoint dirs and use the most recent one
+                    checkpoint_dirs = [d for d in os.listdir(pytorch_path) if d.startswith('checkpoint_epoch')]
+                    if checkpoint_dirs:
+                        checkpoint_dirs.sort()  # Sort to get the latest by name
+                        checkpoint_dir = os.path.join(pytorch_path, checkpoint_dirs[-1])
+                    else:
+                        raise ValueError(f"No checkpoint directories found in {pytorch_path}")
+                
+                # Look for PyTorch model files in the checkpoint directory
+                model_file = None
+                potential_files = ['pytorch_model.bin', 'model.pt', 'model.pth']
+                for file in potential_files:
+                    candidate = os.path.join(checkpoint_dir, file)
+                    if os.path.exists(candidate):
+                        model_file = candidate
+                        break
+                
+                if not model_file:
+                    raise FileNotFoundError(f"No model file found in {checkpoint_dir}")
+                
+                print(f"Using model from checkpoint: {checkpoint_dir}")
+                model_path = model_file
+            else:
+                # If pytorch_path is a direct file path
+                model_path = pytorch_path
+                
             self.model = LanguageAwareTransformer(num_labels=6)
-            self.model.load_state_dict(torch.load(pytorch_path, map_location=device))
+            self.model.load_state_dict(torch.load(model_path, map_location=device))
             self.model.to(device)
             self.model.eval()
             self.use_onnx = False
             self.device = device
-            print(f"Loaded PyTorch model from {pytorch_path}")
+            print(f"Loaded PyTorch model from {model_path}")
         else:
             raise ValueError("Either onnx_path or pytorch_path must be provided")
     
@@ -106,8 +141,8 @@ class OptimizedToxicityClassifier:
             for j, (text, lang, probs) in enumerate(zip(batch_texts, langs[i:i+batch_size], probabilities)):
                 # Apply optimal thresholds per language
                 lang_thresholds = {
-                    'en': [0.48, 0.45, 0.47, 0.42, 0.46, 0.40],  # Tuned based on analysis
-                    'default': [0.50, 0.45, 0.50, 0.40, 0.50, 0.42]
+                    'en': [0.58, 0.54, 0.56, 0.50, 0.55, 0.48],  # Increased by ~20% from original values
+                    'default': [0.60, 0.54, 0.60, 0.48, 0.60, 0.50]  # Increased by ~20% from original values
                 }
                 
                 thresholds = lang_thresholds.get(lang, lang_thresholds['default'])

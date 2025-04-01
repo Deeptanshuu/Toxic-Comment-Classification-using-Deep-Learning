@@ -1,0 +1,21 @@
+{
+  "timestamp": "20250401_143401",
+  "model_path": "weights/toxic_classifier_xlm-roberta-large",
+  "checkpoint": null,
+  "test_file": "dataset/split/val.csv",
+  "batch_size": 64,
+  "num_workers": 16,
+  "cache_dir": "cached_data",
+  "force_retokenize": false,
+  "prefetch_factor": 2,
+  "max_length": 128,
+  "gc_frequency": 500,
+  "label_columns": [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+  ]
+}
