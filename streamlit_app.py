@@ -1122,25 +1122,24 @@ with stylable_container(
         }}
     """
 ):
-    # Set the text input value from example if one was selected
-    if st.session_state['use_example']:
-        text_input = st.text_area(
-            "Enter text to analyze",
-            height=120,
-            value=st.session_state['example_text'],
-            key="text_input",
-            help="Enter text in any supported language to analyze for toxicity"
-        )
-        # Reset the flag after using it
+    # Get the current example text if it exists
+    current_example = st.session_state.get('example_text', '')
+    
+    # Set the text input value, allowing for modifications
+    text_input = st.text_area(
+        "Enter text to analyze",
+        height=120,
+        value=current_example if st.session_state.get('use_example', False) else st.session_state.get('text_input', ''),
+        key="text_input",
+        help="Enter text in any supported language to analyze for toxicity"
+    )
+    
+    # Check if the text has been modified from the example
+    if st.session_state.get('use_example', False) and text_input != current_example:
+        # Text was modified, clear example state
         st.session_state['use_example'] = False
-    else:
-        text_input = st.text_area(
-            "Enter text to analyze",
-            height=120,
-            placeholder="Type or paste text here...",
-            key="text_input",
-            help="Enter text in any supported language to analyze for toxicity"
-        )
+        st.session_state['example_text'] = ""
+        st.session_state['example_info'] = None
 
 # Analyze button with improved styling
 analyze_button = st.button(
