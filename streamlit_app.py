@@ -330,7 +330,8 @@ st.markdown(f"""
         font-family: 'Space Grotesk', sans-serif;
         color: {THEME["text"]} !important;
         border: 1px solid {THEME["text"]} !important;
-        overflow: hidden;
+        overflow-y: scroll;
+        overflow-x: hidden;
     }}
     
     svg, path{{
@@ -1327,6 +1328,7 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                             border-left: 5px solid {result_color};
                             margin-bottom: 10px;
                             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                            overflow: hidden;
                         }}
                     """
                 ):
@@ -1345,7 +1347,7 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     """, unsafe_allow_html=True)
                     
                     # Add toxicity probability graph inside the result card
-                    st.markdown("<h4 style='margin-top: 12px; margin-bottom: 8px;'>Toxicity Probabilities:</h4>", unsafe_allow_html=True)
+                    st.markdown("<h4 style='overflow: hidden; margin-top: 4px; margin-bottom: 4px;'>Toxicity Probabilities:</h4>", unsafe_allow_html=True)
                     
                     # Create a horizontal bar chart with Plotly
                     fig = go.Figure()
