@@ -140,10 +140,11 @@ class OptimizedToxicityClassifier:
             # Format results
             for j, (text, lang, probs) in enumerate(zip(batch_texts, langs[i:i+batch_size], probabilities)):
                 # Apply optimal thresholds per language
-                lang_thresholds = {
-                    'en': [0.58, 0.54, 0.56, 0.50, 0.55, 0.48],  # Increased by ~20% from original values
+                lang_thresholds = {  # Increased by ~20% from original values
                     'default': [0.60, 0.54, 0.60, 0.48, 0.60, 0.50]  # Increased by ~20% from original values
+                    # mapping [toxic, severe_toxic, obscene, threat, insult, identity_hate]
                 }
+                
                 
                 thresholds = lang_thresholds.get(lang, lang_thresholds['default'])
                 is_toxic = (probs >= np.array(thresholds)).astype(bool)

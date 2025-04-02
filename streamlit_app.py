@@ -20,8 +20,8 @@ with ModuleProtector('torch.classes'):
 
 # Set page configuration - MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(
-    page_title="Toxicity Analyzer",
-    page_icon="🛡️",
+    page_title="Multilingual Toxicity Analyzer",
+    page_icon="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLXNoaWVsZC1wbHVzLWljb24gbHVjaWRlLXNoaWVsZC1wbHVzIj48cGF0aCBkPSJNMjAgMTNjMCA1LTMuNSA3LjUtNy42NiA4Ljk1YTEgMSAwIDAgMS0uNjctLjAxQzcuNSAyMC41IDQgMTggNCAxM1Y2YTEgMSAwIDAgMSAxLTFjMiAwIDQuNS0xLjIgNi4yNC0yLjcyYTEuMTcgMS4xNyAwIDAgMSAxLjUyIDBDMTQuNTEgMy44MSAxNyA1IDE5IDVhMSAxIDAgMCAxIDEgMXoiLz48cGF0aCBkPSJNOSAxMmg2Ii8+PHBhdGggZD0iTTEyIDl2NiIvPjwvc3ZnPg==",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -304,30 +304,36 @@ LANGUAGE_EXAMPLES = {
     }
 }
 
-# Theme colors - Dark theme
+# Theme colors - Light theme with black text
 THEME = {
-    "primary": "#00ADB5",
-    "secondary": "#00ADB5",
-    "background": "#222831",
-    "surface": "#222831",
-    "text": "#EEEEEE",
-    "toxic": "#FF6B6B",
-    "non_toxic": "#00ADB5",
-    "warning": "#F9C74F",
-    "info": "#90BE6D",
-    "sidebar_bg": "#393E46",
-    "card_bg": "#393E46",
-    "input_bg": "#393E46"
+    "primary": "#2D3142",
+    "background": "#FFFFFF",
+    "surface": "#FFFFFF",
+    "text": "#000000",  # Changed to pure black for maximum contrast
+    "text_secondary": "#FFFFFF",  # For text that needs to be white
+    "button": "#000000",  # Dark black for buttons
+    "toxic": "#E53935",  # Darker red for better contrast
+    "non_toxic": "#2E7D32",  # Darker green for better contrast
+    "warning": "#F57C00",  # Darker orange for better contrast
+    "info": "#1976D2",  # Darker blue for better contrast
+    "sidebar_bg": "#FFFFFF",
+    "card_bg": "white",
+    "input_bg": "#F8F9FA"
 }
 
 # Custom CSS for better styling
 st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
     
-    html, body, [class*="css"] {{
-        font-family: 'Poppins', sans-serif;
+    :root, html, body, [class*="css"] {{
+        font-family: 'Space Grotesk', sans-serif;
+        color: {THEME["text"]} !important;
+        border: 1px solid {THEME["text"]} !important;
+        overflow: hidden;
+    }}
+    
+    svg, path{{
         color: {THEME["text"]};
     }}
     
@@ -335,6 +341,7 @@ st.markdown(f"""
     h1, h2, h3, h4, h5, h6 {{
         font-family: 'Space Grotesk', sans-serif;
         letter-spacing: -0.02em;
+        color: {THEME["text"]};
     }}
     
     .st-emotion{{
@@ -346,11 +353,13 @@ st.markdown(f"""
     [data-testid="stMarkdownContainer"] h3 {{
         font-family: 'Space Grotesk', sans-serif;
         font-weight: 600;
+        color: {THEME["text"]};
     }}
 
     /* Examples section styling */
     .examples-section {{
         margin-top: 15px;
+        color: {THEME["text"]};
     }}
     
     .example-button {{
@@ -360,34 +369,35 @@ st.markdown(f"""
         white-space: nowrap;
         margin-bottom: 5px;
         transition: all 0.2s ease;
+        background-color: {THEME["input_bg"]};
+        border-radius: 8px;
+        color: {THEME["text"]};
     }}
     
     .example-button:hover {{
         transform: translateX(3px);
-    }}
-    
-    .example-button.toxic {{
-        border-left: 3px solid {THEME["toxic"]};
-    }}
-    
-    .example-button.non-toxic {{
-        border-left: 3px solid {THEME["non_toxic"]};
+        background-color: {hex_to_rgba(THEME["primary"], 0.1)};
     }}
     
     /* Style tab content */
     .stTabs [data-baseweb="tab-panel"] {{
         padding-top: 1rem;
+        color: {THEME["text"]};
     }}
     
     /* Tab content styling */
     .stTabs [data-baseweb="tab"] {{
         font-family: 'Space Grotesk', sans-serif;
         font-weight: 500;
+        color: {THEME["text"]};
     }}
     
     /* Style expandable sections */
     div[data-testid="stExpander"] {{
         margin-bottom: 10px !important;
+        background-color: {THEME["card_bg"]};
+        border: 1px solid {hex_to_rgba(THEME["text"], 0.1)};
+        color: {THEME["text"]} !important;
     }}
     
     div[data-testid="stExpander"] div[data-testid="stExpanderContent"] {{
@@ -395,33 +405,15 @@ st.markdown(f"""
         overflow-y: auto;
         padding: 5px 10px;
     }}
-    
-    /* Styling for the example used banner */
-    .example-used-banner {{
-        margin-top: 10px;
-        padding: 12px;
-        border-radius: 8px;
-        background-color: rgba(0, 0, 0, 0.1);
-        border-left: 3px solid;
-        font-size: 0.9rem;
-    }}
-    
-    .example-badge {{
-        padding: 3px 8px;
-        border-radius: 4px;
-        font-weight: 500;
-        font-size: 0.8rem;
-        display: inline-block;
-        margin: 0 5px;
-    }}
 
     /* Hardware info styles */
     .hardware-info {{
-        background-color: {hex_to_rgba(THEME["primary"], 0.1)};
+        background-color: {hex_to_rgba(THEME["primary"], 0.05)};
         border-radius: 10px;
         padding: 12px;
         margin: 8px 0;
         border-left: 3px solid {THEME["primary"]};
+        color: {THEME["text"]};
     }}
     
     .hardware-title {{
@@ -434,31 +426,6 @@ st.markdown(f"""
         color: {THEME["primary"]};
     }}
     
-    .hardware-title .icon {{
-        margin-right: 6px;
-    }}
-    
-    .hardware-stat {{
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 4px;
-        font-size: 0.9rem;
-    }}
-    
-    .hardware-stat .label {{
-        color: {hex_to_rgba(THEME["text"], 0.9)};
-    }}
-    
-    .hardware-stat .value {{
-        font-weight: 500;
-        color: {THEME["text"]};
-    }}
-    
-    .hardware-resource {{
-        margin-top: 8px;
-        margin-bottom: 10px;
-    }}
-    
     /* Override Streamlit's default background */
     .stApp {{
         background-color: {THEME["background"]};
@@ -466,52 +433,60 @@ st.markdown(f"""
     
     .st-emotion-cache-h4xjwg{{
         background-color: {THEME["background"]};
+        color: {THEME["text"]};
     }}
     
     /* Code editor and text areas */
     .stTextInput>div>div>input, .stTextArea>div>div>textarea {{
         background-color: {THEME["input_bg"]};
         color: {THEME["text"]};
+        font-family: 'Space Grotesk', sans-serif;
     }}
 
     /* Sidebar styling */
     section[data-testid="stSidebar"] {{
         background-color: {THEME["sidebar_bg"]};
+        color: {THEME["text"]};
     }}
     
     section[data-testid="stSidebar"] [data-testid="stMarkdown"] {{
-        color: white;
+        color: {THEME["text"]};
+        background-color: {THEME["background"]};
     }}
     
     section[data-testid="stSidebar"] .stSelectbox label,
     section[data-testid="stSidebar"] .stButton label {{
-        color: white !important;
+        color: {THEME["text"]} !important;
+        background-color: {THEME["background"]} !important;
     }}
     
     section[data-testid="stSidebar"] h3 {{
-        color: white;
+        color: {THEME["text"]};
+        background-color: {THEME["background"]};
     }}
     
     section[data-testid="stSidebar"] .main-title {{
-        color: white;
-        -webkit-text-fill-color: white;
+        color: {THEME["text"]};
+        -webkit-text-fill-color: {THEME["text"]};
+        background-color: {THEME["background"]};
     }}
     
     section[data-testid="stSidebar"] h1 {{
-        color: white;
+        color: {THEME["text"]};
+        background-color: {THEME["background"]};
     }}
     
     .main-title {{
         font-family: 'Space Grotesk', sans-serif;
         font-size: 2.8rem;
         font-weight: 700;
-        color: white;
+        color: {THEME["text"]};
         margin-bottom: 1rem;
         letter-spacing: -0.03em;
     }}
     
     .subtitle {{
-        font-family: 'Poppins', sans-serif;
+        font-family: 'Space Grotesk', sans-serif;
         font-size: 1.2rem;
         font-weight: 400;
         color: {THEME["text"]};
@@ -536,11 +511,6 @@ st.markdown(f"""
         transition: all 0.3s ease;
     }}
     
-    .toxic-category:hover {{
-        background-color: {hex_to_rgba(THEME["toxic"], 0.25)};
-        transform: scale(1.05);
-    }}
-    
     .toxic-result {{
         font-family: 'Space Grotesk', sans-serif;
         font-size: 1.2rem;
@@ -553,218 +523,88 @@ st.markdown(f"""
         letter-spacing: -0.02em;
     }}
     
-    .toxic-result:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }}
-    
     .model-info {{
         border-left: 3px solid {THEME["primary"]};
         padding-left: 10px;
         transition: all 0.3s ease;
     }}
     
-    .model-info:hover {{
-        border-left-width: 5px;
-        background-color: {hex_to_rgba(THEME["primary"], 0.06)};
-    }}
-    
     .stButton button {{
+        font-family: 'Space Grotesk', sans-serif;
         border-radius: 8px;
-        font-weight: 500;
+        border: none;
+        font-weight: 600;
         transition: all 0.3s ease;
         box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        background-color: {THEME["button"]} !important;
+        color: {THEME["text_secondary"]} !important;
+        padding: 0.75rem 2rem;
+        font-size: 1.1rem;
+        letter-spacing: 0.02em;
     }}
     
     .stButton button:hover {{
         transform: translateY(-2px);
-        box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-    }}
-    
-    .example-btn {{
-        background: linear-gradient(90deg, {hex_to_rgba(THEME["primary"], 0.53)} 0%, {hex_to_rgba(THEME["primary"], 0.7)} 100%);
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 8px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        display: inline-block;
-        text-align: center;
-    }}
-    
-    .example-btn:hover {{
-        transform: translateY(-2px);
         box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        background-color: {hex_to_rgba(THEME["button"], 0.9)} !important;
     }}
     
-    .stTextArea textarea {{
-        border-radius: 8px;
-        border: 1px solid {hex_to_rgba(THEME["primary"], 0.4)};
-        padding: 8px;
-        font-family: 'Poppins', sans-serif;
-        transition: all 0.3s ease;
-        background-color: {THEME["input_bg"]};
-        color: {THEME["text"]};
-    }}
-    
-    .stTextArea textarea:focus {{
-        border-color: {THEME["primary"]};
-        box-shadow: 0 0 0 2px {hex_to_rgba(THEME["primary"], 0.2)};
-    }}
-    
-    div[data-testid="stExpander"] {{
-        border-radius: 8px;
-        border: 1px solid {hex_to_rgba(THEME["text"], 0.13)};
-        overflow: hidden;
-        transition: all 0.3s ease;
-        background-color: {THEME["card_bg"]};
-    }}
-    
-    div[data-testid="stExpander"]:hover {{
-        border-color: {THEME["primary"]};
-    }}
-    
-    div[data-testid="stVerticalBlock"] > div:has(div.stDataFrame) {{
-        border-radius: 8px;
-        overflow: hidden;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        transition: all 0.3s ease;
-    }}
-    
-    div[data-testid="stVerticalBlock"] > div:has(div.stDataFrame):hover {{
-        box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-    }}
-    
-    div[data-testid="stTable"] {{
-        border-radius: 8px;
-        overflow: hidden;
-    }}
-    
-    .threshold-bg {{
-        padding: 15px;
-        border-radius: 10px;
-        background-color: {hex_to_rgba(THEME["primary"], 0.07)};
-        border-left: 3px solid {THEME["primary"]};
-    }}
-    
-    .usage-step {{
-        display: flex;
-        align-items: center;
-        margin-bottom: 15px;
-        padding: 10px;
-        border-radius: 8px;
-        background-color: {THEME["card_bg"]};
-        transition: all 0.3s ease;
-    }}
-    
-    .usage-step:hover {{
-        background-color: {hex_to_rgba(THEME["primary"], 0.15)};
-        transform: translateX(5px);
-    }}
-    
-    .step-number {{
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 24px;
-        font-weight: 700;
-        color: {THEME["primary"]};
-        margin-right: 15px;
-        background-color: {hex_to_rgba(THEME["primary"], 0.08)};
-        height: 40px;
-        width: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-    }}
-    
-    .language-option {{
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }}
-    
-    .language-flag {{
-        font-size: 1.2rem;
-    }}
-    
-    @keyframes pulse {{
-        0% {{
-            box-shadow: 0 0 0 0 {hex_to_rgba(THEME["primary"], 0.5)};
-        }}
-        70% {{
-            box-shadow: 0 0 0 10px {hex_to_rgba(THEME["primary"], 0)};
-        }}
-        100% {{
-            box-shadow: 0 0 0 0 {hex_to_rgba(THEME["primary"], 0)};
-        }}
-    }}
-    
-    .pulse {{
-        animation: pulse 2s infinite;
-    }}
-    
-    .footer {{
-        text-align: center;
-        opacity: 0.7;
-        padding: 20px;
-        transition: all 0.3s ease;
-        color: {THEME["text"]};
-    }}
-    
-    .footer:hover {{
-        opacity: 1;
-    }}
-    
-    /* Card styling */
-    .info-card {{
-        background-color: {THEME["card_bg"]};
-        border-radius: 10px;
-        padding: 20px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        transition: all 0.3s ease;
-        border-left: 4px solid {THEME["primary"]};
-        margin-bottom: 20px;
-    }}
-    
-    .info-card:hover {{
-        transform: translateY(-5px);
-        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
-    }}
-    
-    .info-card h4 {{
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 1.2rem;
-        font-weight: 600;
-        margin-bottom: 10px;
-        color: {THEME["primary"]};
-    }}
-    
-    .example-container {{
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 10px;
-        margin-bottom: 20px;
-    }}
+
     
     /* Cards for metrics at top */
     div[data-testid="metric-container"] {{
         background-color: {THEME["card_bg"]};
         border-radius: 10px;
         padding: 15px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+        border: 1px solid {hex_to_rgba(THEME["text"], 0.1)};
     }}
     
-    div[data-testid="metric-container"] > div:nth-child(1) {{
-        color: {THEME["text"]};
+    /* Fix metric label colors - more specific selectors */
+    div[data-testid="metric-container"] > div:first-child {{
+        color: {THEME["text"]} !important;
         font-family: 'Space Grotesk', sans-serif;
-        font-weight: 600;
+        font-weight: 500;
     }}
     
-    div[data-testid="metric-container"] .stMetricValue {{
-        font-family: 'Space Grotesk', sans-serif;
-        font-weight: 700;
+    div[data-testid="metric-container"] > div:first-child > label {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Target the specific label element */
+    div[data-testid="stMetricLabel"] {{
+        color: {THEME["text"]} !important;
+        font-weight: 500 !important;
+    }}
+    
+    div[data-testid="stMetricLabel"] > div {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Ensure metric value is also properly colored */
+    div[data-testid="stMetricValue"] {{
+        color: {THEME["text"]} !important;
+        font-weight: 600 !important;
+    }}
+    
+    /* Target all text within metric containers */
+    div[data-testid="metric-container"] * {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Additional specific targeting for metric labels */
+    [data-testid="metric-container-label"] {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    [data-testid="metric-container-label-value"] {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Force black color on metric labels */
+    div[data-testid="metric-container"] label,
+    div[data-testid="metric-container"] div[role="button"] {{
+        color: {THEME["text"]} !important;
     }}
     
     /* Remove default Streamlit menu and footer */
@@ -776,51 +616,276 @@ st.markdown(f"""
         background-color: {THEME["card_bg"]};
     }}
     
-    /* Style for analysis result card */
-    .analysis-result-card {{
-        background-color: {THEME["card_bg"]};
-        border-radius: 15px;
+    .footer {{
+        text-align: center;
+        opacity: 0.7;
         padding: 20px;
-        margin-bottom: 20px;
-        border-left: 5px solid {THEME["toxic"]};
-    }}
-    
-    /* Performance metrics */
-    .performance-metrics {{
-        background-color: {THEME["card_bg"]};
-        border-radius: 8px;
-        padding: 12px;
-        margin-top: 15px;
-        border-left: 3px solid {THEME["primary"]};
-    }}
-    
-    .performance-metric {{
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 8px;
-    }}
-    
-    .metric-value {{
-        font-weight: 600;
-        color: {THEME["primary"]};
+        transition: all 0.3s ease;
+        color: {THEME["text"]};
         font-family: 'Space Grotesk', sans-serif;
     }}
     
-    /* Streamlit native elements */
+    .footer:hover {{
+        opacity: 1;
+    }}
+
+    /* Fix dropdown text color */
+    div[data-baseweb="select"] div[class*="valueContainer"] {{
+        color: {THEME["text_secondary"]} !important;
+    }}
+    
+    div[data-baseweb="select"] div[class*="placeholder"] {{
+        color: {THEME["text_secondary"]} !important;
+    }}
+    
+    div[data-baseweb="select"] div[class*="singleValue"] {{
+        color: {THEME["text_secondary"]} !important;
+    }}
+    
+    /* Fix button text color */
     .stButton > button {{
-        background-color: {THEME["primary"]} !important;
-        color: white !important;
-        font-weight: 500 !important;
+        background-color: {THEME["button"]} !important;
+        color: {THEME["text_secondary"]} !important;
+        font-family: 'Space Grotesk', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 1.1rem !important;
+        padding: 0.75rem 2rem !important;
+        border: none !important;
+        border-radius: 8px !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+        letter-spacing: 0.02em !important;
     }}
     
     .stButton > button:hover {{
-        background-color: {hex_to_rgba(THEME["primary"], 0.85)} !important;
-        border-color: {THEME["primary"]} !important;
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
+        background-color: {hex_to_rgba(THEME["button"], 0.9)} !important;
+        color: {THEME["text_secondary"]} !important;
     }}
     
-    .stProgress > div > div > div > div {{
-        background-color: {THEME["primary"]} !important;
+    /* Fix dropdown styling */
+    div[data-baseweb="select"] {{
+        background-color: {THEME["button"]} !important;
+        border-color: {hex_to_rgba(THEME["button"], 0.5)} !important;
+        border-radius: 8px !important;
     }}
+    
+    /* Fix dropdown options */
+    div[data-baseweb="popover"] {{
+        background-color: {THEME["text"]} !important;
+        color: {THEME["text"]} !important;
+    }}
+    
+    div[data-baseweb="popover"] div[role="option"] {{
+        color: {THEME["text_secondary"]} !important;
+    }}
+    
+    div[data-baseweb="popover"] div[role="option"]:hover {{
+        background-color: {hex_to_rgba(THEME["button"], 0.7)} !important;
+    }}
+    
+    /* Fix dropdown arrow color */
+    div[data-baseweb="select"] svg {{
+        color: {THEME["text_secondary"]} !important;
+    }}
+    
+    /* Fix input label color */
+    .stTextArea label {{
+        color: {THEME["text"]} !important;
+        font-weight: 500 !important;
+    }}
+    
+    /* Fix selectbox label */
+    .stSelectbox label {{
+        color: {THEME["text"]} !important;
+        font-weight: 500 !important;
+    }}
+    
+    /* Ensure consistent black color */
+    .stButton > button {{
+        background-color: #000000 !important;
+    }}
+    
+    div[data-baseweb="select"] {{
+        background-color: #000000 !important;
+    }}
+    
+    div[data-baseweb="popover"] {{
+        background-color: #000000 !important;
+    }}
+
+    /* Style How to section */
+    .usage-step {{
+        background-color: {THEME["card_bg"]};
+        border: 1px solid {hex_to_rgba(THEME["text"], 0.1)};
+        border-radius: 10px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        transition: all 0.2s ease;
+    }}
+
+    .usage-step:hover {{
+        transform: translateX(5px);
+        border-color: {hex_to_rgba(THEME["button"], 0.3)};
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }}
+
+    .step-number {{
+        background-color: {THEME["button"]};
+        color: {THEME["text_secondary"]};
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1rem;
+        font-weight: 600;
+        min-width: 2.5rem;
+        height: 2.5rem;
+        border-radius: 30%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 1.2rem;
+    }}
+
+    .usage-step div:last-child {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1rem;
+        color: {THEME["text"]}; 
+        flex: 1;
+        line-height: 1.4;
+    }}
+
+    /* Style the How to section header */
+    [data-testid="stHeader"] {{
+        background-color: transparent !important;
+    }}
+
+    .colored-header {{
+        margin: 2rem 0 1.5rem 0;
+    }}
+
+    .colored-header h1 {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 2rem;
+        font-weight: 700;
+        color: {THEME["text"]};
+        margin-bottom: 0.5rem;
+    }}
+
+    .colored-header p {{
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 1.1rem;
+        color: {hex_to_rgba(THEME["text"], 0.8)};
+    }}
+
+    /* Fix plotly chart axis labels */
+    .js-plotly-plot .plotly .g-gtitle {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    .js-plotly-plot .plotly .xtitle, 
+    .js-plotly-plot .plotly .ytitle {{
+        fill: {THEME["text"]} !important;
+        color: {THEME["text"]} !important;
+    }}
+    
+    .js-plotly-plot .plotly .xtick text, 
+    .js-plotly-plot .plotly .ytick text {{
+        fill: {THEME["text"]} !important;
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Fix tab text color */
+    button[data-baseweb="tab"] {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    button[data-baseweb="tab"][aria-selected="true"] {{
+        color: {THEME["primary"]} !important;
+    }}
+    
+    /* Fix expander arrow color */
+    div[data-testid="stExpander"] svg {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Ensure plotly modebar buttons are visible */
+    .modebar-btn path {{
+        fill: {THEME["text"]} !important;
+    }}
+    
+    /* Fix any remaining white text on white background issues */
+    .element-container, .stMarkdown, .stText {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Ensure text inputs have black text */
+    .stTextInput input, .stTextArea textarea {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Fix plotly legend text */
+    .js-plotly-plot .plotly .legend text {{
+        fill: {THEME["text"]} !important;
+        color: {THEME["text"]} !important;
+    }}
+
+    /* Fix success message color */
+    .stSuccess {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Fix success icon color */
+    .stSuccess svg {{
+        fill: {THEME["text"]} !important;
+    }}
+    
+    /* Ensure all alert messages have proper text color */
+    div[data-baseweb="notification"] {{
+        color: {THEME["text"]} !important;
+    }}
+    
+    /* Fix input area text color */
+    textarea {{
+        color: {THEME["text"]} !important;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# Custom CSS for metric labels - Add this near the top with the other CSS
+st.markdown(f"""
+<style>
+/* Direct targeting of metric labels */
+[data-testid="stMetricLabel"] {{
+    color: {THEME["text"]} !important;
+    font-weight: 500 !important;
+}}
+
+[data-testid="stMetricLabel"] span {{
+    color: {THEME["text"]} !important;
+    font-weight: 500 !important;
+}}
+
+/* Target the label content directly */
+[data-testid="stMetricLabel"] div {{
+    color: {THEME["text"]} !important;
+}}
+
+/* Target every element inside a metric label */
+[data-testid="stMetricLabel"] * {{
+    color: {THEME["text"]} !important;
+}}
+
+/* Style the value too */
+[data-testid="stMetricValue"] {{
+    color: {THEME["text"]} !important;
+}}
+
+/* Extremely specific selector to ensure it overrides everything */
+div[data-testid="metric-container"] div[data-testid="stMetricLabel"] {{
+    color: {THEME["text"]} !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -933,12 +998,10 @@ if 'use_example' not in st.session_state:
 
 # Sidebar content
 with st.sidebar:
-    st.markdown("<h1 class='main-title'>Toxicity Analyzer</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-title'>Multilingual Toxicity Analyzer</h1>", unsafe_allow_html=True)
     
     st.markdown("""
-    ### 🛡️ Multilingual Toxicity Analyzer
-    
-    This app analyzes text for different types of toxicity across multiple languages with high accuracy.
+    #### This app analyzes text for different types of toxicity across multiple languages with high accuracy.
     """)
     
     # Create language cards with flags
@@ -1076,15 +1139,15 @@ with st.sidebar:
     st.markdown("### ⚙️ Toxicity Thresholds")
     st.markdown("""
     <div class='threshold-bg'>
-    The model uses language-specific thresholds to determine if a text is toxic (increased by 20% for more conservative flagging):
-    
-    - **Toxic**: 58-60%
+    The model uses language-specific thresholds to determine if a text is toxic:
+
+    - **Toxic**: 60%
     - **Severe Toxic**: 54%
-    - **Obscene**: 56-60%
-    - **Threat**: 48-50%
-    - **Insult**: 55-60%
-    - **Identity Hate**: 48-50%
-    
+    - **Obscene**: 60%
+    - **Threat**: 48%
+    - **Insult**: 60%
+    - **Identity Hate**: 50%
+
     These increased thresholds reduce false positives but may miss borderline toxic content.
     </div>
     """, unsafe_allow_html=True)
@@ -1104,8 +1167,19 @@ else:
     classifier = load_classifier()
 
 # Main app
-st.markdown("<h1 class='main-title'>Multilingual Toxicity Analyzer</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Detect toxic content in multiple languages with state-of-the-art accuracy</p>", unsafe_allow_html=True)
+st.markdown("""
+<h1 class='main-title'> 
+    <svg xmlns="http://www.w3.org/2000/svg" style="padding-bottom: 10px;" width="45" height="45" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield-plus-icon lucide-shield-plus">
+        <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+        <path d="M9 12h6"/>
+        <path d="M12 9v6"/>
+    </svg> 
+    Multilingual Toxicity Analyzer
+</h1>
+""", unsafe_allow_html=True)
+st.markdown("""
+<p class='subtitle'>Detect toxic content in multiple languages with state-of-the-art accuracy</p>
+""", unsafe_allow_html=True)
 
 # Text input area with interactive styling
 with stylable_container(
@@ -1117,8 +1191,18 @@ with stylable_container(
             transition: all 0.3s ease;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             background-color: {THEME["card_bg"]};
-            padding: 15px;
-            margin-bottom: 20px;
+            padding: 10px;
+            margin-bottom: 15px;
+        }}
+
+        textarea {{
+            caret-color: black !important;
+            color: {THEME["text"]} !important;
+        }}
+
+        /* Ensure the text input cursor is visible */
+        .stTextArea textarea {{
+            caret-color: black !important;
         }}
     """
 ):
@@ -1128,7 +1212,7 @@ with stylable_container(
     # Set the text input value, allowing for modifications
     text_input = st.text_area(
         "Enter text to analyze",
-        height=120,
+        height=80,
         value=current_example if st.session_state.get('use_example', False) else st.session_state.get('text_input', ''),
         key="text_input",
         help="Enter text in any supported language to analyze for toxicity"
@@ -1141,13 +1225,15 @@ with stylable_container(
         st.session_state['example_text'] = ""
         st.session_state['example_info'] = None
 
-# Analyze button with improved styling
-analyze_button = st.button(
-    "🔍 Analyze Text", 
-    type="primary", 
-    use_container_width=True,
-    help="Click to analyze the entered text for toxicity"
-)
+# Analyze button with improved styling in a more compact layout
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    analyze_button = st.button(
+        "Analyze Text", 
+        type="primary", 
+        use_container_width=True,
+        help="Click to analyze the entered text for toxicity"
+    )
 
 # Process when button is clicked or text is submitted
 if analyze_button or (text_input and 'last_analyzed' not in st.session_state or st.session_state.get('last_analyzed') != text_input):
@@ -1189,9 +1275,6 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
             results = prediction["results"]
             performance = prediction.get("performance", {})
             
-            # Create metrics at the top
-            metric_cols = st.columns(3)
-            
             # Overall toxicity result
             is_toxic = results["is_toxic"]
             result_color = THEME["toxic"] if is_toxic else THEME["non_toxic"]
@@ -1204,25 +1287,30 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
             # Count toxic categories
             toxic_count = len(results["toxic_categories"]) if is_toxic else 0
             
-            with metric_cols[0]:
-                st.metric("Analysis Result", result_text, delta=None)
+            # Create data for visualization but don't display the table
+            categories = []
+            probabilities = []
+            statuses = []
             
-            with metric_cols[1]:
-                detected_text = " (detected)" if prediction["detected"] else ""
-                st.metric("Language", f"{lang_info['flag']} {lang_info['name']}{detected_text}", delta=None)
+            # Use the same thresholds that are used in the inference model
+            category_thresholds = {
+                'toxic': 0.60,
+                'severe_toxic': 0.54,
+                'obscene': 0.60,
+                'threat': 0.48,
+                'insult': 0.60,
+                'identity_hate': 0.50
+            }
             
-            with metric_cols[2]:
-                st.metric("Toxic Categories", f"{toxic_count}/6", delta=None)
-                
-            # Apply styling to metrics
-            style_metric_cards(
-                background_color=hex_to_rgba(result_color, 0.13),
-                border_left_color=result_color,
-                border_color=hex_to_rgba(result_color, 0.31), 
-                box_shadow=True
-            )
+            for label, prob in results["probabilities"].items():
+                categories.append(label.replace('_', ' ').title())
+                probabilities.append(round(prob * 100, 1))
+                threshold = category_thresholds.get(label, 0.5) * 100
+                statuses.append("DETECTED" if prob * 100 >= threshold else "Not Detected")
             
-            st.divider()
+            # Sort by probability for the chart
+            chart_data = sorted(zip(categories, probabilities, statuses), key=lambda x: x[1], reverse=True)
+            chart_cats, chart_probs, chart_statuses = zip(*chart_data)
             
             # Two column layout for results
             col1, col2 = st.columns([3, 2])
@@ -1234,57 +1322,103 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                     css_styles=f"""
                         {{
                             border-radius: 10px;
-                            padding: 20px;
+                            padding: 10px 15px;
                             background-color: {THEME["card_bg"]};
                             border-left: 5px solid {result_color};
-                            margin-bottom: 20px;
+                            margin-bottom: 10px;
                             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                            height: 100%;
                         }}
                     """
                 ):
-                    # Overall result with animated highlight
+                    # Overall result with abbreviated display
                     st.markdown(f"""
-                    <div style="margin-bottom: 10px;">
-                    <h3 style="margin: 0; display: inline-block; margin-right: 10px;">Analysis Result:</h3>
-                    <span class='toxic-result pulse' style='background-color: {hex_to_rgba(result_color, 0.13)}; color: {result_color};'>{result_text}</span>
+                    <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                        <h3 style="margin: 0; margin-right: 10px;">Analysis Result:</h3>
+                        <span style='background-color: {hex_to_rgba(result_color, 0.13)}; color: {result_color}; font-family: "Space Grotesk", sans-serif; font-size: 1.1rem; font-weight: 700; padding: 2px 10px; border-radius: 6px;'>{result_text}</span>
                     </div>
-                    <div style="margin: 10px 0;">
-                    <h4 style="margin: 0;">Language: {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}</h4>
+                    <div style="margin: 5px 0; font-size: 0.95rem;">
+                        <b>Language:</b> {lang_info['flag']} {lang_info['name']} {'(detected)' if prediction["detected"] else ''}
+                    </div>
+                    <div style="margin: 5px 0 12px 0; font-size: 0.95rem;">
+                        <b>Toxic Categories:</b> {", ".join([f'<span class="toxic-category" style="padding: 2px 6px; font-size: 0.8rem; display: inline-block;">{category.replace("_", " ").title()}</span>' for category in results["toxic_categories"]]) if is_toxic and toxic_count > 0 else '<span style="color: #666; font-size: 0.9rem;">None</span>'}
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # If this was an example, show that information
-                    if st.session_state.get('example_info') is not None and st.session_state.get('example_info')['lang'] == lang_code:
-                        example_info = st.session_state.get('example_info')
-                        example_type = example_info['type']
-                        example_index = example_info['index']
-                        
-                        type_label = "TOXIC" if example_type == "toxic" else "NON-TOXIC"
-                        type_color = THEME["toxic"] if example_type == "toxic" else THEME["non_toxic"]
-                        
-                        st.markdown(f"""
-                        <div class="example-used-banner" style="border-color: {type_color}; background-color: {hex_to_rgba(type_color, 0.1)};">
-                            <span style="font-weight: 600;">Example Used:</span> {lang_info['flag']} {lang_info['name']} 
-                            <span class="example-badge" style="background-color: {hex_to_rgba(type_color, 0.2)}; color: {type_color};">{type_label}</span>
-                            <span>Example #{example_index + 1}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Clear the example info to avoid showing it for the next analysis if not an example
-                        st.session_state['example_info'] = None
+                    # Add toxicity probability graph inside the result card
+                    st.markdown("<h4 style='margin-top: 12px; margin-bottom: 8px;'>Toxicity Probabilities:</h4>", unsafe_allow_html=True)
                     
-                    # Display detected categories if toxic
-                    if is_toxic:
-                        st.markdown("""
-                        <div style="margin-top: 10px;">
-                        <h4 style="margin: 0 0 5px 0;">Detected toxic categories:</h4>
-                        <div style="display: flex; flex-wrap: wrap; gap: 5px;">
-                        """, unsafe_allow_html=True)
-                        for category in results["toxic_categories"]:
-                            formatted_category = category.replace('_', ' ').title()
-                            st.markdown(f"<span class='toxic-category'>{formatted_category}</span>", unsafe_allow_html=True)
-                        st.markdown("</div></div>", unsafe_allow_html=True)
+                    # Create a horizontal bar chart with Plotly
+                    fig = go.Figure()
+                    
+                    # Add bars with different colors based on toxicity
+                    for i, (cat, prob, status) in enumerate(zip(chart_cats, chart_probs, chart_statuses)):
+                        color = THEME["toxic"] if status == "DETECTED" else THEME["non_toxic"]
+                        border_color = hex_to_rgba(color, 0.85)  # Using rgba for border
+                        
+                        fig.add_trace(go.Bar(
+                            y=[cat],
+                            x=[prob],
+                            orientation='h',
+                            name=cat,
+                            marker=dict(
+                                color=color,
+                                line=dict(
+                                    color=border_color,
+                                    width=2
+                                )
+                            ),
+                            text=[f"{prob}%"],
+                            textposition='outside',
+                            textfont=dict(size=16, weight='bold'),  # Much larger, bold text
+                            hoverinfo='text',
+                            hovertext=[f"{cat}: {prob}%"]
+                        ))
+                    
+                    # Update layout
+                    fig.update_layout(
+                        title=None,
+                        xaxis_title="Probability (%)",
+                        yaxis_title=None,  # Remove y-axis title to save space
+                        height=340,  # Significantly increased height
+                        margin=dict(l=10, r=40, t=20, b=40),  # More margin space for labels
+                        xaxis=dict(
+                            range=[0, 115],  # Extended for outside labels
+                            gridcolor=hex_to_rgba(THEME["text"], 0.15),
+                            zerolinecolor=hex_to_rgba(THEME["text"], 0.3),
+                            color=THEME["text"],
+                            tickfont=dict(size=15),  # Larger tick font
+                            title_font=dict(size=16, family="Space Grotesk, sans-serif")  # Larger axis title
+                        ),
+                        yaxis=dict(
+                            gridcolor=hex_to_rgba(THEME["text"], 0.15),
+                            color=THEME["text"],
+                            tickfont=dict(size=15, family="Space Grotesk, sans-serif", weight='bold'),  # Larger, bold category names
+                            automargin=True  # Auto-adjust margin to fit category names
+                        ),
+                        bargap=0.3,  # More space between bars
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        font=dict(
+                            family="Space Grotesk, sans-serif",
+                            color=THEME["text"],
+                            size=15  # Larger base font size
+                        ),
+                        showlegend=False
+                    )
+                    
+                    # Grid lines
+                    fig.update_xaxes(
+                        showgrid=True, 
+                        gridwidth=1.5,  # Slightly wider grid lines
+                        gridcolor=hex_to_rgba(THEME["text"], 0.15),
+                        dtick=20
+                    )
+                    
+                    # Display the plot
+                    st.plotly_chart(fig, use_container_width=True, config={
+                        'displayModeBar': False,
+                        'displaylogo': False
+                    })
             
             with col2:
                 # Performance metrics card
@@ -1313,111 +1447,87 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                         with perf_tab1:
                             time_cols = st.columns(1)
                             with time_cols[0]:
-                                st.metric("Total Time", f"{total_time:.3f}s", delta=None)
-                                st.metric("Model Inference", f"{inference_time:.3f}s", delta=None)
-                                st.metric("Language Detection", f"{lang_detection_time:.3f}s", delta=None)
+                                # Use custom HTML metrics instead of st.metric
+                                total_time_val = f"{total_time:.3f}s"
+                                inference_time_val = f"{inference_time:.3f}s"
+                                lang_detection_time_val = f"{lang_detection_time:.3f}s"
+                                
+                                st.markdown(f"""
+                                <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                        Total Time
+                                    </div>
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                        {total_time_val}
+                                    </div>
+                                </div>
+                                
+                                <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                        Model Inference
+                                    </div>
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                        {inference_time_val}
+                                    </div>
+                                </div>
+                                
+                                <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                        Language Detection
+                                    </div>
+                                    <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                        {lang_detection_time_val}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
                         
                         with perf_tab2:
-                            # Display system resource metrics
+                            # Display system resource metrics with custom HTML
                             current_sys_info = update_system_resources()
                             
                             # Format delta: add + sign for positive values
+                            cpu_usage = current_sys_info["cpu"]["usage"]
                             cpu_delta = f"{resource_delta['cpu_usage']:+.1f}%" if abs(resource_delta['cpu_usage']) > 0.1 else None
-                            st.metric("CPU Usage", current_sys_info["cpu"]["usage"], delta=cpu_delta)
+                            cpu_delta_display = f" ({cpu_delta})" if cpu_delta else ""
                             
+                            ram_usage = current_sys_info["ram"]["percent"]
                             ram_delta = f"{resource_delta['ram_usage']:+.1f}%" if abs(resource_delta['ram_usage']) > 0.1 else None
-                            st.metric("RAM Usage", current_sys_info["ram"]["percent"], delta=ram_delta)
+                            ram_delta_display = f" ({ram_delta})" if ram_delta else ""
                             
                             if DEVICE == "cuda":
-                                st.metric("GPU Memory", update_gpu_info(), delta=None)
+                                gpu_memory = update_gpu_info()
+                                memory_display = f"GPU Memory: {gpu_memory}"
                             else:
-                                st.metric("System RAM", f"{current_sys_info['ram']['used']} / {current_sys_info['ram']['total']}", delta=None)
-            
-            # Create data for visualization but don't display the table
-            categories = []
-            probabilities = []
-            statuses = []
-            
-            for label, prob in results["probabilities"].items():
-                categories.append(label.replace('_', ' ').title())
-                probabilities.append(round(prob * 100, 1))
-                statuses.append("DETECTED" if prob >= 0.5 else "Not Detected")
-            
-            # Sort by probability for the chart
-            chart_data = sorted(zip(categories, probabilities, statuses), key=lambda x: x[1], reverse=True)
-            chart_cats, chart_probs, chart_statuses = zip(*chart_data)
-            
-            # Move the chart to full width for better visibility
-            st.markdown("### Toxicity Probabilities:")
-            
-            # Create a horizontal bar chart with Plotly
-            fig = go.Figure()
-            
-            # Add bars with different colors based on toxicity
-            for i, (cat, prob, status) in enumerate(zip(chart_cats, chart_probs, chart_statuses)):
-                color = THEME["toxic"] if status == "DETECTED" else THEME["non_toxic"]
-                border_color = hex_to_rgba(color, 0.85)  # Using rgba for border
-                
-                fig.add_trace(go.Bar(
-                    y=[cat],
-                    x=[prob],
-                    orientation='h',
-                    name=cat,
-                    marker=dict(
-                        color=color,
-                        line=dict(
-                            color=border_color,
-                            width=1
-                        )
-                    ),
-                    text=[f"{prob}%"],
-                    textposition='auto',
-                    hoverinfo='text',
-                    hovertext=[f"{cat}: {prob}%"]
-                ))
-            
-            # Update layout
-            fig.update_layout(
-                title=None,  # Remove title since we now have a header above
-                xaxis_title="Probability (%)",
-                yaxis_title="Category",
-                height=350,
-                margin=dict(l=10, r=10, t=10, b=30),
-                xaxis=dict(
-                    range=[0, 100],
-                    gridcolor=hex_to_rgba(THEME["text"], 0.13),
-                    zerolinecolor=hex_to_rgba(THEME["text"], 0.2),
-                    color=THEME["text"]
-                ),
-                yaxis=dict(
-                    gridcolor=hex_to_rgba(THEME["text"], 0.13),
-                    color=THEME["text"]
-                ),
-                bargap=0.2,
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(
-                    family="Poppins, sans-serif",
-                    color=THEME["text"]
-                ),
-                hoverlabel=dict(
-                    font=dict(
-                        family="Poppins, sans-serif",
-                        size=14
-                    ),
-                    bordercolor=hex_to_rgba(THEME["text"], 0.13),
-                )
-            )
-            
-            # Add a light grid
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=hex_to_rgba(THEME["text"], 0.07))
-            
-            # Display the plot
-            st.plotly_chart(fig, use_container_width=True, config={
-                'displayModeBar': True,
-                'displaylogo': False,
-                'modeBarButtonsToRemove': ['lasso2d', 'select2d']
-            })
+                                memory_display = f"System RAM: {current_sys_info['ram']['used']} / {current_sys_info['ram']['total']}"
+                            
+                            st.markdown(f"""
+                            <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                    CPU Usage
+                                </div>
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                    {cpu_usage}<span style="font-size: 0.9rem; color: {THEME["primary"]};">{cpu_delta_display}</span>
+                                </div>
+                            </div>
+                            
+                            <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                    RAM Usage
+                                </div>
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                    {ram_usage}<span style="font-size: 0.9rem; color: {THEME["primary"]};">{ram_delta_display}</span>
+                                </div>
+                            </div>
+                            
+                            <div style="background-color: white; border-left: 3px solid {THEME["primary"]}; border: 1px solid {hex_to_rgba(THEME["primary"], 0.2)}; border-radius: 10px; padding: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 0.85rem; margin-bottom: 3px;">
+                                    Memory
+                                </div>
+                                <div style="color: {THEME["text"]}; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1.2rem;">
+                                    {memory_display}
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
     else:
         pass  # Remove the info message
 
@@ -1460,7 +1570,7 @@ st.markdown("""
 # Adding footer with credits and improved styling
 st.markdown("""
 <div class='footer'>
-    <div>Powered by XLM-RoBERTa | Enhanced Streamlit UI</div>
-    <div style='font-size: 0.9rem; margin-top: 5px;'>Made with ❤️ by Deeptanshu</div>
+    <div>Powered by XLM-RoBERTa | Streamlit UI</div>
+    <div style='font-size: 0.9rem; margin-top: 5px;'>Made with ❤️ by Deeptanshu, Nauman, Sara and Soham</div>
 </div>
 """, unsafe_allow_html=True) 
