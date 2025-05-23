@@ -895,9 +895,8 @@ div[data-testid="metric-container"] div[data-testid="stMetricLabel"] {{
 def load_classifier():
     try:
         classifier = OptimizedToxicityClassifier(
-            pytorch_path=HUGGINGFACE_MODEL_PATH,
-            device=DEVICE,
-            use_huggingface=True
+            pytorch_path=PYTORCH_MODEL_PATH,
+            device=DEVICE
         )
         st.session_state['model_type'] = 'Loaded'
         return classifier
