@@ -47,13 +47,9 @@ from streamlit_extras.stylable_container import stylable_container
 from streamlit_extras.card import card
 from streamlit_extras.metric_cards import style_metric_cards
 
-# Import visualization tools
-from utils.attention_visualizer import AttentionVisualizer
-from utils.attribution_visualizer import AttributionVisualizer
-
 # Configure paths
-ONNX_MODEL_PATH = os.environ.get("ONNX_MODEL_PATH", "weights/toxic_classifier.onnx")
-PYTORCH_MODEL_DIR = os.environ.get("PYTORCH_MODEL_DIR", "weights/toxic_classifier_xlm-roberta-large")
+HUGGINGFACE_MODEL_PATH = "Deeptanshuu/Multilingual_Toxic_Comment_Classifier"
+PYTORCH_MODEL_PATH = "https://huggingface.co/Deeptanshuu/Multilingual_Toxic_Comment_Classifier/resolve/main/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Get GPU info if available
@@ -585,7 +581,13 @@ st.markdown(f"""
     div[data-testid="stMetricLabel"] > div {{
         color: {THEME["text"]} !important;
     }}
-
+    
+    /* Ensure metric value is also properly colored */
+    div[data-testid="stMetricValue"] {{
+        color: {THEME["text"]} !important;
+        font-weight: 600 !important;
+    }}
+    
     /* Target all text within metric containers */
     div[data-testid="metric-container"] * {{
         color: {THEME["text"]} !important;
@@ -892,17 +894,13 @@ div[data-testid="metric-container"] div[data-testid="stMetricLabel"] {{
 @st.cache_resource
 def load_classifier():
     try:
-        if os.path.exists(ONNX_MODEL_PATH):
-            classifier = OptimizedToxicityClassifier(onnx_path=ONNX_MODEL_PATH, device=DEVICE)
-            st.session_state['model_type'] = 'Loaded'
-            return classifier
-        elif os.path.exists(PYTORCH_MODEL_DIR):
-            classifier = OptimizedToxicityClassifier(pytorch_path=PYTORCH_MODEL_DIR, device=DEVICE)
-            st.session_state['model_type'] = 'Loaded'
-            return classifier
-        else:
-            st.error(f"❌ No model found at {ONNX_MODEL_PATH} or {PYTORCH_MODEL_DIR}")
-            return None
+        classifier = OptimizedToxicityClassifier(
+            pytorch_path=HUGGINGFACE_MODEL_PATH,
+            device=DEVICE,
+            use_huggingface=True
+        )
+        st.session_state['model_type'] = 'Loaded'
+        return classifier
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
         import traceback
@@ -1528,66 +1526,6 @@ if analyze_button or (text_input and 'last_analyzed' not in st.session_state or 
                                 </div>
                             </div>
                             """, unsafe_allow_html=True)
-            
-            # Store analyzed text and language for visualizations
-            st.session_state['last_analyzed'] = text_input
-            st.session_state['detected_lang'] = lang_code
-            
-            # Add model visualizations directly in the main results
-            st.markdown("### Model Visualizations")
-            viz_tabs = st.tabs(["Attention Visualization", "Token Attribution"])
-            
-            # Cache visualizer loading
-            @st.cache_resource
-            def load_visualizers():
-                model_path = PYTORCH_MODEL_DIR
-                attention_viz = AttentionVisualizer(model_path)
-                attribution_viz = AttributionVisualizer(model_path)
-                return attention_viz, attribution_viz
-                
-            attention_viz, attribution_viz = load_visualizers()
-            
-            # Attention visualization
-            with viz_tabs[0]:
-                with st.spinner("Generating attention visualization..."):
-                    fig = attention_viz.visualize_attention(text_input, lang_code)
-                    if fig:
-                        st.markdown("""
-                        This visualization shows how the model pays attention to different words when making toxicity predictions.
-                        Brighter connections indicate stronger attention between words.
-                        """)
-                        st.pyplot(fig)
-                    else:
-                        st.error("Could not generate attention visualization for this text.")
-            
-            # Token attribution visualization
-            with viz_tabs[1]:
-                with st.spinner("Generating attribution visualization..."):
-                    # Create heatmap for all categories
-                    fig_all = attribution_viz.visualize_all_categories(text_input, lang_code)
-                    if fig_all:
-                        st.markdown("""
-                        This visualization shows which words contribute most to each toxicity category prediction.
-                        - Red indicates words that increase toxicity scores
-                        - Blue indicates words that decrease toxicity scores
-                        """)
-                        st.pyplot(fig_all)
-                        
-                        # Analyze text to get probabilities for each category
-                        result = attribution_viz.analyze_text(text_input, lang_code)
-                        probs = result["probabilities"]
-                        
-                        # Automatically display the first category for detailed view
-                        selected_category = attribution_viz.category_names[0]
-                        category_idx = 0
-                        
-                        # Create visualization for selected category
-                        fig_cat = attribution_viz.visualize_category_attribution(text_input, lang_code, category_idx)
-                        if fig_cat:
-                            st.subheader(f"Detailed View: {selected_category.replace('_', ' ').title()}")
-                            st.pyplot(fig_cat)
-                    else:
-                        st.error("Could not generate attribution visualization for this text.")
     else:
         pass  # Remove the info message
 
@@ -1624,11 +1562,6 @@ st.markdown("""
 <div class='usage-step'>
     <div class='step-number'>5</div>
     <div>Try different examples from the sidebar to see how the model performs with various languages.</div>
-</div>
-
-<div class='usage-step'>
-    <div class='step-number'>6</div>
-    <div>Explore the Model Explanation tab to visualize how the model focuses on different words to make toxicity predictions.</div>
 </div>
 """, unsafe_allow_html=True)
 
