@@ -1,6 +1,6 @@
 import torch
 import onnxruntime as ort
-from transformers import XLMRobertaTokenizer, AutoModelForSequenceClassification
+from transformers import XLMRobertaTokenizer
 import numpy as np
 import os
 import requests
@@ -9,7 +9,7 @@ from pathlib import Path
 class OptimizedToxicityClassifier:
     """High-performance toxicity classifier for production"""
     
-    def __init__(self, onnx_path=None, pytorch_path=None, device='cuda', use_huggingface=False):
+    def __init__(self, onnx_path=None, pytorch_path=None, device='cuda'):
         self.tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
         
         # Language mapping
@@ -30,48 +30,21 @@ class OptimizedToxicityClassifier:
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] \
                 if device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers() \
                 else ['CPUExecutionProvider']
-                
             self.session = ort.InferenceSession(onnx_path, providers=providers)
             self.use_onnx = True
             print(f"Loaded ONNX model from {onnx_path}")
-            
-        # Load from Hugging Face if specified
-        elif use_huggingface:
-            try:
-                print(f"Loading model from Hugging Face: {pytorch_path}")
-                self.model = AutoModelForSequenceClassification.from_pretrained(pytorch_path)
-                self.model.to(device)
-                self.model.eval()
-                self.use_onnx = False
-                self.device = device
-                print(f"Successfully loaded model from Hugging Face")
-            except Exception as e:
-                print(f"Error loading from Hugging Face, attempting direct download: {str(e)}")
-                # If direct HF load fails, try downloading the file
-                if pytorch_path.startswith('http'):
-                    local_path = Path("./downloaded_model.bin")
+        elif pytorch_path:
+            from model.language_aware_transformer import LanguageAwareTransformer
+            # If pytorch_path is a URL, download the file
+            if isinstance(pytorch_path, str) and pytorch_path.startswith('http'):
+                local_path = Path("downloaded_model.bin")
+                if not local_path.exists():
+                    print(f"Downloading model weights from {pytorch_path} ...")
                     response = requests.get(pytorch_path)
                     response.raise_for_status()
                     local_path.write_bytes(response.content)
-                    from model.language_aware_transformer import LanguageAwareTransformer
-                    self.model = LanguageAwareTransformer(num_labels=6)
-                    self.model.load_state_dict(torch.load(local_path, map_location=device))
-                    self.model.to(device)
-                    self.model.eval()
-                    self.use_onnx = False
-                    self.device = device
-                    # Clean up downloaded file
-                    local_path.unlink()
-                    print(f"Successfully loaded model from direct download")
-                else:
-                    raise
-                
-        # Fall back to PyTorch if ONNX not available
-        elif pytorch_path:
-            from model.language_aware_transformer import LanguageAwareTransformer
-            
-            # Handle directory structure with checkpoint folders and 'latest' symlink
-            if os.path.isdir(pytorch_path):
+                model_path = str(local_path)
+            elif os.path.isdir(pytorch_path):
                 # Check if there's a 'latest' symlink
                 latest_path = os.path.join(pytorch_path, 'latest')
                 if os.path.islink(latest_path) and os.path.exists(latest_path):
@@ -84,7 +57,6 @@ class OptimizedToxicityClassifier:
                         checkpoint_dir = os.path.join(pytorch_path, checkpoint_dirs[-1])
                     else:
                         raise ValueError(f"No checkpoint directories found in {pytorch_path}")
-                
                 # Look for PyTorch model files in the checkpoint directory
                 model_file = None
                 potential_files = ['pytorch_model.bin', 'model.pt', 'model.pth']
@@ -93,16 +65,13 @@ class OptimizedToxicityClassifier:
                     if os.path.exists(candidate):
                         model_file = candidate
                         break
-                
                 if not model_file:
                     raise FileNotFoundError(f"No model file found in {checkpoint_dir}")
-                
                 print(f"Using model from checkpoint: {checkpoint_dir}")
                 model_path = model_file
             else:
                 # If pytorch_path is a direct file path
                 model_path = pytorch_path
-                
             self.model = LanguageAwareTransformer(num_labels=6)
             self.model.load_state_dict(torch.load(model_path, map_location=device))
             self.model.to(device)
@@ -110,6 +79,9 @@ class OptimizedToxicityClassifier:
             self.use_onnx = False
             self.device = device
             print(f"Loaded PyTorch model from {model_path}")
+            # Clean up downloaded file if needed
+            if isinstance(pytorch_path, str) and pytorch_path.startswith('http') and local_path.exists():
+                local_path.unlink()
         else:
             raise ValueError("Either onnx_path or pytorch_path must be provided")
     
