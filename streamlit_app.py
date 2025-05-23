@@ -48,7 +48,7 @@ from streamlit_extras.card import card
 from streamlit_extras.metric_cards import style_metric_cards
 
 # Configure paths
-HUGGINGFACE_MODEL_PATH = "Deeptanshuu/Multilingual_Toxic_Comment_Classifier"
+HUGGINGFACE_MODEL_PATH = "Deeptanshuu/Multilingual_Toxic_Comment_Classifier/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
 PYTORCH_MODEL_PATH = "https://huggingface.co/Deeptanshuu/Multilingual_Toxic_Comment_Classifier/resolve/main/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
