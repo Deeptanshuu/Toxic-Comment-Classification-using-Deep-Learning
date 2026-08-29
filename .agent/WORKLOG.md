@@ -31,14 +31,21 @@ per-class AUC: toxic .9666 obscene .9278 threat .9051 insult .9035
 |---|---|---|
 | train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | RUNNING, ~06:46 |
 
-Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697
+Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799
+Baseline is 0.9147, so epoch 3 is already +0.0652. Rare classes gained most:
+identity_hate +0.0908, threat +0.0755, insult +0.0725, severe_toxic +0.0713,
+obscene +0.0563, toxic +0.0244. Best/worst class spread collapsed 0.080 -> 0.021.
+Both losses still falling at epoch 3, so the remaining epochs should still buy something.
 
 ## Plan (update as it changes)
 
-1. [ ] Wait for main run to finish (~06:46). Do not disturb it.
-2. [ ] Full test-split eval of best_model, thresholds tuned on val -> REAL headline number
-3. [ ] Launch ABLATION control run (TOXIC_DISABLE_LANG_CONDITIONING=1) on GPU 1.
-       This is the decisive experiment the whole project exists to answer.
+1. [~] Main run in progress, ~06:52. Do not disturb it.
+2. [~] AUTOMATED: scripts/after_training.sh is armed in tmux window `after`.
+       It waits for the trainer to exit, checks 6 epochs actually completed and a
+       best checkpoint exists, then runs the test-split eval, then starts the
+       ablation. It REFUSES to start the ablation if the run ended early.
+3. [~] AUTOMATED by the same script. Control run uses scripts/run_ablation.py ->
+       weights/toxic_classifier_xlmr_v2_ablation, MLflow tag run.kind=control.
 4. [ ] Compare treatment vs control -> does language conditioning actually help?
 5. [ ] Improvements to try, in rough value order (see IDEAS below)
 
@@ -70,6 +77,32 @@ Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697
 - The corpus is ~50% toxic vs a few % in real traffic. Consider reporting
   precision at a realistic base rate.
 
+## Iteration log
+
+### 05:0x - first autonomous iteration
+- Committed + pushed the docs rewrite (974c117) and the eval fixes (b8fd59a).
+- FIXED the threshold search properly. It was not just the MRO bug: the whole
+  GridSearchCV wrapper was meaningless because ThresholdOptimizer.fit() learns
+  nothing, so there was no model to cross-validate. Replaced with a direct sweep
+  over [0.05, 0.95] in 200 steps. Evidence it was broken: English severe_toxic
+  was REPORTED at F1 0.6907 when the achievable max is 0.4439 (impossible);
+  English toxic reported 0.6341 against an achievable 0.8903. Mean gap to the
+  optimum is now 0.0008.
+  NOTE: the old grid was [0.3, 0.7] and the rare classes' optima sit below 0.36,
+  so the grid literally could not express the right answer.
+- Fixed roc_auc_score NaN handling (it returns NaN with a warning, it does not
+  raise, so the except ValueError never fired and invalid NaN reached the JSON).
+- My first attempt at the MRO fix BROKE the estimator (sklearn then demanded a
+  classes_ attribute). Caught it by testing against cached predictions rather
+  than assuming. Worth remembering: is_classifier()=True changes what sklearn
+  requires of the estimator.
+
 ## Notes for the owner (write anything they must know here)
 
-- (nothing yet)
+- Threshold numbers will differ from the earlier baseline because the old ones
+  were partly artifacts. Global F1 moves both ways: toxic .8966 -> .9045,
+  threat .4003 -> .4245, but severe_toxic .4160 -> .3978 and
+  identity_hate .4452 -> .4389 (those two were inflated by the free-1.0 folds).
+  The new numbers are honest; some are lower.
+- Nothing published to Hugging Face. Still blocked on YOUR license choice
+  (the repo declares none) - see hf_release/README.md placeholders.
