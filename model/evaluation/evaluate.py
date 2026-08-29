@@ -10,7 +10,7 @@ from sklearn.metrics import (
     brier_score_loss
 )
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
@@ -224,8 +224,18 @@ class ToxicDataset(Dataset):
             'lang': lang
         }
 
-class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
-    """Custom estimator for threshold optimization"""
+class ThresholdOptimizer(ClassifierMixin, BaseEstimator):
+    """Custom estimator for threshold optimization.
+
+    ClassifierMixin MUST come first. On scikit-learn >= 1.6 is_classifier()
+    resolves __sklearn_tags__ through the MRO; with BaseEstimator first it
+    finds BaseEstimator's tags, estimator_type is None, is_classifier() is
+    False, and GridSearchCV silently builds an unshuffled KFold instead of a
+    StratifiedKFold. The rows are grouped by language with positives at the
+    front, so contiguous folds then contain zero positives, and with
+    zero_division=1 an empty fold scores a free 1.0 -- which dragged the
+    argmax to a wrong threshold. See docs/KNOWN_ISSUES.md.
+    """
     def __init__(self, threshold=0.5):
         self.threshold = threshold
         self.probabilities_ = None
@@ -323,52 +333,55 @@ def load_model(model_path):
         logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
-def optimize_threshold(y_true, y_pred_proba, n_steps=50):
+def optimize_threshold(y_true, y_pred_proba, n_steps=200):
+    """Pick the probability threshold that maximises F1 on the data given.
+
+    This is a direct sweep, not a cross-validated grid search, and the change is
+    deliberate. The previous implementation wrapped a `ThresholdOptimizer`
+    estimator in `GridSearchCV(cv=5)`, but that estimator's `fit()` only stores
+    its input and learns nothing -- there is no model whose generalization a
+    cross-validation could estimate. What CV did instead was split the data into
+    folds, and because rows are grouped by language with positives at the front,
+    entire folds could contain zero positives. With `zero_division=1` those folds
+    scored a free 1.0, which inflated rare classes and dragged the argmax to a
+    visibly wrong threshold: English `severe_toxic` was reported at F1 0.597 when
+    the maximum achievable at any threshold is 0.442. See docs/KNOWN_ISSUES.md.
+
+    Reported `f1_score` is now the F1 actually achieved at the returned threshold
+    on this data, which is what the field name claims. It is fit on validation and
+    applied unchanged to test, so the optimism of fitting on the scored split does
+    not reach the headline numbers.
+
+    The sweep covers [0.05, 0.95]; the old [0.3, 0.7] grid could not express the
+    optimum for the rarest classes, whose best thresholds sit below 0.3. 200 steps
+    rather than 50: without the cross-validation this is 200 f1_score calls, which
+    is cheap, and 50 steps left measurable slack against the achievable optimum.
     """
-    Optimize threshold using grid search to maximize F1 score
-    """
-    # Handle edge case where all samples are negative
+    y_true = np.asarray(y_true).ravel()
+    y_pred_proba = np.asarray(y_pred_proba).ravel()
+
     if y_true.sum() == 0:
+        # No positives: F1 is undefined. Report 0.0 rather than a free 1.0.
         return {
-            'threshold': 0.5,  # Use default threshold
-            'f1_score': 1.0,   # Perfect score for all negative samples
+            'threshold': 0.5,
+            'f1_score': 0.0,
             'support': 0,
-            'total_samples': len(y_true)
+            'total_samples': len(y_true),
+            'degenerate': True
         }
-    
-    # Create parameter grid
-    param_grid = {
-        'threshold': np.linspace(0.3, 0.7, n_steps)
-    }
-    
-    # Initialize optimizer
-    optimizer = ThresholdOptimizer()
-    
-    # Run grid search with custom scoring
-    grid_search = GridSearchCV(
-        optimizer,
-        param_grid,
-        scoring=make_scorer(f1_score, zero_division=1),
-        cv=5,
-        n_jobs=-1,
-        verbose=0
-    )
-    
-    # Reshape probabilities to 2D array
-    X = y_pred_proba.reshape(-1, 1)
-    
-    # Fit grid search
-    grid_search.fit(X, y_true)
-    
-    # Get best results
-    best_threshold = grid_search.best_params_['threshold']
-    best_f1 = grid_search.best_score_
-    
+
+    best_t, best_f1 = 0.5, -1.0
+    for t in np.linspace(0.05, 0.95, n_steps):
+        f1 = f1_score(y_true, (y_pred_proba >= t).astype(int), zero_division=0)
+        if f1 > best_f1:
+            best_f1, best_t = f1, t
+
     return {
-        'threshold': float(best_threshold),
+        'threshold': float(best_t),
         'f1_score': float(best_f1),
         'support': int(y_true.sum()),
-        'total_samples': len(y_true)
+        'total_samples': len(y_true),
+        'degenerate': False
     }
 
 def calculate_optimal_thresholds(predictions, labels, langs):
@@ -619,12 +632,36 @@ def calculate_overall_metrics(predictions, labels, binary_predictions):
     metrics = {}
     
     # AUC scores (threshold independent)
-    try:
-        metrics['auc_macro'] = roc_auc_score(labels, predictions, average='macro')
-        metrics['auc_weighted'] = roc_auc_score(labels, predictions, average='weighted')
-    except ValueError:
-        # Handle case where a class has no positive samples
+    # A class with only one label value present makes roc_auc_score return NaN
+    # (with a warning) rather than raise, so an except ValueError never fires and
+    # bare NaN -- which is not valid JSON -- reaches the results file. Score only
+    # the classes that are actually well defined, and record which were skipped.
+    usable = [i for i in range(labels.shape[1]) if 0 < labels[:, i].sum() < len(labels)]
+    degenerate = [i for i in range(labels.shape[1]) if i not in usable]
+    if degenerate:
+        logger.warning(
+            f"Skipping AUC for degenerate class indices {degenerate} "
+            f"(only one label value present)"
+        )
+    metrics['auc_skipped_class_indices'] = degenerate
+    if usable:
+        try:
+            metrics['auc_macro'] = float(
+                roc_auc_score(labels[:, usable], predictions[:, usable], average='macro'))
+            metrics['auc_weighted'] = float(
+                roc_auc_score(labels[:, usable], predictions[:, usable], average='weighted'))
+        except ValueError as e:
+            logger.error(f"AUC computation failed: {e}")
+            metrics['auc_macro'] = 0.0
+            metrics['auc_weighted'] = 0.0
+    else:
+        logger.error("No class has both positive and negative samples; AUC undefined")
         metrics['auc_macro'] = 0.0
+        metrics['auc_weighted'] = 0.0
+    if not np.isfinite(metrics['auc_macro']):
+        logger.error("AUC macro is not finite; coercing to 0.0")
+        metrics['auc_macro'] = 0.0
+    if not np.isfinite(metrics['auc_weighted']):
         metrics['auc_weighted'] = 0.0
     
     # Precision, recall, F1 (threshold dependent)
