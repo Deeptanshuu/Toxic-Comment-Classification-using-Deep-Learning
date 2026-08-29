@@ -1,0 +1,230 @@
+{
+  "_status": "<<PENDING_FINAL_METRICS>> The training run that produces these weights had not finished when this file was written. Every field marked with that token must be filled in from a real evaluation of the final checkpoint before this repo is published. Do not copy the previous version's numbers into them.",
+  "label_order": [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+  ],
+  "protocol": {
+    "thresholds_tuned_on": "dataset/split/val.csv",
+    "metrics_reported_on": "dataset/split/test.csv",
+    "why_this_matters": "Thresholds are free parameters. Choosing them on the same split you report on lets the model fit noise in that split and inflates every threshold-dependent metric (F1, precision, recall, exact match). AUC is threshold-free and is not affected.",
+    "max_length": 512,
+    "test_split_size": 35658,
+    "known_leakage": "Near-duplicate leakage measured against train (char 3-4-gram TF-IDF, cosine >= 0.9): 3.8% of English validation rows, 0.6% of Russian. Exact duplicate overlap is 0. Held-out numbers are therefore mildly optimistic."
+  },
+  "this_version": {
+    "description": "Encoder fine-tuned. 307.1M of 564.7M parameters (54.4%) receive gradient; the word/position embedding module is frozen deliberately.",
+    "checkpoint": "<<PENDING_FINAL_METRICS>>",
+    "epochs_completed": "<<PENDING_FINAL_METRICS>>",
+    "selected_epoch": "<<PENDING_FINAL_METRICS>>",
+    "validation": {
+      "auc_macro": "<<PENDING_FINAL_METRICS>>"
+    },
+    "test": {
+      "auc_macro": "<<PENDING_FINAL_METRICS>>",
+      "auc_weighted": "<<PENDING_FINAL_METRICS>>",
+      "f1_macro_at_0.5": "<<PENDING_FINAL_METRICS>>",
+      "f1_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "f1_weighted_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "precision_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "recall_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "exact_match_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "hamming_loss_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "per_class": {
+        "toxic": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        },
+        "severe_toxic": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        },
+        "obscene": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        },
+        "threat": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        },
+        "insult": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        },
+        "identity_hate": {
+          "auc": "<<PENDING_FINAL_METRICS>>",
+          "threshold": "<<PENDING_FINAL_METRICS>>",
+          "precision": "<<PENDING_FINAL_METRICS>>",
+          "recall": "<<PENDING_FINAL_METRICS>>",
+          "f1": "<<PENDING_FINAL_METRICS>>"
+        }
+      },
+      "per_language": {
+        "en": {
+          "lang_id": 0,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "ru": {
+          "lang_id": 1,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "tr": {
+          "lang_id": 2,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "es": {
+          "lang_id": 3,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "fr": {
+          "lang_id": 4,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "it": {
+          "lang_id": 5,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        },
+        "pt": {
+          "lang_id": 6,
+          "auc_macro": "<<PENDING_FINAL_METRICS>>",
+          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+        }
+      }
+    }
+  },
+  "previous_version_april_2025": {
+    "description": "The model published in April 2025. Its XLM-RoBERTa encoder was never fine-tuned: 4.8M of 564.7M parameters (0.8%) received gradient and all 381 encoder tensors had grad=None. These numbers describe a linear probe on frozen XLM-R features, not a fine-tuned model. They are recorded here so the two versions can be compared honestly. They are NOT this model's numbers.",
+    "checkpoint": "weights/toxic_classifier_xlm-roberta-large/latest (epoch 2 of a 6-epoch run that crashed at epoch 4)",
+    "evaluation_run": "evaluation_results/eval_20260830_011818",
+    "test": {
+      "auc_macro": 0.9147,
+      "auc_weighted": 0.9351,
+      "f1_macro_at_0.5": 0.5284,
+      "f1_macro_at_tuned": 0.6036,
+      "f1_weighted_at_tuned": 0.7732,
+      "precision_macro_at_tuned": 0.5651,
+      "recall_macro_at_tuned": 0.6526,
+      "exact_match_at_tuned": 0.6194,
+      "hamming_loss_at_tuned": 0.0941,
+      "per_class": {
+        "toxic": {
+          "auc": 0.9666,
+          "threshold": 0.4959,
+          "precision": 0.9039,
+          "recall": 0.9037,
+          "f1": 0.9038,
+          "support": 17697
+        },
+        "severe_toxic": {
+          "auc": 0.8988,
+          "threshold": 0.3816,
+          "precision": 0.337,
+          "recall": 0.486,
+          "f1": 0.398,
+          "support": 1648
+        },
+        "obscene": {
+          "auc": 0.9278,
+          "threshold": 0.4633,
+          "precision": 0.7158,
+          "recall": 0.7643,
+          "f1": 0.7392,
+          "support": 8626
+        },
+        "threat": {
+          "auc": 0.9051,
+          "threshold": 0.3653,
+          "precision": 0.3867,
+          "recall": 0.4569,
+          "f1": 0.4189,
+          "support": 766
+        },
+        "insult": {
+          "auc": 0.9035,
+          "threshold": 0.4633,
+          "precision": 0.6585,
+          "recall": 0.8061,
+          "f1": 0.7248,
+          "support": 10199
+        },
+        "identity_hate": {
+          "auc": 0.8866,
+          "threshold": 0.3653,
+          "precision": 0.3889,
+          "recall": 0.4987,
+          "f1": 0.437,
+          "support": 1891
+        }
+      },
+      "per_language": {
+        "en": {
+          "lang_id": 0,
+          "auc_macro": 0.9463,
+          "f1_macro": 0.6508,
+          "sample_count": 4638
+        },
+        "fr": {
+          "lang_id": 4,
+          "auc_macro": 0.9157,
+          "f1_macro": 0.6035,
+          "sample_count": 5158
+        },
+        "es": {
+          "lang_id": 3,
+          "auc_macro": 0.9152,
+          "f1_macro": 0.5978,
+          "sample_count": 5168
+        },
+        "it": {
+          "lang_id": 5,
+          "auc_macro": 0.9139,
+          "f1_macro": 0.613,
+          "sample_count": 5146
+        },
+        "pt": {
+          "lang_id": 6,
+          "auc_macro": 0.9088,
+          "f1_macro": 0.5971,
+          "sample_count": 5192
+        },
+        "ru": {
+          "lang_id": 1,
+          "auc_macro": 0.9065,
+          "f1_macro": 0.595,
+          "sample_count": 5193
+        },
+        "tr": {
+          "lang_id": 2,
+          "auc_macro": 0.8944,
+          "f1_macro": 0.5627,
+          "sample_count": 5163
+        }
+      }
+    }
+  }
+}

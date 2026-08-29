@@ -11,7 +11,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
-PY="${PY:-$REPO/.venv/bin/python}"
+# The dashboard needs streamlit and plotly, which live in .venv-uv, not in
+# .venv (that one carries the training stack). Keep them separate: installing
+# streamlit into .venv risks pulling protobuf 6, which breaks tensorboard 2.18.
+PY="${PY:-$REPO/.venv-uv/bin/python}"
 PORT="${PORT:-8502}"
 RUNS_DIR="${RUNS_DIR:-$REPO/runs}"
 
