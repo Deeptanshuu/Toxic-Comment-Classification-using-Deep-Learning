@@ -8,6 +8,13 @@ ENV/
 env/
 env.bak/
 venv.bak/
+.venv-uv/
+
+# uv
+.uv_cache/
+
+# TensorBoard
+runs/
 
 # Gradio 
 .gradio/*
@@ -59,9 +66,6 @@ coverage.xml
 .dmypy.json
 dmypy.json
 
-# pyenv
-.python-version
-
 # pipenv
 Pipfile.lock
 
@@ -79,5 +83,15 @@ Pipfile.lock
 #Logging
 *.log
 logs/
+*.out
 
 *.csv
+
+# MLflow file-backed tracking store
+mlruns/
+
+# Local training venv (.venv-uv is above)
+.venv/
+
+# Scratch
+*.pid
