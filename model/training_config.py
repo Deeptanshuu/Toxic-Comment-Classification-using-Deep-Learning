@@ -54,17 +54,21 @@ class DynamicClassWeights:
         for lang in unique_langs:
             if lang not in self.running_stats:
                 continue
-                
-            lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool)
+
+            lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool,
+                                     device=labels.device)
             lang_labels = labels[lang_mask]
-            
+
             if len(lang_labels) == 0:
                 continue
-            
-            # Calculate current batch statistics
-            pos_count = lang_labels.sum(dim=0).float()
+
+            # Calculate current batch statistics. Running stats are kept on CPU,
+            # so bring the batch counts across before mixing them in - otherwise
+            # every update raises a device mismatch and the caller silently falls
+            # back to uniform weights.
+            pos_count = lang_labels.sum(dim=0).float().detach().cpu()
             total_count = torch.full_like(pos_count, len(lang_labels))
-            
+
             # Update running statistics with EMA
             alpha = self.running_stats[lang]['smoothing_factor']
             self.running_stats[lang]['pos_counts'] = (
@@ -86,95 +90,101 @@ class DynamicClassWeights:
         Returns:
             Dict with weights, alpha, and gamma tensors
         """
+        batch_size = len(langs)
+        num_labels = labels.size(1)
+
         try:
-            batch_size = len(langs)
-            num_labels = labels.size(1)
-            
             # Update running statistics
             self._update_running_stats(langs, labels)
-            
+
             # Calculate positive ratio per language in current batch
             lang_pos_ratios = {}
             batch_pos_ratios = torch.zeros(num_labels, device=device)
             lang_counts = {}
-            
+
             for lang in set(langs):
                 lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool, device=device)
                 if not lang_mask.any():
                     continue
-                    
+
                 # Calculate language-specific positive ratio
                 lang_labels = labels[lang_mask]
                 lang_pos_ratio = lang_labels.float().mean(dim=0)
                 lang_pos_ratios[lang] = lang_pos_ratio
-                
+
                 # Weighted contribution to batch statistics
-                lang_count = lang_mask.sum()
+                lang_count = int(lang_mask.sum().item())
                 lang_counts[lang] = lang_count
                 batch_pos_ratios += lang_pos_ratio * (lang_count / batch_size)
-            
-            # Combine batch and historical statistics
+
+            # A per-language class_adjustments table used to sit here, described
+            # as "based on statistical analysis". It was not: five of its six
+            # non-English rows were byte-identical and its comments contradicted
+            # its values (the English row said "more obscene/threat" while
+            # down-weighting both). It distorted class weights by ~3.5% on
+            # average, 13% worst case. Removed after the language-conditioning
+            # ablation, which needed it held constant across both arms to
+            # cancel. See docs/KNOWN_ISSUES.md.
+
+            # The per-sample weight row depends only on the sample's language, so
+            # build one row per language present and index it out, rather than
+            # looping over the batch (that cost ~1300 tiny CUDA launches/batch).
             weights = torch.ones(batch_size, num_labels, device=device)
             alpha = torch.zeros(num_labels, device=device)
             gamma = torch.zeros(num_labels, device=device)
-            
-            for i, (lang, label_vec) in enumerate(zip(langs, labels)):
+
+            for lang, lang_count in lang_counts.items():
                 if lang not in self.running_stats:
                     continue
-                
+
                 # Get historical statistics for this language
                 hist_pos_ratio = (
-                    self.running_stats[lang]['pos_counts'] / 
+                    self.running_stats[lang]['pos_counts'] /
                     (self.running_stats[lang]['total_counts'] + 1e-7)
                 ).to(device)
-                
+
                 # Combine historical and current batch statistics
                 current_pos_ratio = lang_pos_ratios.get(lang, batch_pos_ratios)
                 combined_pos_ratio = 0.7 * hist_pos_ratio + 0.3 * current_pos_ratio
-                
+
                 # Calculate stable weights using log-space
                 log_ratio = torch.log1p(1.0 / (combined_pos_ratio + 1e-7))
                 class_weights = torch.exp(log_ratio.clamp(-2, 2))
-                
+
                 # Apply language-specific scaling
-                weights[i] = class_weights * self.lang_scaling.get(lang, 1.0)
-                
-                # Update focal parameters
-                alpha_contrib = 1.0 / (combined_pos_ratio + 1e-7).clamp(0.05, 0.95)
-                gamma_contrib = log_ratio.clamp(1.0, 4.0)
-                
-                # Accumulate weighted contributions
-                weight = lang_counts.get(lang, 1) / batch_size
-                alpha += alpha_contrib * weight
-                gamma += gamma_contrib * weight
-            
-            # Apply class-specific adjustments based on statistical analysis
-            # Order: toxic, severe_toxic, obscene, threat, insult, identity_hate
-            class_adjustments = {
-                'en': [1.0, 1.0, 0.9, 0.85, 1.1, 1.0],   # English has more obscene/threat
-                'ru': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Russian has more insults
-                'tr': [1.0, 1.0, 1.0, 1.0, 0.9, 0.95],   # Turkish pattern
-                'es': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Spanish pattern
-                'fr': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # French pattern 
-                'it': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Italian pattern
-                'pt': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0]     # Portuguese pattern
-            }
-            
-            # Apply adjustments to weights
-            for i, lang in enumerate(langs):
-                if lang in class_adjustments:
-                    # Multiply weights by language-specific class adjustments
-                    weights[i] *= torch.tensor(class_adjustments[lang], device=device)
-            
+                row = class_weights * self.lang_scaling.get(lang, 1.0)
+
+                lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool, device=device)
+                weights[lang_mask] = row
+
+                # Focal parameters are a language-frequency-weighted average over
+                # the languages in the batch, so the mixing weights sum to 1. The
+                # previous version accumulated once per *sample*, which multiplied
+                # every contribution by the language count and pinned alpha/gamma
+                # at their clamp ceilings on every batch.
+                mix = lang_count / batch_size
+                alpha += (1.0 / (combined_pos_ratio + 1e-7).clamp(0.05, 0.95)) * mix
+                gamma += log_ratio.clamp(1.0, 4.0) * mix
+
             # Normalize weights to prevent extreme values
             weights = weights / weights.mean()
-            
+
+            # Normalize alpha to mean 1.0. The relative per-class weighting is
+            # what matters; the absolute scale only inflates the gradient norm.
+            # Unnormalized, alpha averages ~4 and true grad norms run 53-61,
+            # so max_grad_norm=1.0 clipped every single step by ~55x and stopped
+            # being an outlier guard. Normalizing keeps the class weighting
+            # intact and restores the clip's meaning (and makes train and val
+            # losses comparable, since validation uses fixed alpha).
+            alpha = alpha.clamp(0.1, 5.0)
+            alpha = alpha / alpha.mean().clamp(min=1e-6)
+
             return {
                 'weights': weights.clamp(0.1, 10.0),  # Prevent extreme values
-                'alpha': alpha.clamp(0.1, 5.0),       # [num_labels]
+                'alpha': alpha,                       # [num_labels], mean 1.0
                 'gamma': gamma.clamp(1.0, 4.0)        # [num_labels]
             }
-            
+
         except Exception as e:
             logger.error(f"Error computing batch weights: {str(e)}")
             # Fallback to safe default values
@@ -280,15 +290,33 @@ class TrainingConfig:
     hidden_size: int = 1024
     num_attention_heads: int = 16
     model_dropout: float = 0.0
-    freeze_layers: int = 8
-    
+    # Number of *encoder layer blocks* frozen from the bottom up. This used to
+    # default to 8 while the code actually froze the first 8 parameter tensors
+    # (issue #4); the two are now separate and both mean what they say.
+    freeze_layers: int = 0
+    # Freeze the whole embedding module (word/position/token-type + LayerNorm).
+    # This is what the old buggy slice was really doing, and it is worth keeping:
+    # the word-embedding matrix is 256M of the 560M base parameters, so freezing
+    # it removes the AdamW update that dominates the step at short sequence
+    # lengths (measured 4.2x wall-clock, 3x peak memory at seq 96 / batch 128).
+    freeze_embeddings: bool = True
+
     # Dataset parameters
     cache_dir: str = 'cached_dataset'
+    # Separate directory from the archived 2025 run. The keep-last-3 rotation
+    # sorts by name, so mixing two runs' checkpoints in one directory makes it
+    # delete the older run's by epoch number -- including the one
+    # docs/RESULTS.md cites. Keeping runs apart avoids that entirely and
+    # leaves the previous model serving until the new one is evaluated.
+    checkpoint_dir: str = 'weights/toxic_classifier_xlmr_v2'
     label_columns: List[str] = None  # Will be initialized in __post_init__
     
     # Training parameters
-    batch_size: int = 128
-    grad_accum_steps: int = 1
+    # 64x2 keeps the effective batch at 128 while halving activation memory.
+    # At batch 128 the 512-token batches peak at 18.30 GB against a 22.29 GB
+    # cap and the real loop OOMs; at 64 they peak at 11.36 GB.
+    batch_size: int = 64
+    grad_accum_steps: int = 2
     epochs: int = 6
     lr: float = 2e-5
     num_cycles: int = 2
@@ -307,6 +335,33 @@ class TrainingConfig:
     
     # Cosine scheduler parameters
     num_cycles: int = 2
+
+    # --- Added by fix branch: see docs/KNOWN_ISSUES.md ---
+    # Data paths
+    train_file: str = 'dataset/split/train.csv'
+    val_file: str = 'dataset/split/val.csv'
+    test_file: str = 'dataset/split/test.csv'
+
+    # Throughput: pad per-batch instead of to max_length (issue: pad-to-512)
+    dynamic_padding: bool = True
+    pad_to_multiple_of: int = 8
+
+    # Correctness switches
+    use_class_weights: bool = True      # activate DynamicClassWeights (issue #3)
+    use_warmup: bool = True             # activate linear warmup (issue #5)
+    data_parallel: bool = True          # use all visible GPUs (new issue)
+    eval_batch_size: int = 256
+    eval_every_epoch: bool = True       # validation loop (issue #2)
+
+    # Populated in __post_init__ when use_class_weights is set
+    lang_weights: object = None
+
+    # Ablation: when True the model ignores lang_ids entirely, giving the
+    # control run for "does language conditioning actually help". Settable via
+    # the TOXIC_DISABLE_LANG_CONDITIONING env var so a control run needs no
+    # code edit. See docs/KNOWN_ISSUES.md.
+    disable_lang_conditioning: bool = False
+    class_weights_file: str = 'weights/language_class_weights.json'
 
     def __post_init__(self):
         """Initialize and validate configuration"""
@@ -386,6 +441,17 @@ class TrainingConfig:
             print(f"Error creating directories: {str(e)}")
             raise
         
+        # Ablation switch may be set from the environment so the control run
+        # is launchable without editing code.
+        _abl = os.environ.get('TOXIC_DISABLE_LANG_CONDITIONING', '').strip().lower()
+        if _abl in ('1', 'true', 'yes'):
+            self.disable_lang_conditioning = True
+        if self.disable_lang_conditioning:
+            logger.warning(
+                "ABLATION: disable_lang_conditioning=True -- lang_ids will not "
+                "affect the model. This is the control run, not the real one."
+            )
+
         # Initialize toxicity labels
         self.toxicity_labels = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
         self.num_labels = len(self.toxicity_labels)
@@ -393,25 +459,58 @@ class TrainingConfig:
         # Set use_mixed_precision flag
         self.use_mixed_precision = self.mixed_precision != "no"
 
+        # Instantiate the class weighting helper. Without this every training
+        # step falls through to uniform focal parameters (issue #3).
+        if self.use_class_weights:
+            try:
+                self.lang_weights = DynamicClassWeights(weights_file=self.class_weights_file)
+                logger.info(f"Class weighting enabled from {self.class_weights_file}")
+            except Exception as e:
+                logger.error(f"Could not initialize DynamicClassWeights: {str(e)}")
+                self.lang_weights = None
+        else:
+            self.lang_weights = None
+
     def validate_model_config(self, model):
         """Validate configuration against model architecture"""
         try:
             # Validate layer freezing
-            if self.freeze_layers > 0:
-                total_layers = len(list(model.base_model.encoder.layer))
-                if self.freeze_layers > total_layers:
-                    raise ValueError(f"Can't freeze {self.freeze_layers} layers in {total_layers}-layer model")
-                logger.info(f"Freezing {self.freeze_layers} out of {total_layers} layers")
-            
-            # Validate parameter groups and weight decay
-            param_groups = self.get_param_groups(model)
-            if self.weight_decay > 0:
-                low_lr_groups = [g for g in param_groups if g['lr'] < 0.01]
-                if low_lr_groups:
-                    logger.warning("Found parameter groups with low learning rates (< 0.01) and non-zero weight decay:")
-                    for group in low_lr_groups:
-                        logger.warning(f"Group with lr={group['lr']:.4f}")
-            
+            total_layers = len(list(model.base_model.encoder.layer))
+            if self.freeze_layers > total_layers:
+                raise ValueError(f"Can't freeze {self.freeze_layers} layers in {total_layers}-layer model")
+            if self.freeze_layers < 0:
+                raise ValueError(f"freeze_layers must be >= 0, got {self.freeze_layers}")
+            logger.info(f"Freezing {self.freeze_layers} out of {total_layers} encoder layers")
+
+            # Validate embedding freezing actually took effect
+            embed_trainable = sum(
+                p.numel() for p in model.base_model.embeddings.parameters() if p.requires_grad
+            )
+            if self.freeze_embeddings and embed_trainable > 0:
+                raise ValueError(
+                    f"freeze_embeddings is set but {embed_trainable} embedding parameters "
+                    "still require grad"
+                )
+            if not self.freeze_embeddings and embed_trainable == 0:
+                logger.warning("freeze_embeddings is False but no embedding parameter requires grad")
+
+            for idx, layer in enumerate(model.base_model.encoder.layer):
+                trainable = any(p.requires_grad for p in layer.parameters())
+                if idx < self.freeze_layers and trainable:
+                    raise ValueError(f"encoder.layer[{idx}] should be frozen but is trainable")
+                if idx >= self.freeze_layers and not trainable:
+                    logger.warning(f"encoder.layer[{idx}] should be trainable but is fully frozen")
+
+            # Report the parameter groups the optimizer will actually see. The
+            # old check here warned whenever a group had lr < 0.01, which is
+            # true of every transformer fine-tuning LR, so it fired on every
+            # run and meant nothing.
+            for i, group in enumerate(self.get_param_groups(model)):
+                count = sum(p.numel() for p in group['params'])
+                if count == 0:
+                    logger.warning(f"Parameter group {i} is empty")
+                logger.info(f"Optimizer group {i}: {count / 1e6:.1f}M parameters at lr={group['lr']:.2e}")
+
             return True
         except Exception as e:
             logger.error(f"Model configuration validation failed: {str(e)}")
@@ -436,12 +535,21 @@ class TrainingConfig:
     def to_serializable_dict(self):
         """Convert config to a dictionary for saving."""
         config_dict = asdict(self)
+        # lang_weights holds a live helper object; record only what it was built from
+        config_dict['lang_weights'] = self.class_weights_file if self.lang_weights else None
+        config_dict['device'] = str(self.device)
         return config_dict
-    
+
     def get_param_groups(self, model):
-        """Get parameter groups with base learning rate"""
-        return [{'params': model.parameters(), 'lr': self.lr}]
-        
+        """Get parameter groups with base learning rate.
+
+        Frozen parameters are excluded so the optimizer never allocates state
+        for them (the frozen embedding matrix alone is 256M parameters).
+        """
+        params = [p for p in model.parameters() if p.requires_grad]
+        return [{'params': params, 'lr': self.lr}]
+
+
     @property
     def use_amp(self):
         """Check if AMP should be used based on device and mixed precision setting"""
@@ -458,14 +566,24 @@ class TrainingConfig:
 
     @property
     def num_workers(self):
-        """Dynamically adjust workers based on system resources"""
+        """Dynamically adjust workers based on system resources.
+
+        The cap is 8 and deliberately not higher, even on a 36-core box. One
+        worker tokenizes ~2700 samples/s unpadded; after length bucketing the
+        GPU step is ~0.16 s per batch of 128, so the loader only has to sustain
+        800-1000 samples/s. A single worker already covers that and workers past
+        about 4 buy no throughput at all, while each one forks a
+        copy-on-write view of a 285k-row DataFrame. The 8 is jitter headroom for
+        the long-sequence batches in the tail, not throughput, and the rest of
+        the CPU and RAM on this box is deliberately left for other processes.
+        """
         if self._num_workers is None:
             cpu_count = os.cpu_count()
             if cpu_count is None:
                 self._num_workers = 0
             else:
-                # Leave at least 2 CPUs free, max 4 workers
-                self._num_workers = min(4, max(0, cpu_count - 2))
+                # Leave at least 2 CPUs free, max 8 workers
+                self._num_workers = min(8, max(0, cpu_count - 2))
             logger.info(f"Dynamically set num_workers to {self._num_workers} (CPU count: {cpu_count})")
         return self._num_workers
     

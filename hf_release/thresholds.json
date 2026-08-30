@@ -1,0 +1,60 @@
+{
+  "_readme": [
+    "Per-class decision thresholds. A probability at or above the threshold for a",
+    "class means that class fires. The six classes are independent: any number of",
+    "them can fire on the same comment.",
+    "",
+    "Do not use 0.5. The rare classes (severe_toxic, threat, identity_hate) are",
+    "well ordered but badly calibrated, so a 0.5 cut throws away most of their",
+    "recall. Every threshold below sits under 0.5 for that reason.",
+    "",
+    "Thresholds were chosen to maximise per-class F1 on the validation split and",
+    "are then applied unchanged to the held-out test split. They are a single",
+    "global set: there is no per-language block here, deliberately. See",
+    "_provenance.per_language_block_omitted."
+  ],
+  "_provenance": {
+    "status": "<<PENDING_FINAL_METRICS>> these thresholds were tuned on the PREVIOUS checkpoint and must be re-tuned against the final weights before this repo is published. This is a step to re-run, not a number to type in.",
+    "tuned_on": "dataset/split/val.csv",
+    "applied_to": "dataset/split/test.csv",
+    "source_run": "evaluation_results/eval_20260830_011818",
+    "source_checkpoint": "weights/toxic_classifier_xlm-roberta-large/latest (April 2025 model, frozen encoder)",
+    "search": "grid over candidate thresholds, per class independently, maximising F1 on validation",
+    "per_language_block_omitted": "The evaluation script also emits a per-language threshold block. It is not shipped. That code path builds an unshuffled KFold instead of a stratified one, so folds containing zero positives combine with zero_division=1 to inject free F1 scores of 1.0. It reported English severe_toxic at F1 0.597 when the maximum achievable at any threshold is 0.442. Nothing in the serving path ever read it."
+  },
+  "label_order": [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+  ],
+  "thresholds": {
+    "toxic": 0.4959183673469387,
+    "severe_toxic": 0.38163265306122446,
+    "obscene": 0.463265306122449,
+    "threat": 0.3653061224489796,
+    "insult": 0.463265306122449,
+    "identity_hate": 0.3653061224489796
+  },
+  "validation_f1_at_threshold": {
+    "_note": "F1 achieved at the threshold above, on the validation split, by the PREVIOUS (April 2025) checkpoint. Recorded for provenance only. It is not this model's performance and it is not a test-split number.",
+    "toxic": 0.8966375125558779,
+    "severe_toxic": 0.41602478051109804,
+    "obscene": 0.7306040236808349,
+    "threat": 0.4002885777767634,
+    "insult": 0.7149058850185608,
+    "identity_hate": 0.4452030499231152
+  },
+  "validation_positive_support": {
+    "_note": "Positive examples per class in the 35,658-row validation split used for tuning.",
+    "toxic": 17697,
+    "severe_toxic": 1655,
+    "obscene": 8626,
+    "threat": 760,
+    "insult": 10199,
+    "identity_hate": 1878,
+    "total_samples": 35658
+  }
+}

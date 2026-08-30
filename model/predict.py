@@ -308,7 +308,7 @@ def predict_toxicity(text, model, tokenizer, device):
     # Tokenize text
     encoding = tokenizer(
         text,
-        max_length=128,
+        max_length=512,   # must match training; 128 truncated ~16% of real comments
         padding='max_length',
         truncation=True,
         return_tensors='pt'

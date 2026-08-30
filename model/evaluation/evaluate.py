@@ -1,6 +1,6 @@
 import torch
 from model.language_aware_transformer import LanguageAwareTransformer
-from transformers import XLMRobertaTokenizer
+from transformers import XLMRobertaTokenizer, AutoTokenizer
 import pandas as pd
 import numpy as np
 from sklearn.metrics import (
@@ -10,7 +10,7 @@ from sklearn.metrics import (
     brier_score_loss
 )
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import json
@@ -33,6 +33,11 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
 
 logger = logging.getLogger(__name__)
+
+# Disk cache for ToxicDataset.token_lengths (exact per-sample token counts),
+# keyed by row count + max_length + tokenizer + a content hash so a stale
+# cache is never reused across a data or config change.
+TOKEN_LENGTH_CACHE_DIR = Path('cache')
 
 class ToxicDataset(Dataset):
     def __init__(self, df, tokenizer, config):
@@ -66,37 +71,152 @@ class ToxicDataset(Dataset):
         
         # Convert language codes to numeric indices
         self.langs = np.array([self.lang_to_id.get(lang, 0) for lang in df['lang']])
-        
+
+        # Cache for the lazy `token_lengths` proxy (see property below).
+        self._token_lengths = None
+
         print(f"Initialized dataset with {len(self)} samples")
         logger.info(f"Dataset initialized with {len(self)} samples")
         logger.info(f"Label columns: {self.label_columns}")
         logger.info(f"Unique languages: {np.unique(df['lang'])}")
         logger.info(f"Language mapping: {self.lang_to_id}")
-    
+
     def __len__(self):
         return len(self.df)
-    
+
+    def _fast_tokenizer_for_lengths(self):
+        """Return a fast tokenizer to use for batch length computation.
+
+        `self.tokenizer` is frequently a slow `XLMRobertaTokenizer` (both
+        train.py and evaluate.py's `load_model` construct the slow class).
+        Batch-tokenizing ~285k rows needs a Rust-backed fast tokenizer to be
+        cheap (thousands of rows/sec vs. a slow per-call Python tokenizer).
+        Falls back to `self.tokenizer` itself, with a warning, if a fast
+        counterpart can't be loaded.
+        """
+        if getattr(self.tokenizer, 'is_fast', False):
+            return self.tokenizer
+
+        name_or_path = getattr(self.tokenizer, 'name_or_path', None)
+        if not name_or_path:
+            logger.warning(
+                "token_lengths: tokenizer has no name_or_path, cannot load a fast "
+                "counterpart; falling back to the slow tokenizer (this will be slow)."
+            )
+            return self.tokenizer
+
+        try:
+            try:
+                fast_tokenizer = AutoTokenizer.from_pretrained(
+                    name_or_path, use_fast=True, local_files_only=True
+                )
+            except Exception:
+                fast_tokenizer = AutoTokenizer.from_pretrained(name_or_path, use_fast=True)
+            if not getattr(fast_tokenizer, 'is_fast', False):
+                raise ValueError("AutoTokenizer did not return a fast tokenizer")
+            logger.info(
+                f"token_lengths: '{name_or_path}' was loaded as a slow tokenizer; "
+                "using its fast counterpart for length computation only."
+            )
+            return fast_tokenizer
+        except Exception as e:
+            logger.warning(
+                f"token_lengths: could not load a fast tokenizer for '{name_or_path}' "
+                f"({e}); falling back to the slow tokenizer (this will be slow)."
+            )
+            return self.tokenizer
+
+    @property
+    def token_lengths(self):
+        """Exact per-sample token length (post-truncation), for length-grouped batching.
+
+        Computed once via a single batched call to a fast tokenizer over the
+        whole text column (thousands of rows/sec, so ~285k rows takes tens of
+        seconds, not minutes), then cached to disk under `cache/` so repeat
+        runs and later epochs don't pay for it again. Only runs on first
+        access -- nothing is computed if this is never read.
+        """
+        if self._token_lengths is not None:
+            return self._token_lengths
+
+        n = len(self.df)
+        max_length = self.config.max_length
+        tokenizer_name = getattr(self.tokenizer, 'name_or_path', self.tokenizer.__class__.__name__)
+
+        try:
+            content_hash = hashlib.md5(
+                pd.util.hash_pandas_object(self.df['comment_text'], index=False).values.tobytes()
+            ).hexdigest()
+        except Exception as e:
+            logger.warning(f"token_lengths: pandas content hash failed ({e}); using a slower fallback hash")
+            content_hash = hashlib.md5(
+                '\n'.join(self.df['comment_text'].astype(str)).encode('utf-8', errors='ignore')
+            ).hexdigest()
+
+        cache_key = f"{n}_{max_length}_{tokenizer_name}_{content_hash}"
+        cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:16]
+        cache_path = TOKEN_LENGTH_CACHE_DIR / f"token_lengths_{cache_key_hash}.npy"
+
+        if cache_path.exists():
+            try:
+                cached = np.load(cache_path)
+                if len(cached) == n:
+                    self._token_lengths = cached
+                    logger.info(f"token_lengths: loaded {n} cached lengths from {cache_path}")
+                    return self._token_lengths
+                logger.warning(f"token_lengths: cache {cache_path} has wrong length, recomputing")
+            except Exception as e:
+                logger.warning(f"token_lengths: failed to read cache {cache_path} ({e}); recomputing")
+
+        tokenizer = self._fast_tokenizer_for_lengths()
+        texts = self.df['comment_text'].astype(str).tolist()
+        logger.info(f"token_lengths: tokenizing {n} samples to compute exact lengths (max_length={max_length})...")
+        encoded = tokenizer(
+            texts,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=max_length,
+            verbose=False
+        )
+        self._token_lengths = np.array([len(ids) for ids in encoded['input_ids']], dtype=np.int32)
+
+        try:
+            TOKEN_LENGTH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            np.save(cache_path, self._token_lengths)
+            logger.info(f"token_lengths: cached {n} lengths to {cache_path}")
+        except Exception as e:
+            logger.warning(f"token_lengths: failed to write cache {cache_path} ({e}); continuing without disk cache")
+
+        return self._token_lengths
+
     def __getitem__(self, idx):
         if idx % 1000 == 0:
-            print(f"Loading sample {idx}")
             logger.debug(f"Loading sample {idx}")
-        
+
         # Get text and labels
         text = self.df.iloc[idx]['comment_text']
         labels = torch.FloatTensor(self.labels[idx])
         lang = torch.tensor(self.langs[idx], dtype=torch.long)  # Ensure long dtype
-        
+
+        # Dynamic padding: tokenize to the true (truncated) length and leave
+        # per-batch padding to the collate function, instead of padding every
+        # sample to max_length. Most comments are far shorter than max_length,
+        # so fixed-length padding wastes the bulk of the compute (see
+        # docs/KNOWN_ISSUES.md). Falls back to the old pad-to-max_length
+        # behavior when the config doesn't opt in or explicitly disables it.
+        dynamic_padding = getattr(self.config, 'dynamic_padding', True)
+
         # Tokenize text
         encoding = self.tokenizer(
             text,
             add_special_tokens=True,
             max_length=self.config.max_length,
-            padding='max_length',
+            padding=False if dynamic_padding else 'max_length',
             truncation=True,
             return_attention_mask=True,
             return_tensors='pt'
         )
-        
+
         return {
             'input_ids': encoding['input_ids'].squeeze(0),
             'attention_mask': encoding['attention_mask'].squeeze(0),
@@ -104,8 +224,18 @@ class ToxicDataset(Dataset):
             'lang': lang
         }
 
-class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
-    """Custom estimator for threshold optimization"""
+class ThresholdOptimizer(ClassifierMixin, BaseEstimator):
+    """Custom estimator for threshold optimization.
+
+    ClassifierMixin MUST come first. On scikit-learn >= 1.6 is_classifier()
+    resolves __sklearn_tags__ through the MRO; with BaseEstimator first it
+    finds BaseEstimator's tags, estimator_type is None, is_classifier() is
+    False, and GridSearchCV silently builds an unshuffled KFold instead of a
+    StratifiedKFold. The rows are grouped by language with positives at the
+    front, so contiguous folds then contain zero positives, and with
+    zero_division=1 an empty fold scores a free 1.0 -- which dragged the
+    argmax to a wrong threshold. See docs/KNOWN_ISSUES.md.
+    """
     def __init__(self, threshold=0.5):
         self.threshold = threshold
         self.probabilities_ = None
@@ -203,52 +333,55 @@ def load_model(model_path):
         logger.error(f"Error loading model: {str(e)}")
         return None, None, None
 
-def optimize_threshold(y_true, y_pred_proba, n_steps=50):
+def optimize_threshold(y_true, y_pred_proba, n_steps=200):
+    """Pick the probability threshold that maximises F1 on the data given.
+
+    This is a direct sweep, not a cross-validated grid search, and the change is
+    deliberate. The previous implementation wrapped a `ThresholdOptimizer`
+    estimator in `GridSearchCV(cv=5)`, but that estimator's `fit()` only stores
+    its input and learns nothing -- there is no model whose generalization a
+    cross-validation could estimate. What CV did instead was split the data into
+    folds, and because rows are grouped by language with positives at the front,
+    entire folds could contain zero positives. With `zero_division=1` those folds
+    scored a free 1.0, which inflated rare classes and dragged the argmax to a
+    visibly wrong threshold: English `severe_toxic` was reported at F1 0.597 when
+    the maximum achievable at any threshold is 0.442. See docs/KNOWN_ISSUES.md.
+
+    Reported `f1_score` is now the F1 actually achieved at the returned threshold
+    on this data, which is what the field name claims. It is fit on validation and
+    applied unchanged to test, so the optimism of fitting on the scored split does
+    not reach the headline numbers.
+
+    The sweep covers [0.05, 0.95]; the old [0.3, 0.7] grid could not express the
+    optimum for the rarest classes, whose best thresholds sit below 0.3. 200 steps
+    rather than 50: without the cross-validation this is 200 f1_score calls, which
+    is cheap, and 50 steps left measurable slack against the achievable optimum.
     """
-    Optimize threshold using grid search to maximize F1 score
-    """
-    # Handle edge case where all samples are negative
+    y_true = np.asarray(y_true).ravel()
+    y_pred_proba = np.asarray(y_pred_proba).ravel()
+
     if y_true.sum() == 0:
+        # No positives: F1 is undefined. Report 0.0 rather than a free 1.0.
         return {
-            'threshold': 0.5,  # Use default threshold
-            'f1_score': 1.0,   # Perfect score for all negative samples
+            'threshold': 0.5,
+            'f1_score': 0.0,
             'support': 0,
-            'total_samples': len(y_true)
+            'total_samples': len(y_true),
+            'degenerate': True
         }
-    
-    # Create parameter grid
-    param_grid = {
-        'threshold': np.linspace(0.3, 0.7, n_steps)
-    }
-    
-    # Initialize optimizer
-    optimizer = ThresholdOptimizer()
-    
-    # Run grid search with custom scoring
-    grid_search = GridSearchCV(
-        optimizer,
-        param_grid,
-        scoring=make_scorer(f1_score, zero_division=1),
-        cv=5,
-        n_jobs=-1,
-        verbose=0
-    )
-    
-    # Reshape probabilities to 2D array
-    X = y_pred_proba.reshape(-1, 1)
-    
-    # Fit grid search
-    grid_search.fit(X, y_true)
-    
-    # Get best results
-    best_threshold = grid_search.best_params_['threshold']
-    best_f1 = grid_search.best_score_
-    
+
+    best_t, best_f1 = 0.5, -1.0
+    for t in np.linspace(0.05, 0.95, n_steps):
+        f1 = f1_score(y_true, (y_pred_proba >= t).astype(int), zero_division=0)
+        if f1 > best_f1:
+            best_f1, best_t = f1, t
+
     return {
-        'threshold': float(best_threshold),
+        'threshold': float(best_t),
         'f1_score': float(best_f1),
         'support': int(y_true.sum()),
-        'total_samples': len(y_true)
+        'total_samples': len(y_true),
+        'degenerate': False
     }
 
 def calculate_optimal_thresholds(predictions, labels, langs):
@@ -297,59 +430,77 @@ def calculate_optimal_thresholds(predictions, labels, langs):
     
     return thresholds
 
-def evaluate_model(model, val_loader, device, output_dir):
-    """Evaluate model performance on validation set"""
+def run_inference(model, data_loader, device, desc="Evaluating"):
+    """Run the model over a DataLoader and return raw predictions, labels, and langs.
+
+    Split out from `evaluate_model` so the same loop can be reused for both the
+    validation pass (threshold tuning only) and the test pass (headline
+    metrics), without duplicating the batch loop.
+    """
     model.eval()
     all_predictions = []
     all_labels = []
     all_langs = []
-    
-    total_samples = len(val_loader.dataset)
-    total_batches = len(val_loader)
-    
-    logger.info(f"\nStarting evaluation on {total_samples:,} samples in {total_batches} batches")
+
+    total_samples = len(data_loader.dataset)
+    total_batches = len(data_loader)
+
+    logger.info(f"\nRunning inference on {total_samples:,} samples in {total_batches} batches")
     progress_bar = tqdm(
-        val_loader,
-        desc="Evaluating",
+        data_loader,
+        desc=desc,
         total=total_batches,
         unit="batch",
         ncols=100,
         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
     )
-    
+
     with torch.inference_mode():
         for batch in progress_bar:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].cpu().numpy()
             langs = batch['lang'].cpu().numpy()
-            
+
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 lang_ids=batch['lang'].to(device)
             )
-            
+
             predictions = outputs['probabilities'].cpu().numpy()
-            
+
             all_predictions.append(predictions)
             all_labels.append(labels)
             all_langs.append(langs)
-            
+
             # Update progress bar description with batch size
-            progress_bar.set_description(f"Processed batch ({len(input_ids)} samples)")
-    
+            progress_bar.set_description(f"{desc} ({len(input_ids)} samples/batch)")
+
     # Concatenate all batches with progress bar
     logger.info("\nProcessing results...")
     predictions = np.vstack(all_predictions)
     labels = np.vstack(all_labels)
     langs = np.concatenate(all_langs)
-    
+
+    return predictions, labels, langs
+
+def evaluate_model(model, data_loader, device, output_dir, thresholds=None, desc="Evaluating"):
+    """Run inference on one split, compute metrics, and save results/plots.
+
+    `thresholds`, if given, must be the dict returned by
+    `calculate_optimal_thresholds` (typically computed on a separate
+    validation split) and is applied as-is instead of being re-tuned on this
+    split. Leaving it as None reproduces the old behavior of tuning
+    thresholds on the same data being reported on.
+    """
+    predictions, labels, langs = run_inference(model, data_loader, device, desc=desc)
+
     logger.info(f"Computing metrics for {len(predictions):,} samples...")
-    
+
     # Calculate metrics with progress indication
-    results = calculate_metrics(predictions, labels, langs)
-    
+    results = calculate_metrics(predictions, labels, langs, thresholds=thresholds)
+
     # Save results with progress indication
     logger.info("Saving evaluation results...")
     save_results(
@@ -359,16 +510,24 @@ def evaluate_model(model, val_loader, device, output_dir):
         langs=langs,
         output_dir=output_dir
     )
-    
+
     # Plot metrics
     logger.info("Generating metric plots...")
     plot_metrics(results, output_dir, predictions=predictions, labels=labels)
-    
+
     logger.info("Evaluation complete!")
     return results, predictions
 
-def calculate_metrics(predictions, labels, langs):
-    """Calculate detailed metrics"""
+def calculate_metrics(predictions, labels, langs, thresholds=None):
+    """Calculate detailed metrics.
+
+    If `thresholds` is None, optimal thresholds are tuned on this same
+    predictions/labels array -- the old single-split protocol, which is
+    optimistically biased because the thresholds are fit and reported on the
+    same data (see docs/KNOWN_ISSUES.md and docs/RESULTS.md). Pass thresholds
+    computed by `calculate_optimal_thresholds` on a separate validation split
+    to get an unbiased estimate on this split instead.
+    """
     results = {
         'default_thresholds': {
             'overall': {},
@@ -419,9 +578,13 @@ def calculate_metrics(predictions, labels, langs):
         )
     
     # Calculate optimal thresholds and corresponding metrics
-    logger.info("Computing optimal thresholds...")
-    thresholds = calculate_optimal_thresholds(predictions, labels, langs)
-    
+    if thresholds is None:
+        logger.info("No pre-tuned thresholds given -- computing optimal thresholds on this same split "
+                     "(optimistically biased; pass thresholds tuned on a separate split to avoid this).")
+        thresholds = calculate_optimal_thresholds(predictions, labels, langs)
+    else:
+        logger.info("Applying pre-tuned thresholds (frozen from a separate split)...")
+
     # Apply optimal thresholds
     logger.info("Computing metrics with optimized thresholds...")
     binary_predictions_opt = np.zeros_like(predictions, dtype=int)
@@ -469,12 +632,36 @@ def calculate_overall_metrics(predictions, labels, binary_predictions):
     metrics = {}
     
     # AUC scores (threshold independent)
-    try:
-        metrics['auc_macro'] = roc_auc_score(labels, predictions, average='macro')
-        metrics['auc_weighted'] = roc_auc_score(labels, predictions, average='weighted')
-    except ValueError:
-        # Handle case where a class has no positive samples
+    # A class with only one label value present makes roc_auc_score return NaN
+    # (with a warning) rather than raise, so an except ValueError never fires and
+    # bare NaN -- which is not valid JSON -- reaches the results file. Score only
+    # the classes that are actually well defined, and record which were skipped.
+    usable = [i for i in range(labels.shape[1]) if 0 < labels[:, i].sum() < len(labels)]
+    degenerate = [i for i in range(labels.shape[1]) if i not in usable]
+    if degenerate:
+        logger.warning(
+            f"Skipping AUC for degenerate class indices {degenerate} "
+            f"(only one label value present)"
+        )
+    metrics['auc_skipped_class_indices'] = degenerate
+    if usable:
+        try:
+            metrics['auc_macro'] = float(
+                roc_auc_score(labels[:, usable], predictions[:, usable], average='macro'))
+            metrics['auc_weighted'] = float(
+                roc_auc_score(labels[:, usable], predictions[:, usable], average='weighted'))
+        except ValueError as e:
+            logger.error(f"AUC computation failed: {e}")
+            metrics['auc_macro'] = 0.0
+            metrics['auc_weighted'] = 0.0
+    else:
+        logger.error("No class has both positive and negative samples; AUC undefined")
         metrics['auc_macro'] = 0.0
+        metrics['auc_weighted'] = 0.0
+    if not np.isfinite(metrics['auc_macro']):
+        logger.error("AUC macro is not finite; coercing to 0.0")
+        metrics['auc_macro'] = 0.0
+    if not np.isfinite(metrics['auc_weighted']):
         metrics['auc_weighted'] = 0.0
     
     # Precision, recall, F1 (threshold dependent)
@@ -633,6 +820,108 @@ def plot_metrics(results, output_dir, predictions=None, labels=None):
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'per_class_comparison.png'))
         plt.close()
+        
+        # Plot confusion matrices for each class with both default and optimized thresholds
+        if predictions is not None and labels is not None:
+            # Create a figure for each toxicity class
+            for i, class_name in enumerate(toxicity_types):
+                # Get default and optimized binary predictions
+                default_threshold = 0.5
+                opt_threshold = results['thresholds']['global'][class_name]['threshold']
+                
+                default_preds = (predictions[:, i] > default_threshold).astype(int)
+                opt_preds = (predictions[:, i] > opt_threshold).astype(int)
+                
+                # Create confusion matrices
+                cm_default = confusion_matrix(labels[:, i], default_preds)
+                cm_opt = confusion_matrix(labels[:, i], opt_preds)
+                
+                # Save raw confusion matrices
+                np.save(os.path.join(plots_dir, f'confusion_matrix_{class_name}_default.npy'), cm_default)
+                np.save(os.path.join(plots_dir, f'confusion_matrix_{class_name}_optimized.npy'), cm_opt)
+                
+                # Normalize confusion matrices for visualization
+                cm_default_norm = cm_default.astype('float') / (cm_default.sum(axis=1)[:, np.newaxis] + 1e-10)
+                cm_opt_norm = cm_opt.astype('float') / (cm_opt.sum(axis=1)[:, np.newaxis] + 1e-10)
+                
+                # Plot default threshold confusion matrix
+                plt.figure(figsize=(10, 8))
+                plt.imshow(cm_default_norm, interpolation='nearest', cmap=plt.cm.Blues)
+                plt.title(f'Normalized Confusion Matrix - {class_name}\nDefault Threshold (0.5)')
+                plt.colorbar()
+                
+                tick_marks = np.arange(2)
+                plt.xticks(tick_marks, ['Negative', 'Positive'], rotation=45)
+                plt.yticks(tick_marks, ['Negative', 'Positive'])
+                
+                # Add text annotations
+                thresh = cm_default_norm.max() / 2.
+                for i, j in np.ndindex(cm_default_norm.shape):
+                    plt.text(j, i, f'{cm_default[i, j]}\n({cm_default_norm[i, j]:.2f})',
+                            ha="center", va="center",
+                            color="white" if cm_default_norm[i, j] > thresh else "black")
+                
+                plt.tight_layout()
+                plt.ylabel('True label')
+                plt.xlabel('Predicted label')
+                plt.savefig(os.path.join(plots_dir, f'confusion_matrix_{class_name}_default.png'))
+                plt.close()
+                
+                # Plot optimized threshold confusion matrix
+                plt.figure(figsize=(10, 8))
+                plt.imshow(cm_opt_norm, interpolation='nearest', cmap=plt.cm.Blues)
+                plt.title(f'Normalized Confusion Matrix - {class_name}\nOptimized Threshold ({opt_threshold:.3f})')
+                plt.colorbar()
+                
+                tick_marks = np.arange(2)
+                plt.xticks(tick_marks, ['Negative', 'Positive'], rotation=45)
+                plt.yticks(tick_marks, ['Negative', 'Positive'])
+                
+                # Add text annotations
+                thresh = cm_opt_norm.max() / 2.
+                for i, j in np.ndindex(cm_opt_norm.shape):
+                    plt.text(j, i, f'{cm_opt[i, j]}\n({cm_opt_norm[i, j]:.2f})',
+                            ha="center", va="center",
+                            color="white" if cm_opt_norm[i, j] > thresh else "black")
+                
+                plt.tight_layout()
+                plt.ylabel('True label')
+                plt.xlabel('Predicted label')
+                plt.savefig(os.path.join(plots_dir, f'confusion_matrix_{class_name}_optimized.png'))
+                plt.close()
+            
+            # Create a combined confusion matrix report
+            with open(os.path.join(plots_dir, 'confusion_matrix_report.md'), 'w') as f:
+                f.write('# Confusion Matrix Report\n\n')
+                f.write(f'Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n\n')
+                
+                for class_name in toxicity_types:
+                    default_threshold = 0.5
+                    opt_threshold = results['thresholds']['global'][class_name]['threshold']
+                    
+                    # Get metrics
+                    default_metrics = results['default_thresholds']['per_class'][class_name]
+                    opt_metrics = results['optimized_thresholds']['per_class'][class_name]
+                    
+                    f.write(f'## {class_name}\n\n')
+                    f.write('### Default Threshold (0.5)\n\n')
+                    f.write('| | Predicted Negative | Predicted Positive |\n')
+                    f.write('|-|-|-|\n')
+                    f.write(f'| True Negative | {default_metrics["true_negatives"]} | {default_metrics["false_positives"]} |\n')
+                    f.write(f'| True Positive | {default_metrics["false_negatives"]} | {default_metrics["true_positives"]} |\n\n')
+                    f.write(f'Precision: {default_metrics["precision"]:.4f}\n\n')
+                    f.write(f'Recall: {default_metrics["recall"]:.4f}\n\n')
+                    f.write(f'F1 Score: {default_metrics["f1"]:.4f}\n\n')
+                    
+                    f.write('### Optimized Threshold ({:.4f})\n\n'.format(opt_threshold))
+                    f.write('| | Predicted Negative | Predicted Positive |\n')
+                    f.write('|-|-|-|\n')
+                    f.write(f'| True Negative | {opt_metrics["true_negatives"]} | {opt_metrics["false_positives"]} |\n')
+                    f.write(f'| True Positive | {opt_metrics["false_negatives"]} | {opt_metrics["true_positives"]} |\n\n')
+                    f.write(f'Precision: {opt_metrics["precision"]:.4f}\n\n')
+                    f.write(f'Recall: {opt_metrics["recall"]:.4f}\n\n')
+                    f.write(f'F1 Score: {opt_metrics["f1"]:.4f}\n\n')
+                    f.write('---\n\n')
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate toxic comment classifier')
@@ -641,8 +930,18 @@ def main():
                       help='Path to model directory containing checkpoints')
     parser.add_argument('--checkpoint', type=str,
                       help='Specific checkpoint to evaluate (e.g., checkpoint_epoch05_20240213). If not specified, uses latest.')
-    parser.add_argument('--test_file', type=str, default='dataset/split/val.csv',
-                      help='Path to test dataset')
+    parser.add_argument('--val_file', type=str, default='dataset/split/val.csv',
+                      help='Validation dataset. Per-class thresholds are tuned on this split. Ignored when --single_split_eval is set.')
+    parser.add_argument('--test_file', type=str, default='dataset/split/test.csv',
+                      help='Held-out test dataset. Headline metrics are reported on this split, using thresholds frozen from --val_file.')
+    parser.add_argument('--single_split_eval', action='store_true',
+                      help='Reproduce the old protocol: tune thresholds and report metrics on --test_file alone, ignoring --val_file. '
+                           'Optimistically biased (thresholds are fit and scored on the same data) -- see docs/KNOWN_ISSUES.md and '
+                           'docs/RESULTS.md. Kept only for comparison against old results; not the default.')
+    parser.add_argument('--dynamic_padding', action='store_true',
+                      help='Tokenize samples without fixed-length padding instead of padding every sample to --max_length. '
+                           'Needs a length-aware collate_fn to batch variable-length samples, which this script does not '
+                           'provide, so it defaults to off here to keep this DataLoader working standalone.')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
@@ -655,8 +954,8 @@ def main():
                       help='Force retokenization even if cache exists')
     parser.add_argument('--prefetch_factor', type=int, default=2,
                       help='Number of batches to prefetch per worker')
-    parser.add_argument('--max_length', type=int, default=128,
-                      help='Maximum sequence length for tokenization')
+    parser.add_argument('--max_length', type=int, default=512,
+                      help='Maximum sequence length for tokenization (must match training; see docs/KNOWN_ISSUES.md issue #7)')
     parser.add_argument('--gc_frequency', type=int, default=500,
                       help='Frequency of garbage collection')
     parser.add_argument('--label_columns', nargs='+', 
@@ -675,7 +974,10 @@ def main():
         'timestamp': timestamp,
         'model_path': args.model_path,
         'checkpoint': args.checkpoint,
+        'val_file': args.val_file,
         'test_file': args.test_file,
+        'single_split_eval': args.single_split_eval,
+        'dynamic_padding': args.dynamic_padding,
         'batch_size': args.batch_size,
         'num_workers': args.num_workers,
         'cache_dir': args.cache_dir,
@@ -688,6 +990,8 @@ def main():
     with open(os.path.join(eval_dir, 'eval_params.json'), 'w') as f:
         json.dump(eval_params, f, indent=2)
     
+    results = None
+    
     try:
         # Load model
         print("Loading multi-language toxic comment classifier model...")
@@ -696,44 +1000,90 @@ def main():
         if model is None:
             return
             
-        # Load test data
-        print("\nLoading test dataset...")
-        test_df = pd.read_csv(args.test_file)
-        print(f"Loaded {len(test_df):,} test samples")
-        
-        # Verify label columns exist in the DataFrame
-        missing_columns = [col for col in args.label_columns if col not in test_df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing label columns in dataset: {missing_columns}")
-        
-        # Create test dataset
-        test_dataset = ToxicDataset(
-            test_df, 
-            tokenizer, 
-            args
-        )
-        
-        # Configure DataLoader with optimized settings
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=True,
-            prefetch_factor=args.prefetch_factor,
-            persistent_workers=True if args.num_workers > 0 else False,
-            drop_last=False
-        )
-        
-        # Evaluate model
-        results = evaluate_model(model, test_loader, device, eval_dir)
-        
+        def load_split(file_path, split_name):
+            """Load one CSV split into a ToxicDataset + DataLoader."""
+            print(f"\nLoading {split_name} dataset from {file_path}...")
+            df = pd.read_csv(file_path)
+            print(f"Loaded {len(df):,} {split_name} samples")
+
+            missing_columns = [col for col in args.label_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"Missing label columns in {split_name} dataset: {missing_columns}")
+
+            dataset = ToxicDataset(df, tokenizer, args)
+            loader = DataLoader(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                prefetch_factor=args.prefetch_factor,
+                persistent_workers=True if args.num_workers > 0 else False,
+                drop_last=False
+            )
+            return loader
+
+        thresholds_path = None
+        headline_split = args.test_file
+
+        if args.single_split_eval:
+            # Legacy protocol, kept only for comparison: thresholds are tuned
+            # and reported on the same file, which is optimistically biased --
+            # see docs/KNOWN_ISSUES.md and docs/RESULTS.md. --val_file is
+            # ignored in this mode.
+            logger.warning(
+                f"--single_split_eval: tuning and reporting thresholds on the same file "
+                f"({args.test_file}). This reproduces the old, optimistically biased protocol."
+            )
+            test_loader = load_split(args.test_file, "test")
+            results, predictions = evaluate_model(model, test_loader, device, eval_dir)
+        else:
+            # Correct protocol: tune thresholds on validation, freeze them,
+            # and report headline metrics on the held-out test split.
+            val_loader = load_split(args.val_file, "validation")
+            print("\nTuning per-class thresholds on the validation split...")
+            val_predictions, val_labels, val_langs = run_inference(
+                model, val_loader, device, desc="Tuning (val)"
+            )
+            thresholds = calculate_optimal_thresholds(val_predictions, val_labels, val_langs)
+
+            thresholds_path = os.path.join(eval_dir, 'tuned_thresholds.json')
+            with open(thresholds_path, 'w') as f:
+                json.dump(thresholds, f, indent=2)
+            print(f"Saved thresholds tuned on {args.val_file} to {thresholds_path}")
+
+            test_loader = load_split(args.test_file, "test")
+            print("\nEvaluating on the held-out test split with thresholds frozen from validation...")
+            results, predictions = evaluate_model(
+                model, test_loader, device, eval_dir, thresholds=thresholds, desc="Evaluating (test)"
+            )
+
+        # Print a detailed summary of results
+        print(f"\nEvaluation Results Summary (headline split: {headline_split}):")
+        print(f"Default Threshold (0.5):")
+        print(f"  - Macro F1: {results['default_thresholds']['overall']['f1_macro']:.3f}")
+        print(f"  - Weighted F1: {results['default_thresholds']['overall']['f1_weighted']:.3f}")
+
+        print(f"\nOptimized Thresholds:")
+        print(f"  - Macro F1: {results['optimized_thresholds']['overall']['f1_macro']:.3f}")
+        print(f"  - Weighted F1: {results['optimized_thresholds']['overall']['f1_weighted']:.3f}")
+
+        # Print optimal thresholds
+        if 'thresholds' in results:
+            print("\nOptimal Thresholds:")
+            for class_name, data in results['thresholds']['global'].items():
+                print(f"  - {class_name:>12}: {data['threshold']:.3f} (F1: {data['f1_score']:.3f})")
+
+        if thresholds_path:
+            print(f"\nTuned thresholds saved to {thresholds_path}")
         print(f"\nEvaluation complete! Results saved to {eval_dir}")
         return results
         
     except Exception as e:
         print(f"Error during evaluation: {str(e)}")
-        raise
+        import traceback
+        traceback.print_exc()
+        return None
     
     finally:
         # Cleanup
@@ -742,4 +1092,4 @@ def main():
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":
-    main() 
+    main()

@@ -1,0 +1,15 @@
+# Streamlit is configured per working directory, not per script, so this
+# file is picked up by both monitor_app.py and streamlit_app.py when either
+# is launched from the repo root. That's intentional here: these are the
+# same colors streamlit_app.py already hardcodes via its own CSS (see
+# THEME in streamlit_app.py), so this is a no-op for that app and gives
+# monitor_app.py's native widgets (buttons, sliders, selects) matching
+# colors for free. Server/network settings are passed as CLI flags in
+# scripts/monitor.sh instead of here, so they can't affect run_streamlit.sh.
+[theme]
+base = "light"
+primaryColor = "#2D3142"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FA"
+textColor = "#000000"
+font = "sans serif"

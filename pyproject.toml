@@ -1,0 +1,83 @@
+[project]
+name = "toxic-comment-classification"
+version = "0.1.0"
+description = "Multilingual toxic comment classification (XLM-RoBERTa-large, 7 languages, 6 labels)"
+readme = "readme.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # torch/transformers stack (training + inference)
+    "torch==2.6.0",
+    "transformers==4.48.2",
+    "tokenizers==0.21.0",
+    # XLMRobertaTokenizer (the slow tokenizer class used by train.py, evaluate.py,
+    # predict.py and inference_optimized.py) requires sentencepiece directly.
+    "sentencepiece==0.2.0",
+    # data / numerics
+    "numpy==1.26.2",
+    "pandas==2.1.4",
+    # scikit-learn is imported by model/evaluation/evaluate.py (metrics, GridSearchCV),
+    # which model/train.py and model/hyperparameter_tuning.py both import at module
+    # level -- so it's load-bearing for training, not just an eval nicety.
+    "scikit-learn==1.6.1",
+    "joblib==1.4.2",
+    # training loop
+    "tensorboard==2.18.0",
+    # Experiment tracking (model/tracking.py): params, run comparison, artifacts.
+    # File-backed (./mlruns), no server. protobuf must stay <6 for tensorboard
+    # 2.18 at runtime; wandb's own protobuf<6 cap currently enforces that.
+    "mlflow==3.15.2",
+    "wandb==0.19.5",
+    "tqdm==4.67.1",
+    # inference: model/predict.py does language detection before classification.
+    "langdetect==1.0.9",
+    # matplotlib is imported at module level by model/evaluation/evaluate.py
+    # (plotting helpers), so it loads whenever train.py imports ToxicDataset from it.
+    "matplotlib==3.10.0",
+]
+
+[project.optional-dependencies]
+# Demo UIs: app.py (Gradio) and streamlit_app.py, plus model/inference_optimized.py
+# which both of them import (onnxruntime + requests come from there).
+serve = [
+    "streamlit==1.44.0",
+    "streamlit-extras==0.6.0",
+    "gradio==5.23.2",
+    "plotly==6.0.1",
+    "langid==1.1.6",
+    "psutil==6.1.1",
+    "onnxruntime==1.21.0",
+    "requests==2.32.3",
+]
+# augmentation/toxic_augment.py and augmentation/threat_augment.py: 4-bit Mistral-7B
+# generation via transformers.BitsAndBytesConfig + device_map="balanced".
+augment = [
+    "accelerate==1.3.0",
+    "bitsandbytes==0.45.1",
+]
+# analysis/*.py plotting scripts. matplotlib and scikit-learn are already in core.
+analysis = [
+    "seaborn==0.13.2",
+    "scipy==1.15.1",
+]
+
+[dependency-groups]
+# Local tooling only -- never installed as a package extra. Named "dev" so
+# `uv sync` includes it by default (use --no-dev to skip).
+dev = [
+    "ruff>=0.11.2",
+    "pytest>=8.3",
+]
+
+[tool.uv]
+# This repo is a collection of scripts run from the repo root (e.g. `python
+# model/train.py`), not an importable library -- there's no build backend and
+# nothing here should be built into a wheel.
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

@@ -116,7 +116,7 @@ class OptimizedToxicityClassifier:
                 batch_texts,
                 padding=True,
                 truncation=True,
-                max_length=128,
+                max_length=512,   # must match training; 128 truncated ~16% of real comments
                 return_tensors='pt'
             )
             

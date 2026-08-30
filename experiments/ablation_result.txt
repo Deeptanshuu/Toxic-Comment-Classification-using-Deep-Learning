@@ -1,0 +1,38 @@
+treatment (lang conditioning ON) : evaluation_results/eval_20260830_072515
+control   (lang conditioning OFF): evaluation_results/eval_20260830_123615
+paired over 35,658 test rows, 1000 bootstrap resamples
+
+                    treat  control     diff              95% CI        p
+--------------------------------------------------------------------------
+MACRO AUC          0.9852   0.9849  +0.0003  [-0.0007, +0.0012]    0.588
+
+per class           treat  control     diff              95% CI
+-----------------------------------------------------------------
+  toxic            0.9921   0.9916  +0.0006  [+0.0001, +0.0011]
+  severe_toxic     0.9863   0.9854  +0.0009  [-0.0003, +0.0021]
+  obscene          0.9899   0.9897  +0.0001  [-0.0006, +0.0008]
+  threat           0.9755   0.9776  -0.0021  [-0.0063, +0.0021]
+  insult           0.9855   0.9850  +0.0004  [-0.0002, +0.0013]
+  identity_hate    0.9818   0.9801  +0.0018  [-0.0004, +0.0042]
+
+per language        treat  control     diff       n
+-----------------------------------------------------
+  it               0.9893   0.9877  +0.0016   5,146
+  tr               0.9726   0.9713  +0.0013   5,163
+  pt               0.9832   0.9829  +0.0003   5,192
+  es               0.9882   0.9881  +0.0001   5,168
+  en               0.9902   0.9908  -0.0006   4,638
+  fr               0.9877   0.9885  -0.0008   5,158
+  ru               0.9790   0.9800  -0.0010   5,193
+
+verdict
+--------------------------------------------------------------------------
+  No detectable effect. The paired 95% CI [-0.0007, +0.0012] includes zero.
+  Language conditioning does not measurably help on this data. That is a
+  real finding, not a failure: XLM-R already encodes language identity
+  implicitly, so an explicit per-language bias is plausibly redundant.
+
+  English delta -0.0006 vs non-English mean +0.0003.
+  The gain does NOT concentrate in non-English languages. A uniform shift
+  across all seven is evidence of a better run, not of language
+  conditioning doing the thing it was designed to do.
