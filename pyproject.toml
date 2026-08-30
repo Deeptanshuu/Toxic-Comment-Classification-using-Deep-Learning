@@ -16,8 +16,8 @@ dependencies = [
     "numpy==1.26.2",
     "pandas==2.1.4",
     # scikit-learn is imported by model/evaluation/evaluate.py (metrics, GridSearchCV),
-    # which model/train.py and model/hyperparameter_tuning.py both import at module
-    # level -- so it's load-bearing for training, not just an eval nicety.
+    # which model/train.py imports at module level (for ToxicDataset) -- so it's
+    # load-bearing for training, not just an eval nicety.
     "scikit-learn==1.6.1",
     "joblib==1.4.2",
     # training loop
