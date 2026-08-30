@@ -1,0 +1,24 @@
+{
+  "timestamp": "20260830_072515",
+  "model_path": "weights/toxic_classifier_xlmr_v2/best_model",
+  "checkpoint": null,
+  "val_file": "dataset/split/val.csv",
+  "test_file": "dataset/split/test.csv",
+  "single_split_eval": false,
+  "dynamic_padding": false,
+  "batch_size": 64,
+  "num_workers": 8,
+  "cache_dir": "cached_data",
+  "force_retokenize": false,
+  "prefetch_factor": 2,
+  "max_length": 512,
+  "gc_frequency": 500,
+  "label_columns": [
+    "toxic",
+    "severe_toxic",
+    "obscene",
+    "threat",
+    "insult",
+    "identity_hate"
+  ]
+}

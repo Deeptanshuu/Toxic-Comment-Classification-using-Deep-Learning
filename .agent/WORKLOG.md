@@ -141,6 +141,29 @@ as running twice when it was not. Use
 `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
 as the authoritative check for what is actually on the GPU.
 
+## FINAL RESULT -- TEST split, thresholds frozen from validation
+### eval_20260830_072515, best_model = epoch 5
+
+| Metric | NEW | OLD | Delta |
+|---|---|---|---|
+| AUC macro | 0.9852 | 0.9147 | +0.0704 |
+| F1 macro @tuned | 0.8814 | 0.6036 | +0.2778 |
+| F1 weighted @tuned | 0.9332 | 0.7732 | +0.1600 |
+| Exact match @tuned | 0.8772 | 0.6194 | +0.2578 |
+
+Per-class F1: threat .4189->.8403 (+.4214) | identity_hate .4370->.8680 (+.4311)
+severe_toxic .3980->.7549 (+.3569) | insult .7248->.9235 | obscene .7392->.9378
+toxic .9038->.9641
+Per-language AUC: en .9902 ru .9790 tr .9726 es .9882 fr .9877 it .9893 pt .9832
+Language AUC spread collapsed 0.0519 -> 0.0176.
+
+INTERPRETATION: F1 gained 4x what AUC did. AUC only measures ranking, and the old
+model ranked acceptably (.9147). F1 depends on probability SEPARATION, which is
+what a frozen backbone could not do -- rare-class probabilities sat compressed
+near the decision boundary so no threshold could split them cleanly. Exact match
+.6194 -> .8772 means the share of comments where ALL SIX labels are right went
+from 62% to 88%.
+
 ## Notes for the owner (write anything they must know here)
 
 - Threshold numbers will differ from the earlier baseline because the old ones
