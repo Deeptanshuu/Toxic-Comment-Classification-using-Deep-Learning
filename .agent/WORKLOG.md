@@ -172,11 +172,16 @@ near the decision boundary so no threshold could split them cleanly. Exact match
 from 62% to 88%.
 
 ### ABLATION per-epoch val macro AUC (treatment - control), 4 of 6 epochs
-  e1 +0.000055 | e2 +0.000553 | e3 +0.001244 | e4 +0.000301   mean +0.000538
-Positive at every epoch (4/4, sign-test p~0.06, NOT significant) but the
-magnitude FLUCTUATES rather than growing -- I wrongly called it monotonic after
-3 epochs; e4 contradicted that. For scale the backbone fix was +0.0704, ~130x
-larger. The paired bootstrap on TEST settles it, not these val numbers.
+  e1 +0.000055 | e2 +0.000553 | e3 +0.001244 | e4 +0.000301 | e5 +0.000976
+  mean +0.000626, POSITIVE 5/5 (one-sided sign test p~0.03)
+Positive at every epoch. The magnitude FLUCTUATES rather than growing -- I
+wrongly called it monotonic after 3 epochs and e4 contradicted that. But 5/5
+same-sign is consistent enough that the honest reading is now "a real effect
+that is negligibly small", NOT "no effect". Those are different claims and the
+writeup should say the first one.
+For scale: +0.000626 against +0.0704 for the backbone fix. Language
+conditioning, working correctly, is worth ~0.9% of what one bug cost.
+The paired bootstrap on TEST gives the definitive CI, not these val numbers.
 
 ### earlier note, epoch 1 of 6 (superseded by the table above)
                     treatment      control        diff
