@@ -43,6 +43,77 @@ model-index:
             value: 0.8821
 ---
 
+> ## Known bias: identity terms are over-flagged
+>
+> **This model flags benign self-description containing identity terms as toxic.**
+> Measured, not hypothetical:
+>
+> | Input | P(toxic) | P(identity_hate) |
+> |---|---|---|
+> | "I am a gay man." | **0.891** | 0.336 |
+> | "I am a lesbian." | **0.668** | 0.165 |
+> | "I am a black man." | **0.612** | 0.554 |
+> | "I am a queer person." | **0.531** | 0.075 |
+> | "I am a deaf person." | **0.485** | 0.108 |
+> | "I am a man." | 0.067 | 0.088 |
+> | "I am a woman." | 0.038 | 0.087 |
+>
+> At the tuned `toxic` threshold of 0.472, the first five are flagged. Neutral
+> controls are not. The model has learned that the presence of an identity term
+> predicts toxicity, which is not the same thing as the comment being toxic.
+>
+> **The cause is in the training data, not the training code.** In the English
+> training split, 91.2% of comments containing "gay" are labelled toxic against a
+> 48% base rate, and 53.1% are labelled `identity_hate` -- an 11.5x lift over the
+> 4.6% base rate. The corpus derives from Wikipedia talk-page comments, where
+> identity terms appear overwhelmingly in hostile arguments *about* those groups.
+> Benign usage is barely represented, so the model never had the chance to learn
+> the distinction.
+>
+> **What this means if you deploy it.** Used as-is for moderation, this model will
+> disproportionately suppress LGBTQ people, and to a lesser extent racial and
+> religious minorities, describing themselves. That is the opposite of what a
+> toxicity filter is for. Do not use it on user-generated content without either
+> mitigating this or reviewing flagged identity-term content by hand.
+>
+> **It is worse in every other language.** The numbers above are English, which
+> is the *least* affected of the seven. False-positive rate on benign
+> identity-term probes, by language:
+>
+> | pt | ru | tr | es | fr | it | en |
+> |---|---|---|---|---|---|---|
+> | 0.741 | 0.704 | 0.667 | 0.667 | 0.593 | 0.556 | **0.407** |
+>
+> Non-identity controls score 0.000 in all seven languages.
+>
+> **The trigger is short text.** Prepending a paragraph of neutral filler drops
+> "I am a gay man." from 0.891 to 0.042. The model learned *short sentence +
+> identity term = toxic*, which matches the corpus: short comments containing
+> "gay" are 95.6% toxic against 76.0% for long ones. The harm therefore
+> concentrates in bios, chat messages, one-line replies and usernames -- short
+> user-generated text, which is most of what a moderation system sees.
+>
+> **It is not confined to synthetic probes.** On held-out test rows carrying no
+> positive label, those containing an identity term are flagged at 0.120 against
+> 0.042 for those that do not -- **2.84x**, bootstrap CI [1.96, 3.82].
+>
+> **Cause: representation, not mislabelling.** Of 726 English training rows
+> containing "gay", 90.4% are labelled toxic and most are correctly labelled --
+> they really are abusive. The problem is the absence of the other kind. 36 rows
+> match a first-person LGBT self-description pattern and **not one is a genuine
+> benign self-description**; they are mockery-by-impersonation and harassment. The
+> sentence form this model fails on exists in its training data only as a vehicle
+> for abuse, so the model never had the chance to learn otherwise.
+>
+> This is a known failure mode of this corpus -- Jigsaw hit it themselves and
+> addressed it by adding benign examples containing identity terms. That
+> mitigation has not been applied here. Full analysis, including a costed fix and
+> the recall trade-off it implies, is in
+> [experiments/identity_bias.md](https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning/blob/main/experiments/identity_bias.md).
+> It is documented rather than quietly shipped because a model card that omits a
+> measured harm is worse than no card.
+
+
 # toxic-comment-multilingual-xlmr
 
 Multi-label toxicity classification for online comments in seven languages:
