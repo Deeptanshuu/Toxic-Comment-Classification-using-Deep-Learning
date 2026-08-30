@@ -197,6 +197,20 @@ noise, and the epoch averages are within 3%.
 This is epoch 1 on VAL. The answer is the paired test-split comparison via
 scripts/compare_ablation.py once the control finishes and is evaluated.
 
+## ABLATION: FINAL ANSWER (test split, paired bootstrap) -- PLAN COMPLETE
+  MACRO AUC  treat 0.9852  control 0.9849  diff +0.0003
+             95% CI [-0.0007, +0.0012]  p=0.588  -> NO DETECTABLE EFFECT
+  Per language MIXED SIGNS: it +0.0016 tr +0.0013 pt +0.0003 es +0.0001
+                            en -0.0006 fr -0.0008 ru -0.0010
+  THREE OF SEVEN LANGUAGES ARE WORSE with conditioning on. threat class -0.0021.
+  English -0.0006 vs non-English mean +0.0003, so the effect does NOT
+  concentrate where a language signal should help.
+  Writeup: experiments/ablation_language_conditioning.md
+  IMPORTANT LESSON: validation favoured the treatment 6/6 epochs (sign-test
+  p~0.016) and it did NOT survive on test. The checkpoint was selected on val,
+  so the comparison inherited that optimism. Reporting val numbers -- as the
+  original project did -- would have concluded the architecture works.
+
 ## Notes for the owner (write anything they must know here)
 
 - Threshold numbers will differ from the earlier baseline because the old ones

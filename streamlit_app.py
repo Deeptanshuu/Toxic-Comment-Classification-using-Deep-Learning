@@ -49,7 +49,18 @@ from streamlit_extras.metric_cards import style_metric_cards
 
 # Configure paths
 HUGGINGFACE_MODEL_PATH = "Deeptanshuu/Multilingual_Toxic_Comment_Classifier/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
-PYTORCH_MODEL_PATH = "https://huggingface.co/Deeptanshuu/Multilingual_Toxic_Comment_Classifier/resolve/main/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
+
+# Default to the retrained local checkpoint rather than downloading the 2025 one
+# from the Hub. That older model never fine-tuned its encoder (see
+# docs/KNOWN_ISSUES.md), so serving it would demo the bug rather than the fix.
+# Override with TOXIC_MODEL_PATH to point at any other checkpoint, including the
+# remote URL below.
+_REMOTE_2025 = "https://huggingface.co/Deeptanshuu/Multilingual_Toxic_Comment_Classifier/resolve/main/weights/toxic_classifier_xlm-roberta-large/checkpoint_epoch02_20250401_141908/pytorch_model.bin"
+_LOCAL_V2 = "weights/toxic_classifier_xlmr_v2/best_model/pytorch_model.bin"
+PYTORCH_MODEL_PATH = os.environ.get(
+    "TOXIC_MODEL_PATH",
+    _LOCAL_V2 if os.path.exists(_LOCAL_V2) else _REMOTE_2025,
+)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Get GPU info if available

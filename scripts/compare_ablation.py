@@ -26,11 +26,28 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.stats import rankdata
 from sklearn.metrics import roc_auc_score
+
+
+def fast_auc(y, score):
+    """AUC via the rank identity, much faster than roc_auc_score in a bootstrap.
+
+    AUC = (sum of ranks of positives - n_pos(n_pos+1)/2) / (n_pos * n_neg).
+    sklearn rebuilds an ROC curve on every call, which dominates when you call it
+    tens of thousands of times. scipy's rankdata does the tie-averaging in C.
+    """
+    n = len(y)
+    pos = int(y.sum())
+    if pos == 0 or pos == n:
+        return np.nan
+    r = rankdata(score)
+    return (r[y == 1].sum() - pos * (pos + 1) / 2.0) / (pos * (n - pos))
+
 
 CLASSES = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
 LANGS = {0: 'en', 1: 'ru', 2: 'tr', 3: 'es', 4: 'fr', 5: 'it', 6: 'pt'}
-N_BOOT = 2000
+N_BOOT = 1000
 RNG = np.random.default_rng(0)
 
 
@@ -40,10 +57,9 @@ def load(d):
 
 
 def macro_auc(y, p):
-    cols = [i for i in range(y.shape[1]) if 0 < y[:, i].sum() < len(y)]
-    if not cols:
-        return np.nan
-    return roc_auc_score(y[:, cols], p[:, cols], average='macro')
+    vals = [fast_auc(y[:, i], p[:, i]) for i in range(y.shape[1])
+            if 0 < y[:, i].sum() < len(y)]
+    return float(np.mean(vals)) if vals else np.nan
 
 
 def paired_bootstrap(y, pa, pb, fn, n=N_BOOT):
@@ -81,8 +97,8 @@ def main():
     print(f"\n{'per class':<16}{'treat':>9}{'control':>9}{'diff':>9}{'95% CI':>20}")
     print('-' * 65)
     for i, c in enumerate(CLASSES):
-        f = lambda y, q, i=i: roc_auc_score(y[:, i], q[:, i])
-        o, l, h, _ = paired_bootstrap(ya, pa, pb, f, n=500)
+        f = lambda y, q, i=i: fast_auc(y[:, i], q[:, i])
+        o, l, h, _ = paired_bootstrap(ya, pa, pb, f, n=300)
         print(f"  {c:<14}{roc_auc_score(ya[:,i],pa[:,i]):>9.4f}"
               f"{roc_auc_score(yb[:,i],pb[:,i]):>9.4f}{o:>+9.4f}{f'[{l:+.4f}, {h:+.4f}]':>20}")
 
