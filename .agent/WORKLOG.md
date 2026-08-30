@@ -171,7 +171,14 @@ near the decision boundary so no threshold could split them cleanly. Exact match
 .6194 -> .8772 means the share of comments where ALL SIX labels are right went
 from 62% to 88%.
 
-### ABLATION preliminary, epoch 1 of 6 (do NOT treat as the answer yet)
+### ABLATION per-epoch val macro AUC (treatment - control), 4 of 6 epochs
+  e1 +0.000055 | e2 +0.000553 | e3 +0.001244 | e4 +0.000301   mean +0.000538
+Positive at every epoch (4/4, sign-test p~0.06, NOT significant) but the
+magnitude FLUCTUATES rather than growing -- I wrongly called it monotonic after
+3 epochs; e4 contradicted that. For scale the backbone fix was +0.0704, ~130x
+larger. The paired bootstrap on TEST settles it, not these val numbers.
+
+### earlier note, epoch 1 of 6 (superseded by the table above)
                     treatment      control        diff
   val macro AUC     0.9578263    0.9577712   -0.0000551
   epoch train loss   0.041474     0.042831    +0.001357
