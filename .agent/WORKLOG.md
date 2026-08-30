@@ -56,7 +56,13 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
        ablation. It REFUSES to start the ablation if the run ended early.
 3. [~] AUTOMATED by the same script. Control run uses scripts/run_ablation.py ->
        weights/toxic_classifier_xlmr_v2_ablation, MLflow tag run.kind=control.
-4. [~] READY: scripts/compare_ablation.py. Paired bootstrap over test rows
+4. [~] AUTOMATED: scripts/after_ablation.sh runs in tmux window `after2`. Waits
+       for the control to exit, REFUSES if it did not reach 6/6 epochs (comparing
+       a partial control against a full treatment would blame a training-length
+       difference on the language signal), evaluates the control on test with
+       val-tuned thresholds, then runs the paired comparison and saves it to
+       experiments/ablation_result.txt.
+   TOOL: scripts/compare_ablation.py. Paired bootstrap over test rows
        (both arms score the SAME rows, so unpaired would overstate uncertainty),
        2000 resamples, per-class and per-language breakdown. Reports effect size
        WITH significance because n=35,658 makes trivial diffs "significant".
