@@ -29,7 +29,7 @@ per-class AUC: toxic .9666 obscene .9278 threat .9051 insult .9035
 
 | Run | What | Status |
 |---|---|---|
-| train_20260830_080841 | ABLATION control, lang conditioning OFF | RUNNING, ends ~11:32 |
+| train_20260830_080841 | ABLATION control, lang conditioning OFF | **DONE 12:36**, 6/6 epochs, best e5 @ 0.985842 |
 | train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | **DONE 07:25**. 6/6 epochs. Best = epoch 5 @ 0.9868 val macro AUC. Epoch 6 tied and did not beat it. |
 
 Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799 | 4: 0.9849 | 5: 0.9868
@@ -173,7 +173,9 @@ from 62% to 88%.
 
 ### ABLATION per-epoch val macro AUC (treatment - control), 4 of 6 epochs
   e1 +0.000055 | e2 +0.000553 | e3 +0.001244 | e4 +0.000301 | e5 +0.000976
-  mean +0.000626, POSITIVE 5/5 (one-sided sign test p~0.03)
+  e6 +0.001069        mean +0.000700, POSITIVE 6/6 (one-sided sign p~0.016)
+  Best-vs-best (both epoch 5): treat 0.986818 vs control 0.985842 = +0.00098.
+  CONTROL RUN COMPLETE 6/6 epochs. Its test evaluation is eval_20260830_123615.
 Positive at every epoch. The magnitude FLUCTUATES rather than growing -- I
 wrongly called it monotonic after 3 epochs and e4 contradicted that. But 5/5
 same-sign is consistent enough that the honest reading is now "a real effect
