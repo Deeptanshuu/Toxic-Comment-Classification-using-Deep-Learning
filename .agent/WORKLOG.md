@@ -70,6 +70,12 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
       token_lengths cache key, optuna undeclared
 - [ ] `oversample_rare_classes()` in utils/split_dataset.py is dead code
 
+## Experiments run (results, not plans)
+
+| Experiment | Result |
+|---|---|
+| Per-language vs global thresholds | **NEGATIVE, -0.0047 macro F1, 1/5 splits improved.** Delete the per_language block. Damage concentrates in rare classes (threat -0.0144) because 7 thresholds fit on 1/7 the data each is variance, not signal. Writeup: experiments/per_language_thresholds.md |
+
 ## IDEAS to improve the score (test, do not assume)
 
 - Ablation first; it may show lang conditioning is worthless, which changes design
