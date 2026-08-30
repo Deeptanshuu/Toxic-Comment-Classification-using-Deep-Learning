@@ -186,13 +186,12 @@ the difference between "the model's output changed when I changed `lang_ids`" (t
 verified — see `docs/MODEL.md`) and "the model got *better* because of `lang_ids`" (a
 completely separate question, only answerable by comparison).
 
-This project's whole premise is that telling the model which language it is reading, and
-letting that signal steer attention, beats plain XLM-R fine-tuning. The bias that carries the
-language signal used to be a mathematical no-op — it cancelled out under softmax regardless
-of `lang_ids` — so historically that hypothesis was never actually tested; there was no
-detectable language effect to test. Now that the bias is fixed and demonstrably changes the
-model's output, the ablation is the one experiment that tells you whether it changes it *for
-the better*. Two runs, identical in every other setting:
+This project's premise was that telling the model which language it is reading, and letting
+that signal steer attention, beats plain XLM-R fine-tuning. The bias that carries the language
+signal used to be a mathematical no-op — it cancelled out under softmax regardless of
+`lang_ids` — so historically the hypothesis was never actually tested; there was no detectable
+language effect to test. With the bias fixed, the ablation is the experiment that says whether
+it changes the output *for the better*. Two runs, identical in every other setting:
 
 ```bash
 uv run python -m model.train                                # treatment: language conditioning live
@@ -206,6 +205,14 @@ makes `model/language_aware_transformer.py` skip the language bias entirely
 language. `model/train.py:871-874` tags the MLflow run `run.kind=control` or `=treatment`
 accordingly, so the two runs are easy to find and compare in the MLflow UI once both are
 done.
+
+Both arms have been run and compared: no measurable effect, +0.0003 macro AUC with a 95%
+confidence interval of [−0.0007, +0.0012]. Numbers in
+[docs/RESULTS.md](RESULTS.md#the-language-conditioning-ablation), method in
+[experiments/ablation_language_conditioning.md](../experiments/ablation_language_conditioning.md).
+The comparison tool is `scripts/compare_ablation.py`, which takes two evaluation directories and
+runs a paired bootstrap over test rows — paired because both arms score the same rows, and an
+unpaired test would overstate the uncertainty.
 
 If you want to run the control arm inside `train_tmux.sh` rather than in the foreground,
 note that the script only forwards four specific environment variables into the `train`

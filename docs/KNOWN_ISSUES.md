@@ -14,10 +14,10 @@ This version is a post-mortem. It covers three things:
 3. **Still open** — what is still broken, how bad it is, and whether it touches any reported
    number.
 
-Work is on branch `fix/training-correctness`, commit `f0b0083`. **A training run is in progress.
-Final results do not exist yet, and nothing in this document reports them.** Where numbers appear
-they are either the April baseline (test split) or epoch 1 of the new run (validation split),
-always labelled.
+Work is on branch `fix/training-correctness`. The retrain has since finished and been evaluated on
+the held-out test split; the headline numbers live in [docs/RESULTS.md](RESULTS.md) and are
+summarised under [Reference numbers](#reference-numbers) below. Where numbers appear here they are
+either the April baseline or the retrained model, always on the test split and always labelled.
 
 ## How to read this
 
@@ -70,14 +70,14 @@ real work.
 | Three more class-weighting faults | C | Missed entirely | Fixed | Yes |
 | Second GPU never used | D | Missed entirely | Fixed | No — speed only |
 | Serving truncated at 128 tokens | E | Missed entirely | Fixed | Serving only, 15.68% of comments |
-| Per-language threshold MRO bug | O1 | New | **Open** | No — dead code |
-| `best_score_` mislabelled | O2 | New | **Open** | Reported F1 only |
+| Threshold search MRO bug, and the CV wrapper around it | O1 | New | Fixed | Yes — the tuned-threshold F1 |
+| `best_score_` mislabelled | O2 | New | Fixed | Reported F1 only |
 | `--dynamic_padding` crashes | O3 | New | **Open** | No |
-| `roc_auc_score` returns NaN | O4 | New | **Open** | Only on degenerate classes |
+| `roc_auc_score` returns NaN | O4 | New | Fixed | Only on degenerate classes |
 | Token-length cache key | O5 | New | **Open** | No |
 | `optuna` undeclared | O6 | New | **Open** | No |
-| The ablation has not been run | O7 | Carried over | **Open** | The central claim is still untested |
-| `class_adjustments` is fabricated and now live | O8 | Half of issue 6 | **Open** | Will affect the run in progress |
+| The ablation has not been run | O7 | Carried over | Resolved | It has now been run — no measurable effect |
+| `class_adjustments` is fabricated and now live | O8 | Half of issue 6 | **Open** | Yes — it was active in the retrain |
 
 ---
 
@@ -747,25 +747,25 @@ that was never measured.
 
 ---
 
-# Part 3 — Still open
+# Part 3 — Found after the first pass
 
-Nothing here is fixed. Severity is about consequence, not effort.
+O1, O2, O4 and O7 have since been dealt with and are marked so. The rest are open. Severity is
+about consequence, not effort.
 
-| Issue | Ref | Where | Severity | Affects reported numbers |
-| --- | --- | --- | --- | --- |
-| Per-language threshold optimizer uses the wrong CV splitter | O1 | `model/evaluation/evaluate.py:227` | Medium | **No** — the block is dead code |
-| `best_score_` reported as "the F1 at this threshold" | O2 | `model/evaluation/evaluate.py:365` | Low | The tuned-threshold F1 only |
-| `--dynamic_padding` always crashes | O3 | `model/evaluation/evaluate.py:904` | Low | No |
-| `roc_auc_score` returns NaN instead of raising | O4 | `model/evaluation/evaluate.py:623-628` | Low | Only on degenerate classes |
-| Token-length cache key misses tokenizer mutation | O5 | `model/evaluation/evaluate.py:156` | Low | No |
-| `optuna` imported but undeclared | O6 | `model/hyperparameter_tuning.py:1` | Low | No |
-| **The lang-conditioning ablation has not been run** | O7 | — | **High** | The central claim is untested |
-| `class_adjustments` is fabricated and now live | O8 | `model/training_config.py:122-130` | Medium | Will affect the run in progress |
+| Issue | Ref | Where | Severity | Status | Affects reported numbers |
+| --- | --- | --- | --- | --- | --- |
+| Threshold search used a meaningless CV wrapper | O1 | `model/evaluation/evaluate.py:336` | Medium | Fixed | Yes — the tuned-threshold F1 |
+| `best_score_` reported as "the F1 at this threshold" | O2 | `model/evaluation/evaluate.py:365` | Low | Fixed | The tuned-threshold F1 only |
+| `--dynamic_padding` always crashes | O3 | `model/evaluation/evaluate.py:941` | Low | **Open** | No |
+| `roc_auc_score` returns NaN instead of raising | O4 | `model/evaluation/evaluate.py:630-640` | Low | Fixed | Only on degenerate classes |
+| Token-length cache key misses tokenizer mutation | O5 | `model/evaluation/evaluate.py:156` | Low | **Open** | No |
+| `optuna` imported but undeclared | O6 | `model/hyperparameter_tuning.py:1` | Low | **Open** | No |
+| The lang-conditioning ablation has not been run | O7 | — | **High** | Resolved | It has been run — no measurable effect |
+| `class_adjustments` is fabricated and now live | O8 | `model/training_config.py:122-130` | Medium | **Open** | Yes — it was active in the retrain |
 
-## O1. Per-language threshold optimizer uses the wrong CV splitter
+## O1. The threshold search was a meaningless cross-validation — fixed
 
-**Read the severity line first: this does not affect any headline metric.** It is worth
-understanding anyway, because it is a genuinely subtle failure.
+The original diagnosis was a method-resolution-order bug:
 
 ```python
 class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
@@ -774,34 +774,53 @@ class ThresholdOptimizer(BaseEstimator, ClassifierMixin):
 The mixin is second. scikit-learn 1.6 (pinned at `pyproject.toml:21`) decides whether an
 estimator is a classifier by walking the method resolution order, and with `BaseEstimator` first
 `is_classifier()` returns `False`. `GridSearchCV` then quietly builds a plain unshuffled `KFold`
-instead of a `StratifiedKFold`.
+instead of a `StratifiedKFold`. Unshuffled folds on data grouped by language with positives at the
+front means some folds contain **zero positive examples** for a rare class; combined with
+`zero_division=1` in the scorer, those folds score a free 1.0, averaged in as a real result.
 
-Unshuffled folds on data sorted the way this data arrives means some folds contain **zero
-positive examples** for a rare class. Combined with `zero_division=1` in the scorer, those folds
-score a free 1.0, which is then averaged in as if it were a real result.
+Proof it was wrong: English `severe_toxic` was reported at F1 **0.597** when the maximum
+achievable at any threshold on that data is **0.442**. A score above the theoretical ceiling is a
+mathematical impossibility, which is exactly what makes it a useful diagnostic.
 
-Proof: English `severe_toxic` was reported at F1 **0.597** when the maximum achievable at any
-threshold on that data is **0.442**. A reported score above the theoretical ceiling is a
-mathematical impossibility, which is exactly why it is a useful diagnostic.
+**The MRO was only the surface of it.** `ThresholdOptimizer.fit()` stores its input and learns
+nothing. There is no model whose generalization a cross-validation could estimate, so the whole
+`GridSearchCV(cv=5)` wrapper was ceremony around an argmax. Fixing the MRO alone would have kept a
+cross-validation that never made sense.
 
-Why the headline metrics are safe: `calculate_optimal_thresholds` fills both
-`thresholds['global']` and `thresholds['per_language']`, but only `['global']` is ever read
-(`model/evaluation/evaluate.py:579` and `:604`). The per-language block is computed, serialized
-into the results JSON, and never used for anything. The global thresholds go through the same
-`optimize_threshold` and so carry the same bias, but they are applied to the full split, where
-folds with zero positives are far less likely — and the val-tune/test-report split means the
-reported F1 is measured on held-out data regardless of how the threshold was picked.
+The fix (`model/evaluation/evaluate.py:336`) replaces it with a direct sweep: 200 steps over
+`[0.05, 0.95]`, `zero_division=0`, and `f1_score` now reports the F1 actually achieved at the
+returned threshold. The old grid was `[0.3, 0.7]`, which could not even express the optimum for the
+rarest classes — their best thresholds sit below 0.3. Mean gap to the achievable optimum is now
+0.0008.
 
-Fix when someone gets to it: swap to `class ThresholdOptimizer(ClassifierMixin, BaseEstimator)`,
-set `zero_division=0`, and pass an explicit `StratifiedKFold`. Then re-derive the per-language
-numbers, or delete the block.
+**A trap encountered while fixing it:** the first attempt at the MRO swap broke the estimator,
+because `is_classifier() == True` makes scikit-learn demand a `classes_` attribute. It was caught
+by rerunning against cached predictions rather than assuming the change was safe.
 
-## O2. `best_score_` reported as "the F1 at this threshold"
+Left over: `ThresholdOptimizer` and the `GridSearchCV` import at `:13` are now dead code, and
+`calculate_optimal_thresholds` still fills a `thresholds['per_language']` block that nothing reads
+(only `['global']` is used, at `:579` and `:604`). That block should be deleted rather than fixed —
+see [experiments/per_language_thresholds.md](../experiments/per_language_thresholds.md), which
+measured per-language thresholds as **worse** than a single global one.
 
-`best_f1 = grid_search.best_score_` (`model/evaluation/evaluate.py:365`) is the **mean F1 across
-the 5 CV folds** at the winning threshold, not the F1 you get by applying that threshold to the
-data. The two differ, and inherit the fold problem from O1. It is reported under the key
-`'f1_score'`, which invites the wrong reading.
+**Consequence for old numbers.** The `f1_score` field of any pre-fix `tuned_thresholds.json` is a
+CV mean from the broken search, not an achieved F1, and must not be compared against anything.
+Do not cite those.
+
+The April baseline's *reported* metrics are safe, because they were never produced by the threshold
+search — the search only picked the cut-offs, and `calculate_class_metrics` then measured what those
+cut-offs actually achieve on test. Its thresholds do come from the pre-fix search, so it is worth
+checking that this does not hold the baseline down and flatter the comparison. It does not: fitting
+the corrected 200-step sweep directly on the April model's own test predictions — an upper bound no
+honest protocol can reach, since it fits and scores on the same rows — gives macro F1 **0.6059**
+against the **0.6036** reported. A gap of 0.0023, against a measured improvement of 0.2778.
+
+## O2. `best_score_` reported as "the F1 at this threshold" — fixed
+
+`best_f1 = grid_search.best_score_` was the **mean F1 across the 5 CV folds** at the winning
+threshold, not the F1 you get by applying that threshold to the data. The two differ, and inherited
+the fold problem from O1. It was reported under the key `'f1_score'`, which invites the wrong
+reading. Removed along with the `GridSearchCV` wrapper; the field now holds the achieved F1.
 
 ## O3. `--dynamic_padding` always crashes
 
@@ -811,7 +830,9 @@ The flag tokenizes without padding, producing variable-length samples, and the s
 still exists and still crashes when used. Training has a working collator
 (`model/data/collate.py`); evaluation does not use it.
 
-## O4. `roc_auc_score` returns NaN instead of raising
+## O4. `roc_auc_score` returns NaN instead of raising — fixed
+
+The old guard:
 
 ```python
 try:
@@ -822,7 +843,13 @@ except ValueError:
 
 For a class with no positive samples, current scikit-learn emits a warning and returns `NaN`
 rather than raising `ValueError`. The handler never fires, and `NaN` — which is not valid JSON —
-reaches the results file. Same pattern at `:674-676`.
+reaches the results file.
+
+Fixed at `model/evaluation/evaluate.py:630-640`: degenerate classes are now identified up front
+with an explicit `0 < labels[:, i].sum() < len(labels)` test, excluded from the macro average,
+listed in the results under `auc_skipped_class_indices`, and the result is checked with
+`np.isfinite` before it is written. **Catch this class of bug by testing the value, not the
+exception** — a function that returns `NaN` on bad input never enters your `except` block.
 
 ## O5. Token-length cache key misses tokenizer mutation
 
@@ -835,10 +862,39 @@ place changes neither its name nor the data, so a stale length cache is silently
 `model/hyperparameter_tuning.py:1` imports `optuna`, which appears in neither `pyproject.toml`
 nor `requirements.txt`. A clean `uv sync` produces an environment where that module cannot run.
 
-## O7. The lang-conditioning ablation has not been run
+## O7. The lang-conditioning ablation has not been run — resolved
 
-This is the one that matters. Everything in Part 1 makes the architecture's central claim
-*testable*. Nothing yet makes it *tested*.
+This was the one that mattered. Everything in Part 1 made the architecture's central claim
+*testable*; nothing had made it *tested*. It has now been run, and this section is what closes.
+
+Two 6-epoch runs identical except for `disable_lang_conditioning`, both scored on the same 35,658
+test rows with thresholds tuned on validation, compared by a paired bootstrap over test rows:
+
+```
+MACRO AUC   treatment 0.9852   control 0.9849   diff +0.0003
+            95% CI [-0.0007, +0.0012]   p = 0.588
+```
+
+**No detectable effect.** The interval includes zero. Three of the seven languages are worse with
+conditioning on, and English moves −0.0006 against a non-English mean of +0.0003 — the reverse of
+where a working language signal would show up.
+
+This is a **measured null result, not a failure.** The mechanism is correct now; it simply does not
+improve results on this data, which is a different and more useful statement than "it did not
+work". XLM-RoBERTa is pretrained on 100 languages and must already encode which one it is reading,
+so an explicit per-language bias supplies something the backbone already had. Practically, it means
+`lang_ids` can be omitted at inference with no measurable cost.
+
+**The part worth remembering.** Per-epoch *validation* macro AUC favoured the treatment in all six
+epochs (mean +0.0007, sign-test p ≈ 0.016). That looks like a small consistent effect, and it did
+not survive on test. The checkpoint was selected on validation, so the comparison inherited that
+optimism. Reporting validation numbers — as the original project did — would have concluded the
+architecture works.
+
+Full design, per-class and per-language breakdowns:
+[experiments/ablation_language_conditioning.md](../experiments/ablation_language_conditioning.md).
+Evaluations: `evaluation_results/eval_20260830_072515` (treatment) and `eval_20260830_123615`
+(control).
 
 ## O8. `class_adjustments` is fabricated and now live
 
@@ -849,8 +905,9 @@ byte identical, `tr` differs in a single position, and the annotations do not ma
 It is applied at `model/training_config.py:159-160`, multiplying the weight row for every sample.
 
 This was inert for as long as class weighting was broken. Fixing [issue #3](#3-class-weighting-never-runs)
-turned it on. It is a small effect — the multipliers are all between 0.85 and 1.1 — but it is an
-unjustified one, and it is in the run currently training.
+turned it on. It is a small effect — the multipliers are all between 0.85 and 1.1, about 3.5% mean
+weight distortion — but it is an unjustified one, and it was active in the run that produced the
+current model. It was active identically in both ablation arms, so it cancels there.
 
 Fix when someone gets to it: either derive the table from `analysis/compute_class_weights.py` on
 the real split, or set every row to 1.0 and delete it. Do not leave a number in the loss whose
@@ -858,10 +915,10 @@ provenance nobody can state.
 
 ---
 
-# What would make the central claim testable
+# What made the central claim testable
 
-The old version of this list is superseded. Items 1, 2 and 3 are done; the reasoning behind item
-1 was itself wrong, and is corrected in [issue #1](#1-the-language-aware-attention-is-a-no-op).
+The old version of this list is superseded. The reasoning behind item 1 was itself wrong, and is
+corrected in [issue #1](#1-the-language-aware-attention-is-a-no-op). Every row is now done.
 
 | Requirement | Status |
 | --- | --- |
@@ -869,9 +926,9 @@ The old version of this list is superseded. Items 1, 2 and 3 are done; the reaso
 | Per-epoch validation with per-class AUC and model selection | Done — `model/train.py:558` |
 | Thresholds tuned on `val`, metrics reported on `test` | Done — `model/evaluation/evaluate.py:1011` |
 | The encoder must actually train | Done — 0.8% to 54.4% of parameters receiving gradient |
-| **Run the ablation: language conditioning on vs off** | **Not done** |
+| **Run the ablation: language conditioning on vs off** | **Done — no measurable effect, see [O7](#o7-the-lang-conditioning-ablation-has-not-been-run--resolved)** |
 
-## The ablation is now runnable, and it was not before
+## How the ablation is run
 
 Previously there was no way to turn language conditioning off without editing the model. Now
 there is:
@@ -889,18 +946,17 @@ seed, same schedule, same everything.
 Runs are tagged `run.kind = control` or `treatment` in MLflow (`model/train.py:872-874`), so the
 two are directly comparable in the tracking UI rather than by hand.
 
-**What the result would mean.** If the treatment run beats the control on macro AUC by more than
-run-to-run noise, language conditioning helps and the architecture earns its name. If the gap is
-zero, it does not help on this data — and that is a legitimate, publishable finding, and a more
-useful one than an unverified architecture. The point of the ablation is that both outcomes are
-informative. It has to actually be run.
+Both outcomes were informative in advance, which is the point of an ablation: a gap larger than
+run-to-run noise would have meant the architecture earns its name, and a gap of zero is a
+legitimate finding and a more useful one than an unverified architecture. The measured answer is
+zero — [O7](#o7-the-lang-conditioning-ablation-has-not-been-run--resolved).
 
 ---
 
 # Reference numbers
 
-Included so the sections above can cite something concrete. **Training is still running. These
-are not final results.**
+Included so the sections above can cite something concrete. Full breakdowns, protocol and caveats
+are in [docs/RESULTS.md](RESULTS.md); this is the short version.
 
 ## Baseline: April epoch-2 checkpoint, test split
 
@@ -926,24 +982,32 @@ Note the shape of it: `toxic` has 17,697 positives and an F1 of 0.90; `threat` h
 of 0.42. The macro average treats those equally, which is why macro F1 (0.53) is so far below
 weighted F1 (0.77). Macro is the honest number when rare classes are the point.
 
-## New run, epoch 1 of 6, validation split
+## Retrained model, test split
 
-**Not comparable like-for-like to the table above** — different split, and one epoch of six.
-Recorded because it is the only evidence currently available that the fixes changed anything.
+`weights/toxic_classifier_xlmr_v2/best_model`, epoch 5 of 6, selected on validation macro AUC.
+Same protocol as the table above — thresholds tuned on validation, metrics reported on test — so
+the two are directly comparable.
 
-Macro AUC **0.9578**.
+Macro AUC **0.9852** | macro F1 0.8821 at 0.5, 0.8814 tuned | weighted F1 0.9332 | exact match
+0.8772
 
-| Class | Epoch-1 val AUC | April test AUC | Difference (cross-split, indicative only) |
-| --- | --- | --- | --- |
-| toxic | 0.9873 | 0.9666 | +0.0207 |
-| obscene | 0.9629 | 0.9278 | +0.0351 |
-| threat | 0.9617 | 0.9051 | +0.0566 |
-| insult | 0.9488 | 0.9035 | +0.0453 |
-| identity_hate | 0.9440 | 0.8866 | +0.0574 |
-| severe_toxic | 0.9423 | 0.8988 | +0.0435 |
+| Class | AUC | Precision | Recall | F1 | April F1 | Support |
+| --- | --- | --- | --- | --- | --- | --- |
+| toxic | 0.9921 | 0.953 | 0.975 | 0.9641 | 0.9038 | 17,697 |
+| obscene | 0.9899 | 0.942 | 0.934 | 0.9378 | 0.7392 | 8,626 |
+| insult | 0.9855 | 0.920 | 0.927 | 0.9235 | 0.7248 | 10,199 |
+| identity_hate | 0.9818 | 0.896 | 0.842 | 0.8680 | 0.4370 | 1,891 |
+| severe_toxic | 0.9863 | 0.714 | 0.801 | 0.7549 | 0.3980 | 1,648 |
+| threat | 0.9755 | 0.885 | 0.800 | 0.8403 | 0.4189 | 766 |
 
-The rare classes move most, which is the direction the class-weighting fix predicts. Treat this
-as a sanity check that the pipeline is now doing something, not as a result.
+Per-language macro AUC: en 0.9902, it 0.9893, es 0.9882, fr 0.9877, pt 0.9832, ru 0.9790,
+tr 0.9726. Best-to-worst spread collapsed from 0.0519 to 0.0176.
+
+The rare classes moved most, which is the direction the encoder and class-weighting fixes predict.
+Note that macro F1 rose four times as much as macro AUC (+0.2778 against +0.0704): AUC only
+measures ranking, and the linear probe already ranked acceptably. F1 depends on probability
+separation, which is what a frozen encoder cannot produce. That comparison is worked through in
+[docs/RESULTS.md](RESULTS.md#why-f1-gained-four-times-what-auc-did).
 
 ## Environment and throughput
 
@@ -953,7 +1017,8 @@ as a sanity check that the pipeline is now doing something, not as a result.
 | Software | Python 3.11, torch 2.6.0+cu124, uv with `pyproject.toml` + `uv.lock` |
 | Dependencies | 27 declared, 160 locked (was 259 frozen packages in `requirements.txt`) |
 | April config | batch 128, 55.5 min/epoch, no validation, 3 of 6 epochs |
-| New config | batch 64 x grad_accum 2 (same effective 128), 35.4 min/epoch including validation |
+| New config | batch 64 x grad_accum 2 (same effective 128), 6 of 6 epochs |
+| Measured, retrain | 35.4-38.6 min/epoch training plus 5.5 min validation; 4h20m total for 6 epochs |
 | April peak memory at batch 128 / seq 512 | 18.30 GB against a 22.29 GB usable cap — real OOM risk |
 | New peak memory | 11.36 GB |
 

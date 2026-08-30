@@ -177,9 +177,14 @@ TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train
 ```
 
 The run is tagged `run.kind=control` vs `treatment` in MLflow (`train.py:871-877`) so the two arms
-can be compared from the run table. **This ablation has not been run yet.** Until it is, "language
-conditioning helps" remains a hypothesis; all that has been established is that the mechanism is no
-longer inert.
+can be compared from the run table.
+
+**The ablation has been run.** With the mechanism working, conditioning on language makes no
+measurable difference: +0.0003 macro AUC on test, 95% CI [−0.0007, +0.0012]. So everything above
+describes a bias that now genuinely reshapes attention and that the model does not need. One
+practical consequence: `lang_ids` can be omitted at inference with no measurable cost. Numbers and
+method in [docs/RESULTS.md](RESULTS.md#the-language-conditioning-ablation) and
+[experiments/ablation_language_conditioning.md](../experiments/ablation_language_conditioning.md).
 
 ## The loss
 
