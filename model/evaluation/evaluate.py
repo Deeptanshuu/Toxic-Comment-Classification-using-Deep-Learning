@@ -1,5 +1,6 @@
 import torch
 from model.language_aware_transformer import LanguageAwareTransformer
+from model.data.collate import DynamicPadCollator
 from transformers import XLMRobertaTokenizer, AutoTokenizer
 import pandas as pd
 import numpy as np
@@ -35,8 +36,9 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segmen
 logger = logging.getLogger(__name__)
 
 # Disk cache for ToxicDataset.token_lengths (exact per-sample token counts),
-# keyed by row count + max_length + tokenizer + a content hash so a stale
-# cache is never reused across a data or config change.
+# keyed by row count + max_length + tokenizer name/vocab size/added-vocab hash
+# + a content hash, so a stale cache is never reused across a data, config, or
+# tokenizer-vocabulary change (docs/KNOWN_ISSUES.md, O5).
 TOKEN_LENGTH_CACHE_DIR = Path('cache')
 
 class ToxicDataset(Dataset):
@@ -143,6 +145,25 @@ class ToxicDataset(Dataset):
         max_length = self.config.max_length
         tokenizer_name = getattr(self.tokenizer, 'name_or_path', self.tokenizer.__class__.__name__)
 
+        # `len(tokenizer)` and the added-vocab contents, not just its name, so
+        # that add_tokens(...) (or any other in-place vocabulary mutation) after
+        # from_pretrained invalidates the cache instead of silently returning
+        # stale lengths computed under the old vocabulary (docs/KNOWN_ISSUES.md,
+        # O5). name_or_path alone never changes when a tokenizer is mutated in
+        # memory, which is exactly what let the old key miss this.
+        try:
+            vocab_size = len(self.tokenizer)
+            added_vocab = self.tokenizer.get_added_vocab()
+            added_vocab_repr = ','.join(
+                f"{token}:{token_id}" for token, token_id in sorted(added_vocab.items(), key=lambda kv: kv[1])
+            )
+        except Exception as e:
+            logger.warning(f"token_lengths: could not read tokenizer vocab state ({e}); cache key will not "
+                            "reflect vocabulary mutations")
+            vocab_size = -1
+            added_vocab_repr = ''
+        vocab_hash = hashlib.md5(added_vocab_repr.encode('utf-8')).hexdigest()[:16]
+
         try:
             content_hash = hashlib.md5(
                 pd.util.hash_pandas_object(self.df['comment_text'], index=False).values.tobytes()
@@ -153,7 +174,7 @@ class ToxicDataset(Dataset):
                 '\n'.join(self.df['comment_text'].astype(str)).encode('utf-8', errors='ignore')
             ).hexdigest()
 
-        cache_key = f"{n}_{max_length}_{tokenizer_name}_{content_hash}"
+        cache_key = f"{n}_{max_length}_{tokenizer_name}_{vocab_size}_{vocab_hash}_{content_hash}"
         cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:16]
         cache_path = TOKEN_LENGTH_CACHE_DIR / f"token_lengths_{cache_key_hash}.npy"
 
@@ -940,8 +961,14 @@ def main():
                            'docs/RESULTS.md. Kept only for comparison against old results; not the default.')
     parser.add_argument('--dynamic_padding', action='store_true',
                       help='Tokenize samples without fixed-length padding instead of padding every sample to --max_length. '
-                           'Needs a length-aware collate_fn to batch variable-length samples, which this script does not '
-                           'provide, so it defaults to off here to keep this DataLoader working standalone.')
+                           'The DataLoader below always uses DynamicPadCollator (model/data/collate.py), so this works '
+                           'correctly either way; padding is masked out, so predictions are unaffected to floating-point '
+                           'noise (see docs/KNOWN_ISSUES.md, O3). Defaults to off because this script iterates a plain '
+                           'sequential DataLoader with no length-bucketed sampler, so most batches already contain a '
+                           'near-max_length sample and dynamic padding saves little.')
+    parser.add_argument('--pad_to_multiple_of', type=int, default=8,
+                      help='Round each batch\'s padded length up to a multiple of this many tokens when '
+                           '--dynamic_padding is set (tensor-core alignment). Matches training default.')
     parser.add_argument('--batch_size', type=int, default=64,
                       help='Batch size for evaluation')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
@@ -978,6 +1005,7 @@ def main():
         'test_file': args.test_file,
         'single_split_eval': args.single_split_eval,
         'dynamic_padding': args.dynamic_padding,
+        'pad_to_multiple_of': args.pad_to_multiple_of,
         'batch_size': args.batch_size,
         'num_workers': args.num_workers,
         'cache_dir': args.cache_dir,
@@ -1011,6 +1039,12 @@ def main():
                 raise ValueError(f"Missing label columns in {split_name} dataset: {missing_columns}")
 
             dataset = ToxicDataset(df, tokenizer, args)
+            # DynamicPadCollator pads ragged samples to the batch max (rounded to
+            # pad_to_multiple_of) when --dynamic_padding produces unpadded 1-D
+            # tensors, and just stacks them unchanged when every sample is
+            # already statically padded to max_length -- so it's correct and
+            # unconditional either way (see docs/KNOWN_ISSUES.md, O3).
+            collator = DynamicPadCollator(tokenizer, pad_to_multiple_of=args.pad_to_multiple_of)
             loader = DataLoader(
                 dataset,
                 batch_size=args.batch_size,
@@ -1019,6 +1053,7 @@ def main():
                 pin_memory=True,
                 prefetch_factor=args.prefetch_factor,
                 persistent_workers=True if args.num_workers > 0 else False,
+                collate_fn=collator,
                 drop_last=False
             )
             return loader

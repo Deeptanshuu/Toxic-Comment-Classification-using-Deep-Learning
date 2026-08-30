@@ -11,8 +11,10 @@ This version is a post-mortem. It covers three things:
    wrong or incomplete; those are called out.
 2. **Found during the fix** — five bugs the original audit missed completely. One of them killed
    the April training run.
-3. **Still open** — what is still broken, how bad it is, and whether it touches any reported
-   number.
+3. **Found after the first pass** — eight more bugs found in a second audit pass, tracked as O1
+   through O8. All eight have since been fixed or resolved. This section stays separate from
+   Part 1 rather than being merged into it, since Part 1's numbering is specifically the
+   original eleven.
 
 Work is on branch `fix/training-correctness`. The retrain has since finished and been evaluated on
 the held-out test split; the headline numbers live in [docs/RESULTS.md](RESULTS.md) and are
@@ -72,12 +74,12 @@ real work.
 | Serving truncated at 128 tokens | E | Missed entirely | Fixed | Serving only, 15.68% of comments |
 | Threshold search MRO bug, and the CV wrapper around it | O1 | New | Fixed | Yes — the tuned-threshold F1 |
 | `best_score_` mislabelled | O2 | New | Fixed | Reported F1 only |
-| `--dynamic_padding` crashes | O3 | New | **Open** | No |
+| `--dynamic_padding` crashes | O3 | New | Fixed | No |
 | `roc_auc_score` returns NaN | O4 | New | Fixed | Only on degenerate classes |
-| Token-length cache key | O5 | New | **Open** | No |
-| `optuna` undeclared | O6 | New | **Open** | No |
+| Token-length cache key | O5 | New | Fixed | No |
+| `optuna` undeclared | O6 | New | Resolved | No |
 | The ablation has not been run | O7 | Carried over | Resolved | It has now been run — no measurable effect |
-| `class_adjustments` is fabricated and now live | O8 | Half of issue 6 | **Open** | Yes — it was active in the retrain |
+| `class_adjustments` is fabricated and now live | O8 | Half of issue 6 | Fixed | Yes — it was active in the retrain |
 
 ---
 
@@ -453,13 +455,15 @@ Fixed: `LANG_THRESHOLD_ADJUSTMENTS` is deleted (`model/language_aware_transforme
 just the sigmoid). `mode` is retained as an accepted-and-ignored argument, with a comment saying
 why, so the existing serving call does not break.
 
-**The second table is not fixed, and is now worse.** `class_adjustments`
-(`model/training_config.py:122-130`) has the same problem: five of its six non-English rows are
-byte identical, `tr` differs in one position, and the comments contradict the values (`ru` is
-annotated "Russian has more insults" and then multiplies the insult weight by 0.9, downward).
-Until this branch it was harmless because class weighting never ran. Now that
-[issue #3](#3-class-weighting-never-runs) is fixed, this table multiplies every per-language
-class weight on every batch. It is carried as [O8](#o8-class_adjustments-is-fabricated-and-now-live).
+**The second table had the same problem, and for a while was worse.** `class_adjustments`
+(it sat where `model/training_config.py:120-127` now carries a comment explaining its removal)
+shared the same flaw: five of its six non-English rows were byte identical, `tr` differed in
+one position, and the comments contradicted the values (`ru` was annotated "Russian has more
+insults" and then multiplied the insult weight by 0.9, downward). Until this branch it was
+harmless because class weighting never ran. Once [issue #3](#3-class-weighting-never-runs) was
+fixed, it started multiplying every per-language class weight on every batch, unjustified and
+now live — tracked as [O8](#o8-class_adjustments-is-fabricated-and-now-live--fixed), where it
+has since been removed.
 
 **What this means in practice.** "Nothing calls it" is a claim about the whole repository, and
 this one was checked against two files out of the three that matter. Serving code is easy to
@@ -749,19 +753,19 @@ that was never measured.
 
 # Part 3 — Found after the first pass
 
-O1, O2, O4 and O7 have since been dealt with and are marked so. The rest are open. Severity is
-about consequence, not effort.
+All eight have since been dealt with and are marked so. Severity is about consequence, not
+effort — it describes the bug as found, not the size of the fix.
 
 | Issue | Ref | Where | Severity | Status | Affects reported numbers |
 | --- | --- | --- | --- | --- | --- |
 | Threshold search used a meaningless CV wrapper | O1 | `model/evaluation/evaluate.py:336` | Medium | Fixed | Yes — the tuned-threshold F1 |
 | `best_score_` reported as "the F1 at this threshold" | O2 | `model/evaluation/evaluate.py:365` | Low | Fixed | The tuned-threshold F1 only |
-| `--dynamic_padding` always crashes | O3 | `model/evaluation/evaluate.py:941` | Low | **Open** | No |
+| `--dynamic_padding` always crashes | O3 | `model/evaluation/evaluate.py:1047-1056` | Low | Fixed | No |
 | `roc_auc_score` returns NaN instead of raising | O4 | `model/evaluation/evaluate.py:630-640` | Low | Fixed | Only on degenerate classes |
-| Token-length cache key misses tokenizer mutation | O5 | `model/evaluation/evaluate.py:156` | Low | **Open** | No |
-| `optuna` imported but undeclared | O6 | `model/hyperparameter_tuning.py:1` | Low | **Open** | No |
+| Token-length cache key misses tokenizer mutation | O5 | `model/evaluation/evaluate.py:155-177` | Low | Fixed | No |
+| `optuna` imported but undeclared | O6 | `model/hyperparameter_tuning.py` (deleted) | Low | Resolved | No |
 | The lang-conditioning ablation has not been run | O7 | — | **High** | Resolved | It has been run — no measurable effect |
-| `class_adjustments` is fabricated and now live | O8 | `model/training_config.py:122-130` | Medium | **Open** | Yes — it was active in the retrain |
+| `class_adjustments` is fabricated and now live | O8 | `model/training_config.py:120-127` | Medium | Fixed | Yes — it was active in the retrain |
 
 ## O1. The threshold search was a meaningless cross-validation — fixed
 
@@ -822,13 +826,49 @@ threshold, not the F1 you get by applying that threshold to the data. The two di
 the fold problem from O1. It was reported under the key `'f1_score'`, which invites the wrong
 reading. Removed along with the `GridSearchCV` wrapper; the field now holds the achieved F1.
 
-## O3. `--dynamic_padding` always crashes
+## O3. `--dynamic_padding` always crashes — fixed
 
-The flag tokenizes without padding, producing variable-length samples, and the script's
-`DataLoader` has no `collate_fn` to batch them. It fails immediately. The help text at
-`model/evaluation/evaluate.py:904-906` now says so, and the flag defaults to off, but the flag
-still exists and still crashes when used. Training has a working collator
-(`model/data/collate.py`); evaluation does not use it.
+The flag tokenized without padding, producing variable-length samples, and the script's
+`DataLoader` had no `collate_fn` to batch them, so it failed on the first batch. Training
+already had a working collator for exactly this problem, `DynamicPadCollator`
+(`model/data/collate.py:3`), that `evaluate.py` simply never imported.
+
+Fixed by wiring the same collator into `evaluate.py`'s `DataLoader`
+(`model/evaluation/evaluate.py:1047-1056`) — unconditionally, not only when `--dynamic_padding`
+is passed. `DynamicPadCollator` pads ragged samples up to the batch max (rounded up to
+`--pad_to_multiple_of`, default 8, matching training) when padding was left to collate time, and
+just stacks samples unchanged when every one already arrives statically padded to `max_length`,
+so the one collator is correct either way. A new `--pad_to_multiple_of` flag exposes the
+rounding.
+
+**Verification.** Padding is only a correctness no-op if the attention mask actually blocks the
+padded positions from the model's output, so this was checked by running the evaluator, not by
+reading the mask logic and assuming. 288 rows were sampled from the test split — stratified
+across all seven languages, plus the eight longest comments in the split, to exercise
+truncation at `max_length=512` — and evaluated twice against
+`weights/toxic_classifier_xlmr_v2/best_model` with `--single_split_eval` and everything else
+held fixed: once with the default static padding, once with `--dynamic_padding`.
+
+| Quantity | Value |
+| --- | --- |
+| Labels and language ids, the two runs | Byte-identical, all 288 rows |
+| Max absolute difference in predicted probabilities | 2.31e-06 |
+| Mean absolute difference | 5.64e-08 |
+| Probabilities differing by more than 1e-5 | 0 of 1,728 |
+| Binary decisions at threshold 0.5 | Identical in both runs |
+| Macro F1, default / tuned threshold | 0.871 / 0.885 in both runs |
+
+2.3e-06 is float32 rounding noise from the padded matmul taking a different shape, not a signal
+— the same order of magnitude as the noise floor measured for the language-bias check in
+[issue #1](#1-the-language-aware-attention-is-a-no-op). The flag now does what its help text
+says.
+
+**Left as-is on purpose:** the default stays off. This script iterates a plain sequential
+`DataLoader` with no length-bucketed sampler, unlike training's
+`MultilabelStratifiedSampler`, so most batches already contain something close to a
+`max_length`-token comment and get padded up to it regardless — the same "dynamic padding alone
+is worth nothing without bucketing" finding as [item B](#b-the-sampler-drew-with-replacement).
+The flag is correct to use now; it just has little to offer here.
 
 ## O4. `roc_auc_score` returns NaN instead of raising — fixed
 
@@ -851,16 +891,92 @@ listed in the results under `auc_skipped_class_indices`, and the result is check
 `np.isfinite` before it is written. **Catch this class of bug by testing the value, not the
 exception** — a function that returns `NaN` on bad input never enters your `except` block.
 
-## O5. Token-length cache key misses tokenizer mutation
+## O5. Token-length cache key misses tokenizer mutation — fixed
 
-The cache key is `row count + max_length + tokenizer name + content hash`
-(`model/evaluation/evaluate.py:156`). Adding special tokens or otherwise mutating a tokenizer in
-place changes neither its name nor the data, so a stale length cache is silently reused.
+The cache key was `row count + max_length + tokenizer name + content hash`
+(`model/evaluation/evaluate.py:156` before this fix). Adding tokens or otherwise mutating a
+tokenizer in place after `from_pretrained` changes neither its `name_or_path` nor the text being
+hashed, so the key was unaffected and a stale length cache could be silently reused.
 
-## O6. `optuna` imported but undeclared
+Fixed at `model/evaluation/evaluate.py:155-177`: the key now also includes `len(self.tokenizer)`
+and a hash of `self.tokenizer.get_added_vocab()`'s `(token, id)` pairs, sorted by id. Vocabulary
+size covers the common case (tokens added); the sorted-content hash also covers the pathological
+case where size is unchanged but the added vocabulary's contents differ (one added token swapped
+for another, or added in a different order).
 
-`model/hyperparameter_tuning.py:1` imports `optuna`, which appears in neither `pyproject.toml`
-nor `requirements.txt`. A clean `uv sync` produces an environment where that module cannot run.
+**Verification.** Constructed the exact failure the issue describes. Built a two-row toy dataset
+containing the string `zzqxjklverqbnotarealword`, which XLM-R's tokenizer splits into 12
+subword pieces; computed and cached `token_lengths`; called
+`tokenizer.add_tokens(["zzqxjklverqbnotarealword"])`, which collapses that string to a single
+piece; then read `token_lengths` again from a fresh `ToxicDataset` sharing the same, now-mutated
+tokenizer object:
+
+| Step | Cache file | Length |
+| --- | --- | --- |
+| Before `add_tokens` | `token_lengths_6a9e4bdfc961a8f4.npy` | 18 tokens |
+| After `add_tokens` | `token_lengths_a1cd062e9781b998.npy` (new file) | 7 tokens |
+
+A different cache file was written — a cache miss, not a stale hit — and the recomputed length
+reflects the new one-piece segmentation. Separately confirmed the reported bug directly: hashing
+the *old* key's inputs (row count, max_length, tokenizer name, content hash only) gives the
+identical hash before and after `add_tokens`, which is exactly the collision that would have
+served the pre-mutation cache file both times.
+
+**A related gap, not fixed here and not covered by this fix:**
+`_fast_tokenizer_for_lengths()` (`model/evaluation/evaluate.py:89-129`) reloads a fresh tokenizer
+from disk via `AutoTokenizer.from_pretrained(name_or_path, ...)` whenever `self.tokenizer` is a
+slow tokenizer — which is what `evaluate.py`'s `load_model` and `train.py` both construct. That
+reload does not carry over `add_tokens` calls made on the slow tokenizer instance, so if the
+production tokenizer were ever mutated in place, length computation itself — not just its cache
+— would silently run against an unmutated copy. The verification above used a fast tokenizer
+directly as `self.tokenizer` specifically to bypass that reload path and isolate the cache-key
+fix. Nothing in this repository currently mutates a tokenizer after construction, so this is a
+latent gap rather than an active bug, but it is a separate one from the cache key and this fix
+does not close it.
+
+## O6. `optuna` imported but undeclared — resolved
+
+`model/hyperparameter_tuning.py:1` imported `optuna`, which appeared in neither
+`pyproject.toml` nor `requirements.txt` — reconfirmed here: absent from both dependency files,
+and not importable in either `.venv` or `.venv-uv`. A clean environment could not even import
+the module.
+
+The missing dependency turned out to be the smaller problem. `HyperparameterTuner.objective()`
+called `TrainingConfig(**config_params)` with `config_params` including `fp16`, `distributed`,
+`world_size` and `num_workers` — none of which are fields on the current `TrainingConfig`
+(`model/training_config.py`). Reproduced directly, with `optuna` irrelevant to the failure:
+
+```
+TypeError: TrainingConfig.__init__() got an unexpected keyword argument 'fp16'
+```
+
+That fires before the first trial does anything. The same method also read `train()`'s return
+value as a dict — `metrics['val/auc']`, `metrics['val/loss']`, `metrics['train/loss']` — but
+`train()` returns a `MetricsTracker` (`model/training_config.py:198`), a dataclass with
+attributes `best_auc`, `val_losses`, `val_aucs` and no `__getitem__`, so none of those three
+lookups would work either. It also drove its own `wandb.init()` / `wandb.log()` calls, orphaned
+since training moved to `model/tracking.py` ([issue #11](#11-training-did-not-finish)). Three
+independent breaks, and the declared dependency was the only one this issue originally asked
+about.
+
+Grepped the repository for callers: none. The only mentions anywhere outside this document were
+a listing in `docs/MODEL.md`'s file tree and a `pyproject.toml` comment that cited it alongside
+`train.py` as a reason `scikit-learn` is a core dependency. `git log` shows three commits ever
+touching the file, the most recent from the original 2025 project, none since on this branch.
+There is no `tests/` directory, so nothing exercises it there either.
+
+Declaring `optuna` in `pyproject.toml` would have added a dependency for a script that still
+cannot run — the same shape of problem as shipping a `--dynamic_padding` flag that crashes
+whenever it's used ([O3](#o3---dynamic_padding-always-crashes--fixed)). Deleted
+`model/hyperparameter_tuning.py` instead, recoverable from git history at any point before this
+change. The two now-dangling mentions went with it: the file listing in `docs/MODEL.md`, and the
+`pyproject.toml` comment, reworded since `train.py` alone already carries that argument for
+keeping `scikit-learn` a core dependency rather than an optional one — it imports `ToxicDataset`
+from `model/evaluation/evaluate.py`, which imports `scikit-learn` at module level.
+
+If hyperparameter search is wanted again, it needs writing against the current `TrainingConfig`
+and `MetricsTracker`, not repairing — there's no path from the file as it stood to something
+that runs which is smaller than a rewrite.
 
 ## O7. The lang-conditioning ablation has not been run — resolved
 
@@ -896,22 +1012,35 @@ Full design, per-class and per-language breakdowns:
 Evaluations: `evaluation_results/eval_20260830_072515` (treatment) and `eval_20260830_123615`
 (control).
 
-## O8. `class_adjustments` is fabricated and now live
+## O8. `class_adjustments` is fabricated and now live — fixed
 
-The other half of [issue #6](#6-hardcoded-per-language-tables-are-copy-paste).
-`model/training_config.py:122-130` holds a per-language, per-class multiplier table presented as
-"class-specific adjustments based on statistical analysis". Five of the six non-English rows are
-byte identical, `tr` differs in a single position, and the annotations do not match the numbers.
-It is applied at `model/training_config.py:159-160`, multiplying the weight row for every sample.
+The other half of [issue #6](#6-hardcoded-per-language-tables-are-copy-paste), and already
+resolved by the time this was checked: `class_adjustments` is gone from
+`model/training_config.py`, removed in `426bd36` ("chore: Apache-2.0 licence, and remove the
+fabricated class_adjustments table"). Confirmed by reading the current file rather than trusting
+the commit message — `grep -rn "class_adjustments"` across every `.py` file in the repository
+matches nothing but the removal comment left in its place (`model/training_config.py:120-127`),
+and the weight computation now goes straight from building `weights`/`alpha`/`gamma` per language
+to normalizing them, with no multiplier table in between.
 
-This was inert for as long as class weighting was broken. Fixing [issue #3](#3-class-weighting-never-runs)
-turned it on. It is a small effect — the multipliers are all between 0.85 and 1.1, about 3.5% mean
-weight distortion — but it is an unjustified one, and it was active in the run that produced the
-current model. It was active identically in both ablation arms, so it cancels there.
+For context: the table was a per-language, per-class multiplier presented as "class-specific
+adjustments based on statistical analysis." It was not — five of its six non-English rows were
+byte identical, `tr` differed in a single position, and the annotations contradicted the values
+(`ru` was annotated "Russian has more insults" and then multiplied the insult weight by 0.9,
+downward). It was inert for as long as class weighting was broken; fixing
+[issue #3](#3-class-weighting-never-runs) turned it on, at which point it multiplied every
+per-language class weight on every batch — a small effect (multipliers between 0.85 and 1.1,
+about 3.5% mean weight distortion) but an unjustified one.
 
-Fix when someone gets to it: either derive the table from `analysis/compute_class_weights.py` on
-the real split, or set every row to 1.0 and delete it. Do not leave a number in the loss whose
-provenance nobody can state.
+It was left active through the language-conditioning ablation on purpose — removing it from only
+one arm would have broken the comparison — so it was still live for the run behind the reference
+numbers in this document, identically in both arms, where it cancels. With the ablation finished
+([O7](#o7-the-lang-conditioning-ablation-has-not-been-run--resolved)) it had no remaining
+purpose. The commit's own verification, from its message: weights non-uniform 0.59 to 1.61 after
+removal, alpha normalized to mean 1.0 — the weighting still behaves, just without the fabricated
+multiplier stacked on top.
+
+No code changed as part of closing this entry; it only updates the record to match `426bd36`.
 
 ---
 

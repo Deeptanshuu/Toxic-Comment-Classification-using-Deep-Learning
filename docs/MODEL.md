@@ -584,7 +584,6 @@ model/
 ├── data/collate.py                 # DynamicPadCollator
 ├── predict.py                      # single/batch prediction helpers
 ├── inference_optimized.py          # OptimizedToxicityClassifier used by the demo apps
-├── hyperparameter_tuning.py        # Optuna sweep
 └── evaluation/evaluate.py          # ToxicDataset, metrics, threshold search, plots
 ```
 
