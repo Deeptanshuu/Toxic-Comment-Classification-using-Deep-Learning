@@ -46,7 +46,15 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
        ablation. It REFUSES to start the ablation if the run ended early.
 3. [~] AUTOMATED by the same script. Control run uses scripts/run_ablation.py ->
        weights/toxic_classifier_xlmr_v2_ablation, MLflow tag run.kind=control.
-4. [ ] Compare treatment vs control -> does language conditioning actually help?
+4. [~] READY: scripts/compare_ablation.py. Paired bootstrap over test rows
+       (both arms score the SAME rows, so unpaired would overstate uncertainty),
+       2000 resamples, per-class and per-language breakdown. Reports effect size
+       WITH significance because n=35,658 makes trivial diffs "significant".
+       Smoke-tested by comparing an eval to itself: diff exactly 0.0000, p=1.000.
+       Run: python scripts/compare_ablation.py <treat_eval_dir> <control_eval_dir>
+       KEY TEST: if lang conditioning is real, the gain concentrates in
+       NON-ENGLISH languages. A uniform lift across all 7 means a better run,
+       not a working language signal. The script says this in words.
 5. [ ] Improvements to try, in rough value order (see IDEAS below)
 
 ## While waiting (safe, no GPU contention)
