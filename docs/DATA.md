@@ -214,7 +214,11 @@ the model recognized something it already memorized wearing a light disguise. Th
 does anyway, making the judged performance look better than true generalization would. The size of
 the effect here is small (well under 4%, and only in two of seven languages), but it means English
 and Russian val metrics are mildly optimistic on top of the caveats already in
-[RESULTS.md](RESULTS.md).
+[RESULTS.md](RESULTS.md#caveats).
+
+This is one more reason the headline numbers are reported on `test` rather than `val`. `val` is
+where the per-class thresholds are fitted, so it carries both this leakage and the optimism of
+being the split a parameter was fitted on. `test` carries neither.
 
 ## How training reads this data
 

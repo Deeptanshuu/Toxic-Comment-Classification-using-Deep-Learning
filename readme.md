@@ -5,22 +5,23 @@ XLM-RoBERTa-large. Each comment gets 6 independent yes/no scores: `toxic`, `seve
 `obscene`, `threat`, `insult`, `identity_hate`. "Multi-label" means the labels are not exclusive —
 one comment can be `toxic` and `insult` and nothing else, or all six at once.
 
-The design idea being tested is *language-conditioned attention*: the model is told which language
-it is reading, and that signal is allowed to change how the attention layer weighs the tokens. The
-hypothesis is that this beats plain XLM-R fine-tuning, which sees only the tokens.
+The architecture adds *language-conditioned attention*: the model is told which language it is
+reading, and that signal is allowed to change how the attention layer weighs the tokens. Whether
+that helps was the project's open question; it has now been measured, and the answer is in
+[docs/RESULTS.md](docs/RESULTS.md#the-language-conditioning-ablation).
 
 ## Status
 
-The project was archived in 2025 as a learning exercise with 11 documented bugs. It has since been
-audited and largely fixed on the `fix/training-correctness` branch. Three things you should know
-before you read anything else here.
+The 2025 version of this project shipped with 11 documented bugs. It has since been audited,
+fixed and retrained on the `fix/training-correctness` branch, and the retrained model is
+evaluated on the held-out test split. Two findings reframe everything that came before.
 
-**1. The published model never fine-tuned its backbone.** This is the finding that reframes the
-whole project, and nobody knew it until the audit. Fine-tuning means letting the weights of the
-pretrained network change during training. That never happened. Of 565M parameters, 4.8M — **0.8%**
-— actually received a gradient. All 381 weight tensors inside the XLM-RoBERTa encoder had
-`grad = None`, meaning PyTorch never computed a derivative for them, so the optimizer had nothing
-to update and they finished training bit-identical to how they started.
+**1. The published model never fine-tuned its backbone.** Nobody knew this until the audit.
+Fine-tuning means letting the weights of the pretrained network change during training. That never
+happened. Of 565M parameters, 4.8M — **0.8%** — actually received a gradient. All 381 weight
+tensors inside the XLM-RoBERTa encoder had `grad = None`, meaning PyTorch never computed a
+derivative for them, so the optimizer had nothing to update and they finished training
+bit-identical to how they started.
 
 What was really trained is a *linear probe*: a small trainable head sitting on top of a frozen
 feature extractor. The published 0.9147 macro AUC is a fair number for that, and a poor one for a
@@ -32,13 +33,6 @@ the output: feeding the same text with two different language IDs moved the logi
 which is float32 rounding noise. The fix, and the algebra behind why the repo's own proposed fix
 was also wrong, is in [docs/MODEL.md](docs/MODEL.md#the-language-bias-and-why-the-shape-is-the-whole-bug).
 The same two-language-ID test now moves the logits by 1.9e-01, five orders of magnitude more.
-
-**3. The decisive experiment has not been run yet.** Language conditioning now demonstrably does
-*something*. Whether that something *helps* is a separate question, answered only by training twice
-— once with real `lang_ids`, once with the language pathway switched off — and comparing. That
-ablation has not been run. Until it is, the project's central claim is testable but untested. If
-the gap turns out to be zero, that is a real finding too, and a more useful one than an unverified
-architecture.
 
 ### What actually received a gradient
 
@@ -72,14 +66,37 @@ the red box, is in [docs/MODEL.md](docs/MODEL.md#what-is-frozen-and-why).
 
 ### Numbers
 
-The only trustworthy numbers today are the baseline: the old epoch-2 checkpoint, thresholds tuned
-on `val` and reported on the held-out `test` split — macro AUC **0.9147**, macro F1 **0.5284** at a
-0.5 threshold and **0.6036** at tuned thresholds. AUC measures how well the model *ranks* comments
-(would a random positive score above a random negative?), F1 measures how well it *decides* once
-you pick a cut-off. A model can rank well and decide badly, and this one does.
+Retrained model versus the 2025 checkpoint. Both on the held-out `test` split, per-class thresholds
+tuned on `val` and applied unchanged:
 
-A full retrain on the fixed code is **currently running**, so there are no final numbers yet.
-Per-class and per-language breakdowns, and the caveats that go with them, are in
+| Metric | Retrained | 2025 | Delta |
+|---|---|---|---|
+| AUC (macro) | **0.9852** | 0.9147 | +0.0704 |
+| F1 (macro) | **0.8814** | 0.6036 | +0.2778 |
+| F1 (weighted) | **0.9332** | 0.7732 | +0.1600 |
+| Exact match | **0.8772** | 0.6194 | +0.2578 |
+
+AUC measures how well the model *ranks* comments (would a random positive score above a random
+negative?), F1 how well it *decides* once you pick a cut-off. A model can rank well and decide
+badly, and the 2025 one did — which is why F1 gained four times what AUC did once the encoder was
+actually training. Exact match is the share of comments where all six labels are right at once: 62%
+before, 88% now.
+
+![Threat probability distributions, old model versus new](docs/images/threat_probability_shift.png)
+
+That is the whole result in one picture. Both models rank `threat` well — AUC 0.905 against 0.975,
+a modest gap. But the old model's threat scores (pink) sit on top of the non-threat scores (grey)
+and mostly to the left of any sensible cut-off: **80% of real threats scored below 0.5**, so no
+threshold could separate them and F1 stalled at 0.419. The retrained model pushes the two
+distributions apart, only 16% of real threats fall below 0.5, and F1 reaches 0.840. Ranking barely
+moved; usability transformed.
+
+![F1 by class, old versus new](docs/images/f1_gains_by_class.png)
+
+The gains land where the old model was weakest. `identity_hate` and `threat` roughly doubled;
+`toxic`, already strong, moved least — it had the least room.
+
+Per-class and per-language breakdowns, the training curve, the ablation and the caveats are in
 [docs/RESULTS.md](docs/RESULTS.md). The audit trail — every bug, what it did, what is still open —
 is in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
@@ -96,8 +113,8 @@ Full details, including the extras (`serve`, `augment`, `analysis`) and how `req
 regenerated, are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 Weights are not committed. The demo apps read `weights/toxic_classifier_xlm-roberta-large/`, which
-holds the 2025 checkpoint; the current run writes to `weights/toxic_classifier_xlmr_v2/`, a separate
-directory so the checkpoint rotation cannot delete the old one.
+holds the 2025 checkpoint; the retrained model is `weights/toxic_classifier_xlmr_v2/best_model`, in
+a separate directory so the checkpoint rotation cannot delete the old one.
 
 ## Train and evaluate
 
@@ -111,7 +128,8 @@ uv run python -m model.evaluation.evaluate \
 
 Evaluation defaults are now correct — `--max_length 512` matching training, thresholds tuned on
 `val` and reported on `test` — but `--model_path` still defaults to the 2025 checkpoint directory,
-so pass it explicitly to score a new run. To run the control arm of the ablation:
+so pass it explicitly to score a new run. To run the control arm of the language-conditioning
+ablation:
 
 ```bash
 TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train
@@ -119,7 +137,10 @@ TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train
 
 That switch makes the model ignore `lang_ids` entirely
 (`model/language_aware_transformer.py:252`). The run is tagged `run.kind=control` in MLflow so the
-two arms can be compared from the run table.
+two arms can be compared from the run table. Both arms have been run; the comparison found no
+measurable effect from language conditioning, which means `lang_ids` can be omitted at inference
+with no measurable cost. See
+[experiments/ablation_language_conditioning.md](experiments/ablation_language_conditioning.md).
 
 ## Monitor a run
 

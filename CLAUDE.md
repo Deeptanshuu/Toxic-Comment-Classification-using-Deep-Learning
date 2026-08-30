@@ -16,10 +16,22 @@ freezes `list(_model.base_model.parameters())[:8]` and has no `model/tracking.py
 over-broad freeze (slicing the raw parameter list instead of naming modules caught the
 embedding matrix) plus `gradient_checkpointing_enable()` defaulting to `use_reentrant=True`
 on a frozen input, which silently drops the whole encoder's backward graph. Result: 4.8M of
-565M parameters (0.8%) received any gradient. Every historical number in this repo describes
+565M parameters (0.8%) received any gradient. Every **pre-2026** number in this repo describes
 a frozen XLM-R feature extractor with a small trainable head on top — not a fine-tuned model.
-Do not cite old numbers as if they measure the current architecture; `docs/RESULTS.md` and
-`docs/MODEL.md` say what does and does not carry over.
+Do not cite those as if they measure the current architecture.
+
+**Current numbers.** The branch has been retrained (6 epochs, best epoch 5,
+`weights/toxic_classifier_xlmr_v2/best_model`) and evaluated on the held-out test split with
+per-class thresholds tuned on `val`: macro AUC **0.9852**, macro F1 **0.8814**, weighted F1
+**0.9332**, exact match **0.8772**, against 0.9147 / 0.6036 / 0.7732 / 0.6194 for the April
+checkpoint. `docs/RESULTS.md` is the single source of truth for metrics — cite it, do not
+recompute from memory, and never report a val-split number as a headline result.
+
+**The language-conditioning ablation has been run.** It is a measured null result: +0.0003 macro
+AUC, 95% CI [−0.0007, +0.0012], p = 0.588. The mechanism is correct; it just does not improve
+results on this data. Do not describe it as a failure, do not drop it, and do not report the
+per-epoch validation numbers (which favoured the treatment 6/6) as the result — they did not
+survive on test. Practical upshot: `lang_ids` can be omitted at inference with no measurable cost.
 
 ## Landmines
 
@@ -59,7 +71,10 @@ Full explanations of all of these: `docs/DEVELOPMENT.md`.
 | Metrics, per-class/per-language, with caveats | `docs/RESULTS.md` |
 | Dataset provenance, splits, leakage checks | `docs/DATA.md` / `datacard.md` |
 | Environment setup, tmux layout, monitoring, evaluation flags | `docs/DEVELOPMENT.md` |
+| Ablation design, null result and paired bootstrap | `experiments/ablation_language_conditioning.md` |
+| Other measured negative results (per-language thresholds, label hierarchy) | `experiments/` |
 
-A training run is very likely live right now (`tmux ls` → session `toxic`, window `train`).
-Check before assuming otherwise: do not start a second run against the same `checkpoint_dir`,
-and do not kill tmux sessions you did not start.
+Before starting a training run, check whether one is already live (`tmux ls` → session `toxic`,
+window `train`, and `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader` as
+the authoritative check). Do not start a second run against the same `checkpoint_dir`, and do not
+kill tmux sessions you did not start.

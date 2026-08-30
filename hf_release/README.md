@@ -7,8 +7,7 @@ language:
   - fr
   - it
   - pt
-license: other
-license_name: "<<PENDING_LICENSE>>"
+license: apache-2.0
 library_name: transformers
 pipeline_tag: text-classification
 base_model: xlm-roberta-large
@@ -35,13 +34,13 @@ model-index:
         metrics:
           - type: roc_auc
             name: Macro AUC-ROC
-            value: "<<PENDING_FINAL_METRICS>>"
+            value: 0.9852
           - type: f1
             name: Macro F1 (tuned thresholds)
-            value: "<<PENDING_FINAL_METRICS>>"
+            value: 0.8814
           - type: f1
             name: Macro F1 (threshold 0.5)
-            value: "<<PENDING_FINAL_METRICS>>"
+            value: 0.8821
 ---
 
 # toxic-comment-multilingual-xlmr
@@ -192,9 +191,16 @@ enters the network.
 
 **If you omit `lang_ids`, the model does not fail.** It fills the batch with
 zeros, which means every comment is scored as if it were English. You get a
-`UserWarning` once per process and correct-looking output that is quietly worse
-on the other six languages. This is the single most likely way to misuse this
-model.
+`UserWarning` once per process, and the raw logits shift by a measurable amount
+(see [Known limitations](#known-limitations) for the measured size of that
+shift). That shift is real but, as far as this project has been able to
+measure, harmless: the language-conditioning ablation found no detectable
+accuracy cost to disabling the pathway entirely. So "quietly worse" overstates
+it — omitting `lang_ids` changes individual outputs without demonstrably
+degrading them on average. Pass it anyway. The alternative is silently treating
+unknown-language text as English with nothing telling you that happened, which
+is still the easiest way to misuse this model by accident, even though it has
+not been shown to cost accuracy.
 
 The same applies to the `text-classification` pipeline, which works but cannot
 pass `lang_ids`:
@@ -256,9 +262,11 @@ Beyond that:
 
 - **Performance is uneven across languages, measurably so.** In the previous
   version's evaluation English led the worst language by about 5 points of macro
-  AUC (English 0.946, Turkish 0.894). Expect the same shape here. A single
-  global threshold will therefore be tighter or looser in practice depending on
-  the language, even though the number itself is the same.
+  AUC (English 0.946, Turkish 0.894). The same ordering shows up here, but the
+  gap is much smaller (English 0.990, Turkish 0.973 — see
+  [Results](#results) for the full breakdown). A single global threshold will
+  still be tighter or looser in practice depending on the language, even though
+  the number itself is the same.
 - **Reclaimed slurs and in-group language are a known failure mode of this class
   of model.** Communities that use slurs about themselves affectionately, drag
   and roast culture, AAVE, and queer in-group speech all reliably draw false
@@ -354,43 +362,112 @@ and quietly changed what was being measured.
 
 ## Results
 
-Final metrics for this version are not filled in yet.
+
+![F1 by class, previous version versus this one](images/f1_gains_by_class.png)
+
+![Threat probability distributions, previous version versus this one](images/threat_probability_shift.png)
+
+Both versions rank `threat` comparably (ROC-AUC 0.905 against 0.975), but the previous one's threat
+scores sat on top of the non-threat scores and mostly below any usable cut-off: 80% of real threats
+scored under 0.5, against 16% here. That is why F1 moved four times as much as AUC did. A model can
+rank acceptably and still be unusable at every threshold.
+
+![Precision-recall curves for all six labels](images/pr_curves.png)
+
+Read the precision-recall curves rather than the ROC ones if you are deciding whether to deploy
+this. With three labels at 2-5% positive rate, ROC flatters the model because the false-positive
+rate is divided by an enormous negative pool. Precision-recall prices the same predictions against
+the positives, and each legend entry carries the label's base rate so the curve can be read against
+the prevalence it was measured at.
+
+Final metrics for this version, measured on `best_model` (epoch 5 of a 6-epoch
+run that completed all 6 epochs), evaluation run
+`evaluation_results/eval_20260830_072515`.
 
 | Metric (test split) | Value |
 |---|---|
-| Macro AUC-ROC | `<<PENDING_FINAL_METRICS>>` |
-| Weighted AUC-ROC | `<<PENDING_FINAL_METRICS>>` |
-| Macro F1 at threshold 0.5 | `<<PENDING_FINAL_METRICS>>` |
-| Macro F1 at tuned thresholds | `<<PENDING_FINAL_METRICS>>` |
-| Weighted F1 at tuned thresholds | `<<PENDING_FINAL_METRICS>>` |
-| Exact match | `<<PENDING_FINAL_METRICS>>` |
+| Macro AUC-ROC | 0.9852 |
+| Weighted AUC-ROC | 0.9890 |
+| Macro F1 at threshold 0.5 | 0.8821 |
+| Macro F1 at tuned thresholds | 0.8814 |
+| Weighted F1 at tuned thresholds | 0.9332 |
+| Exact match | 0.8772 |
 
 Per class, on the test split at tuned thresholds:
 
 | Class | AUC | Threshold | Precision | Recall | F1 |
 |---|---|---|---|---|---|
-| `toxic` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
-| `severe_toxic` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
-| `obscene` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
-| `threat` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
-| `insult` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
-| `identity_hate` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` | `<<PENDING_FINAL_METRICS>>` |
+| `toxic` | 0.9921 | 0.4724 | 0.9534 | 0.9750 | 0.9641 |
+| `severe_toxic` | 0.9863 | 0.4724 | 0.7139 | 0.8010 | 0.7549 |
+| `obscene` | 0.9899 | 0.5276 | 0.9419 | 0.9338 | 0.9378 |
+| `threat` | 0.9755 | 0.5276 | 0.8846 | 0.8003 | 0.8403 |
+| `insult` | 0.9855 | 0.5643 | 0.9204 | 0.9266 | 0.9235 |
+| `identity_hate` | 0.9818 | 0.5643 | 0.8959 | 0.8419 | 0.8680 |
 
 Per language, macro AUC on the test split:
 
 | Language | Macro AUC |
 |---|---|
-| English | `<<PENDING_FINAL_METRICS>>` |
-| Russian | `<<PENDING_FINAL_METRICS>>` |
-| Turkish | `<<PENDING_FINAL_METRICS>>` |
-| Spanish | `<<PENDING_FINAL_METRICS>>` |
-| French | `<<PENDING_FINAL_METRICS>>` |
-| Italian | `<<PENDING_FINAL_METRICS>>` |
-| Portuguese | `<<PENDING_FINAL_METRICS>>` |
+| English | 0.9902 |
+| Russian | 0.9790 |
+| Turkish | 0.9726 |
+| Spanish | 0.9882 |
+| French | 0.9877 |
+| Italian | 0.9893 |
+| Portuguese | 0.9832 |
 
 `metrics.json` in this repo carries the same values in machine-readable form.
 
 ---
+
+## What this looks like on real traffic
+
+Every number above is measured on a corpus that is roughly **50% toxic**. Real
+moderation queues are not. A typical forum or comment stream runs somewhere
+between 1% and 5% toxic, and that difference matters more than any metric on this
+page.
+
+Recall and false-positive rate are properties of the model and do not change with
+the mix of your data. Precision does:
+
+```
+precision = TPR * p / (TPR * p + FPR * (1 - p))
+```
+
+where `p` is the share of your traffic that is genuinely toxic. Applying the
+model's measured TPR and FPR at three prevalences:
+
+| Label | Recall | FPR | Precision @ 50% | @ 5% | @ 1% |
+|---|---|---|---|---|---|
+| toxic | 0.975 | 0.0470 | 0.953 | 0.522 | **0.173** |
+| insult | 0.927 | 0.0321 | 0.920 | 0.603 | 0.226 |
+| obscene | 0.934 | 0.0184 | 0.942 | 0.728 | 0.339 |
+| severe_toxic | 0.801 | 0.0156 | 0.714 | 0.730 | 0.342 |
+| identity_hate | 0.842 | 0.0055 | 0.896 | 0.890 | 0.608 |
+| threat | 0.800 | 0.0023 | 0.885 | 0.948 | **0.779** |
+
+**Read the last column before deploying anything.** On a stream that is 1% toxic,
+the `toxic` head flags roughly six comments for every one that is genuinely
+toxic. That is not a defect in training -- it is arithmetic. A 4.7% false-positive
+rate against 99% clean traffic produces far more false positives than there are
+true positives to find.
+
+Two consequences worth planning around:
+
+- **The rare-class heads hold up best.** `threat` and `identity_hate` have
+  false-positive rates of 0.2% and 0.6%, so they stay usable at low prevalence
+  (0.78 and 0.61 precision at 1%). This is the opposite of the usual expectation
+  and is worth exploiting: the heads you would expect to be weakest are the ones
+  that survive a realistic base rate.
+- **Raise the thresholds if you need precision.** The shipped thresholds maximise
+  F1 on a balanced corpus. If you are triaging a low-toxicity stream and care
+  about not wasting reviewer time, tune your own thresholds on a sample of *your*
+  traffic, not on this corpus. `thresholds.json` is a starting point, not a
+  recommendation for your distribution.
+
+Nothing here is unique to this model; any classifier trained on a balanced corpus
+behaves this way off-distribution. It is stated explicitly because most model
+cards do not, and people are repeatedly surprised by it in production.
 
 ## The previous version, and why its 0.9147 does not mean what it looks like
 
@@ -431,12 +508,15 @@ In the April version that bias had a shape that was constant along the axis the
 softmax normalises over. Softmax is shift-invariant along that axis, so the bias
 cancelled **exactly**. `lang_ids` had literally no effect on the output.
 
-Measured: swapping `lang_ids` between two languages on identical text changed
-the logits by 3.6e-07 in the old code, which is float32 rounding noise. In this
-version the same test gives 1.9e-01, five orders of magnitude larger. The fix
-adds the language vector to the attention *queries* rather than to the scores or
-the keys, which is the only one of the three placements that survives the
-softmax.
+Measured directly on the shipped `best_model` checkpoint: swapping `lang_ids`
+between two languages on identical text moves the 6 output logits by an L2 norm
+of about 0.19 (mean 0.187 across 3 example texts compared pairwise across all 7
+languages against English; individual comparisons ranged 0.10-0.30 depending on
+text and language pair). In the April code the same test moved the logits by
+3.6e-07, which is float32 rounding noise — this version's effect is still about
+five orders of magnitude larger. The fix adds the language vector to the
+attention *queries* rather than to the scores or the keys, which is the only one
+of the three placements that survives the softmax.
 
 Worth knowing if you are testing something similar: the broken version leaked
 about 4e-08 of float noise into the language embedding's gradient, so a naive
@@ -450,13 +530,13 @@ comparison against exact zero.
 |---|---|---|
 | Parameters receiving gradient | 4.8M of 564.7M (0.8%) | 307.1M of 564.7M (54.4%) |
 | Encoder fine-tuned | No | Yes |
-| `lang_ids` affects output | No (cancels under softmax) | Yes (1.9e-01 logit delta) |
+| `lang_ids` affects output | No (cancels under softmax) | Yes (~0.19 logit delta, L2 norm, measured on `best_model`) |
 | Sampler | Drew with replacement; 36.9% of the training set never seen in an epoch | Exact one-pass, 285,264 unique |
 | Class weighting | Never activated | Active, rare classes get about 2.6x the weight of `toxic` |
 | LR warmup | Computed, then never applied | Linear warmup over 10% of steps, then cosine decay |
 | Validation during training | None; best checkpoint picked by hand | Per-epoch, with per-class AUC and automatic model selection |
 | Serving sequence length | 128 (truncated 15.7% of test rows) | 512, matching training |
-| Run completion | Crashed at epoch 4 of 6 on a logging auth error; the published checkpoint is epoch 2 | `<<PENDING_FINAL_METRICS>>` |
+| Run completion | Crashed at epoch 4 of 6 on a logging auth error; the published checkpoint is epoch 2 | Completed all 6 of 6 epochs; best checkpoint by validation macro AUC is epoch 5 |
 
 The word/position embedding module is **still frozen in this version, on
 purpose**. It is 256M of the 564.7M parameters, and freezing it removes the
@@ -481,19 +561,27 @@ Per class: `toxic` 0.9666 AUC / 0.9038 F1, `obscene` 0.9278 / 0.7392, `insult`
 Turkish 0.8944.
 
 **These are the previous version's numbers.** They are recorded so the two can
-be compared. They are not this model's results, and this model's results are the
-`<<PENDING_FINAL_METRICS>>` fields above.
+be compared. They are not this model's results — this model's results are the
+[Results](#results) section above.
 
 ---
 
 ## Known limitations
 
-- **The architecture's central claim is unverified.** The language-conditioning
-  ablation has not been run. The bias is now demonstrably live, and it
-  demonstrably changes the output, but nobody has yet trained the control model
-  with the language pathway switched off and compared. Until that run exists,
-  "language-aware attention helps" is a hypothesis, not a result. The switch to
-  run it exists (`disable_lang_conditioning` in the config).
+- **Language conditioning: a measured null result.** The ablation has been run:
+  a control model, trained identically except for `disable_lang_conditioning=True`,
+  scores macro AUC 0.9849 on the test split against 0.9852 for the treatment — a
+  difference of +0.0003 with a paired-bootstrap 95% CI of [-0.0007, +0.0012]
+  (p = 0.588). The interval includes zero, and the per-language breakdown is
+  mixed-sign (3 of 7 languages score worse with conditioning on), so this is not
+  a case of a small effect concentrated where it should be. Language-aware
+  attention does not measurably improve accuracy on this corpus with this
+  backbone. That is a measured outcome, not a failure: the mechanism is
+  confirmed live (see the `lang_ids` section above), it simply does not buy
+  anything here. The practical consequence is useful to a downstream user:
+  `lang_ids` can be omitted at inference with no measurable cost to accuracy,
+  even though the pathway still shifts individual logits by a measurable amount
+  when it is used.
 - Non-English label semantics are inherited from a corpus-building step that is
   not in the repository and cannot be audited. See
   [Training data](#training-data).
@@ -550,17 +638,24 @@ encoder receiving gradients and receiving nothing at all.
 
 ## License
 
-`<<PENDING_LICENSE>>`
+Apache 2.0.
 
-There is no license declared in the source repository, so none is asserted here.
-The constraints that will apply to whatever is chosen:
+The base model, `xlm-roberta-large`, is MIT licensed. Apache-2.0 is a permissive
+license compatible with that, and it additionally grants an explicit patent
+license that plain MIT does not — that is why it was chosen here rather than
+just inheriting MIT as-is.
 
-- `xlm-roberta-large`, the base model, is MIT licensed.
-- The underlying Jigsaw toxic comment data derives from Wikipedia talk pages and
-  carries its own terms.
-- Synthetic augmentation was generated with Mistral-7B-Instruct-v0.3.
+This license covers the model weights and the code in this repository. It does
+**not** extend to the underlying training data:
 
-Resolve this before making the repository public.
+- The training data derives from Jigsaw's toxic comment dataset and Wikipedia
+  talk-page comments, which carry their own terms.
+- Rare-class synthetic augmentation was generated with
+  Mistral-7B-Instruct-v0.3, which carries its own license.
+
+Using these weights does not grant any rights to that underlying data. This
+card licenses what this repository ships — weights and code — and makes no
+claim about, and does not settle, what the source data's own terms permit.
 
 ## Citation
 
