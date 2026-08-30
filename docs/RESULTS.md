@@ -38,6 +38,9 @@ ever seeing a test row.
 
 ## Headline
 
+![F1 by class, old versus new](images/f1_gains_by_class.png)
+
+
 New model versus the April 2025 published checkpoint, both scored the same way on the same test
 split:
 
@@ -60,6 +63,19 @@ the 0.6036 reported here. The baseline is within 0.0023 of its own ceiling, agai
 improvement of 0.2778.
 
 ## Per class
+
+![ROC curves for all six classes](images/roc_curves.png)
+
+![Precision-recall curves for all six classes](images/pr_curves.png)
+
+ROC and precision-recall answer different questions, and on this data the second is the honest one.
+ROC plots true-positive rate against false-positive rate, and when 98% of rows are negative the
+false-positive rate barely moves however many mistakes you make -- the denominator is enormous. So
+`threat` looks near-perfect at 0.975 ROC-AUC. The precision-recall curve prices the same model
+against the positives only: average precision 0.880, and you can read straight off it what precision
+costs you at any recall you might want. Each legend entry carries the class's base rate, because a
+PR curve is only interpretable against the prevalence it was measured at.
+
 
 New model, at the val-tuned thresholds:
 
@@ -93,6 +109,9 @@ with only 1,648 positives to learn it from.
 
 ## Per language
 
+![Per-language AUC and F1, old versus new](images/per_language_performance.png)
+
+
 | Language | AUC (new) | AUC (April) | Delta | F1 macro (new) | Exact match (new) | n |
 |---|---|---|---|---|---|---|
 | English | 0.9902 | 0.9463 | +0.0439 | 0.9025 | 0.8631 | 4,638 |
@@ -111,6 +130,9 @@ This ordering tracks XLM-RoBERTa's own pretraining coverage, not anything this r
 language — see [the ablation](#the-language-conditioning-ablation) below.
 
 ## Why F1 gained four times what AUC did
+
+![Threat probability distributions, old model versus new](images/threat_probability_shift.png)
+
 
 This is the most instructive number on the page. Macro AUC rose 0.0704; macro F1 rose 0.2778,
 about four times as much. The two metrics did not move together because they measure different
@@ -174,6 +196,9 @@ well-separated model does not care much where you put the line, which is also wh
 are robust: they do not depend on the threshold search having got lucky.
 
 ## Training curve
+
+![Training and validation loss, and validation macro AUC by epoch](images/training_curves.png)
+
 
 Validation macro AUC and losses, per epoch, for the run that produced this model:
 

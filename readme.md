@@ -82,6 +82,20 @@ badly, and the 2025 one did — which is why F1 gained four times what AUC did o
 actually training. Exact match is the share of comments where all six labels are right at once: 62%
 before, 88% now.
 
+![Threat probability distributions, old model versus new](docs/images/threat_probability_shift.png)
+
+That is the whole result in one picture. Both models rank `threat` well — AUC 0.905 against 0.975,
+a modest gap. But the old model's threat scores (pink) sit on top of the non-threat scores (grey)
+and mostly to the left of any sensible cut-off: **80% of real threats scored below 0.5**, so no
+threshold could separate them and F1 stalled at 0.419. The retrained model pushes the two
+distributions apart, only 16% of real threats fall below 0.5, and F1 reaches 0.840. Ranking barely
+moved; usability transformed.
+
+![F1 by class, old versus new](docs/images/f1_gains_by_class.png)
+
+The gains land where the old model was weakest. `identity_hate` and `threat` roughly doubled;
+`toxic`, already strong, moved least — it had the least room.
+
 Per-class and per-language breakdowns, the training curve, the ablation and the caveats are in
 [docs/RESULTS.md](docs/RESULTS.md). The audit trail — every bug, what it did, what is still open —
 is in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).

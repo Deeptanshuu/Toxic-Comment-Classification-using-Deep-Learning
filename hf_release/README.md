@@ -362,6 +362,24 @@ and quietly changed what was being measured.
 
 ## Results
 
+
+![F1 by class, previous version versus this one](images/f1_gains_by_class.png)
+
+![Threat probability distributions, previous version versus this one](images/threat_probability_shift.png)
+
+Both versions rank `threat` comparably (ROC-AUC 0.905 against 0.975), but the previous one's threat
+scores sat on top of the non-threat scores and mostly below any usable cut-off: 80% of real threats
+scored under 0.5, against 16% here. That is why F1 moved four times as much as AUC did. A model can
+rank acceptably and still be unusable at every threshold.
+
+![Precision-recall curves for all six labels](images/pr_curves.png)
+
+Read the precision-recall curves rather than the ROC ones if you are deciding whether to deploy
+this. With three labels at 2-5% positive rate, ROC flatters the model because the false-positive
+rate is divided by an enormous negative pool. Precision-recall prices the same predictions against
+the positives, and each legend entry carries the label's base rate so the curve can be read against
+the prevalence it was measured at.
+
 Final metrics for this version, measured on `best_model` (epoch 5 of a 6-epoch
 run that completed all 6 epochs), evaluation run
 `evaluation_results/eval_20260830_072515`.
