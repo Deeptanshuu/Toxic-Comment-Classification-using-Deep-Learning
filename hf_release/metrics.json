@@ -1,5 +1,5 @@
 {
-  "_status": "<<PENDING_FINAL_METRICS>> The training run that produces these weights had not finished when this file was written. Every field marked with that token must be filled in from a real evaluation of the final checkpoint before this repo is published. Do not copy the previous version's numbers into them.",
+  "_status": "FINAL. Numbers below are measured on the final best_model checkpoint (epoch 5 of a 6-epoch run that completed all 6 epochs), evaluation run evaluation_results/eval_20260830_072515. Test-split metrics use per-class thresholds tuned on validation and applied unchanged; see the protocol block below.",
   "label_order": [
     "toxic",
     "severe_toxic",
@@ -18,101 +18,114 @@
   },
   "this_version": {
     "description": "Encoder fine-tuned. 307.1M of 564.7M parameters (54.4%) receive gradient; the word/position embedding module is frozen deliberately.",
-    "checkpoint": "<<PENDING_FINAL_METRICS>>",
-    "epochs_completed": "<<PENDING_FINAL_METRICS>>",
-    "selected_epoch": "<<PENDING_FINAL_METRICS>>",
+    "checkpoint": "weights/toxic_classifier_xlmr_v2/best_model (epoch 5 of a 6-epoch run that completed all 6 epochs)",
+    "epochs_completed": 6,
+    "selected_epoch": 5,
     "validation": {
-      "auc_macro": "<<PENDING_FINAL_METRICS>>"
+      "auc_macro": 0.9868
     },
     "test": {
-      "auc_macro": "<<PENDING_FINAL_METRICS>>",
-      "auc_weighted": "<<PENDING_FINAL_METRICS>>",
-      "f1_macro_at_0.5": "<<PENDING_FINAL_METRICS>>",
-      "f1_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
-      "f1_weighted_at_tuned": "<<PENDING_FINAL_METRICS>>",
-      "precision_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
-      "recall_macro_at_tuned": "<<PENDING_FINAL_METRICS>>",
-      "exact_match_at_tuned": "<<PENDING_FINAL_METRICS>>",
-      "hamming_loss_at_tuned": "<<PENDING_FINAL_METRICS>>",
+      "auc_macro": 0.9852,
+      "auc_weighted": 0.9890,
+      "f1_macro_at_0.5": 0.8821,
+      "f1_macro_at_tuned": 0.8814,
+      "f1_weighted_at_tuned": 0.9332,
+      "precision_macro_at_tuned": 0.8850,
+      "recall_macro_at_tuned": 0.8798,
+      "exact_match_at_tuned": 0.8772,
+      "hamming_loss_at_tuned": 0.0257,
       "per_class": {
         "toxic": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9921,
+          "threshold": 0.4724,
+          "precision": 0.9534,
+          "recall": 0.9750,
+          "f1": 0.9641,
+          "support": 17697
         },
         "severe_toxic": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9863,
+          "threshold": 0.4724,
+          "precision": 0.7139,
+          "recall": 0.8010,
+          "f1": 0.7549,
+          "support": 1648
         },
         "obscene": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9899,
+          "threshold": 0.5276,
+          "precision": 0.9419,
+          "recall": 0.9338,
+          "f1": 0.9378,
+          "support": 8626
         },
         "threat": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9755,
+          "threshold": 0.5276,
+          "precision": 0.8846,
+          "recall": 0.8003,
+          "f1": 0.8403,
+          "support": 766
         },
         "insult": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9855,
+          "threshold": 0.5643,
+          "precision": 0.9204,
+          "recall": 0.9266,
+          "f1": 0.9235,
+          "support": 10199
         },
         "identity_hate": {
-          "auc": "<<PENDING_FINAL_METRICS>>",
-          "threshold": "<<PENDING_FINAL_METRICS>>",
-          "precision": "<<PENDING_FINAL_METRICS>>",
-          "recall": "<<PENDING_FINAL_METRICS>>",
-          "f1": "<<PENDING_FINAL_METRICS>>"
+          "auc": 0.9818,
+          "threshold": 0.5643,
+          "precision": 0.8959,
+          "recall": 0.8419,
+          "f1": 0.8680,
+          "support": 1891
         }
       },
       "per_language": {
         "en": {
           "lang_id": 0,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9902,
+          "f1_macro": 0.9025,
+          "sample_count": 4638
         },
         "ru": {
           "lang_id": 1,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9790,
+          "f1_macro": 0.8545,
+          "sample_count": 5193
         },
         "tr": {
           "lang_id": 2,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9726,
+          "f1_macro": 0.8128,
+          "sample_count": 5163
         },
         "es": {
           "lang_id": 3,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9882,
+          "f1_macro": 0.9023,
+          "sample_count": 5168
         },
         "fr": {
           "lang_id": 4,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9877,
+          "f1_macro": 0.9075,
+          "sample_count": 5158
         },
         "it": {
           "lang_id": 5,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9893,
+          "f1_macro": 0.8985,
+          "sample_count": 5146
         },
         "pt": {
           "lang_id": 6,
-          "auc_macro": "<<PENDING_FINAL_METRICS>>",
-          "f1_macro": "<<PENDING_FINAL_METRICS>>"
+          "auc_macro": 0.9832,
+          "f1_macro": 0.8891,
+          "sample_count": 5192
         }
       }
     }

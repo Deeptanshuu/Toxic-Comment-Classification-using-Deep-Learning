@@ -12,13 +12,13 @@
 # Preflight checks, all of which must pass before an upload is allowed:
 #   1. no <<PENDING_...>> placeholders anywhere in the staged text files
 #   2. no training run in progress
-#   3. best_model reached the configured final epoch
+#   3. the run completed its configured epochs (not: best epoch == last epoch)
 #   4. best_model/pytorch_model.bin is not still being written
 #
 # Overrides:
 #   HF_REPO=owner/name          target repo (default below)
 #   BEST=path                   checkpoint directory to publish
-#   ALLOW_INCOMPLETE_RUN=1      permit a best epoch below the configured total,
+#   ALLOW_INCOMPLETE_RUN=1      permit a run that did not finish all its epochs,
 #                               for a run that stopped early on purpose
 #   SKIP_TOKENIZER=1            do not bundle the tokenizer files
 #   STALE_MIN=10                minutes of checkpoint quiet time required
@@ -140,19 +140,39 @@ else
     pass "no 'python -m model.train' process is running"
 fi
 
-# 3. did the run reach its last epoch
+# 3. did the RUN complete, not whether validation peaked at the end
+#
+# This used to compare best_epoch against the configured total and fail when
+# best < total. That is wrong: the best checkpoint landing before the final
+# epoch is the normal, healthy outcome of model selection -- it means validation
+# peaked and then stopped improving, which is exactly what the validation loop
+# exists to detect. The real question is whether the run finished the epochs it
+# was asked to run, which is counted from the TensorBoard scalars.
+COMPLETED=$("$PY" - <<'PYEOF' 2>/dev/null
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+import glob, os
+ds = [x for x in glob.glob('runs/*') if '_smoke' not in x and 'archive' not in x]
+if not ds:
+    print(-1)
+else:
+    d = sorted(ds, key=os.path.getmtime)[-1]
+    ea = EventAccumulator(d); ea.Reload()
+    t = ea.Tags()['scalars']
+    print(len(ea.Scalars('epoch/val_auc_macro')) if 'epoch/val_auc_macro' in t else 0)
+PYEOF
+)
 if [[ -f "$BEST/best.json" && -f "$BEST/config.json" ]]; then
     BEST_EPOCH=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['epoch'])" "$BEST/best.json")
     TOTAL_EPOCHS=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['epochs'])" "$BEST/config.json")
-    if [[ "$BEST_EPOCH" -lt "$TOTAL_EPOCHS" ]]; then
+    if [[ "${COMPLETED:-0}" -lt "$TOTAL_EPOCHS" ]]; then
         if [[ "${ALLOW_INCOMPLETE_RUN:-0}" == "1" ]]; then
-            warn "best checkpoint is epoch $BEST_EPOCH of $TOTAL_EPOCHS (allowed by ALLOW_INCOMPLETE_RUN=1)"
+            warn "run completed ${COMPLETED}/${TOTAL_EPOCHS} epochs (allowed by ALLOW_INCOMPLETE_RUN=1)"
         else
-            fail "best checkpoint is epoch $BEST_EPOCH of $TOTAL_EPOCHS"
-            echo "           if the run stopped early on purpose, set ALLOW_INCOMPLETE_RUN=1."
+            fail "run completed only ${COMPLETED} of ${TOTAL_EPOCHS} epochs"
+            echo "           if it was stopped early on purpose, set ALLOW_INCOMPLETE_RUN=1."
         fi
     else
-        pass "best checkpoint is epoch $BEST_EPOCH of $TOTAL_EPOCHS"
+        pass "run completed ${COMPLETED}/${TOTAL_EPOCHS} epochs; best is epoch ${BEST_EPOCH}"
     fi
 else
     fail "no best.json or config.json in $BEST, cannot tell which epoch this is"

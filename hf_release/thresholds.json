@@ -14,13 +14,13 @@
     "_provenance.per_language_block_omitted."
   ],
   "_provenance": {
-    "status": "<<PENDING_FINAL_METRICS>> these thresholds were tuned on the PREVIOUS checkpoint and must be re-tuned against the final weights before this repo is published. This is a step to re-run, not a number to type in.",
+    "status": "FINAL. These thresholds are tuned on validation using the final best_model checkpoint (epoch 5 of a 6-epoch run that completed all 6 epochs) and applied unchanged to the test split. They match the shipped weights.",
     "tuned_on": "dataset/split/val.csv",
     "applied_to": "dataset/split/test.csv",
-    "source_run": "evaluation_results/eval_20260830_011818",
-    "source_checkpoint": "weights/toxic_classifier_xlm-roberta-large/latest (April 2025 model, frozen encoder)",
-    "search": "grid over candidate thresholds, per class independently, maximising F1 on validation",
-    "per_language_block_omitted": "The evaluation script also emits a per-language threshold block. It is not shipped. That code path builds an unshuffled KFold instead of a stratified one, so folds containing zero positives combine with zero_division=1 to inject free F1 scores of 1.0. It reported English severe_toxic at F1 0.597 when the maximum achievable at any threshold is 0.442. Nothing in the serving path ever read it."
+    "source_run": "evaluation_results/eval_20260830_072515",
+    "source_checkpoint": "weights/toxic_classifier_xlmr_v2/best_model (epoch 5 of 6, encoder fine-tuned)",
+    "search": "direct sweep over candidate thresholds in [0.05, 0.95], per class independently, maximising F1 on validation",
+    "per_language_block_omitted": "The evaluation script also emits a per-language threshold block. It is not shipped: it comes from a code path with a known bug and nothing in the serving path ever reads it. An earlier run of that code path reported English severe_toxic at F1 0.597 when the maximum achievable at any threshold is 0.442."
   },
   "label_order": [
     "toxic",
@@ -31,21 +31,21 @@
     "identity_hate"
   ],
   "thresholds": {
-    "toxic": 0.4959183673469387,
-    "severe_toxic": 0.38163265306122446,
-    "obscene": 0.463265306122449,
-    "threat": 0.3653061224489796,
-    "insult": 0.463265306122449,
-    "identity_hate": 0.3653061224489796
+    "toxic": 0.4724489795918367,
+    "severe_toxic": 0.4724489795918367,
+    "obscene": 0.5275510204081633,
+    "threat": 0.5275510204081633,
+    "insult": 0.5642857142857143,
+    "identity_hate": 0.5642857142857143
   },
   "validation_f1_at_threshold": {
-    "_note": "F1 achieved at the threshold above, on the validation split, by the PREVIOUS (April 2025) checkpoint. Recorded for provenance only. It is not this model's performance and it is not a test-split number.",
-    "toxic": 0.8966375125558779,
-    "severe_toxic": 0.41602478051109804,
-    "obscene": 0.7306040236808349,
-    "threat": 0.4002885777767634,
-    "insult": 0.7149058850185608,
-    "identity_hate": 0.4452030499231152
+    "_note": "F1 achieved at the threshold above, on the validation split, by THIS (shipped) checkpoint. This is the value the threshold search maximised, not a test-split number.",
+    "toxic": 0.964104847236908,
+    "severe_toxic": 0.7429062768701634,
+    "obscene": 0.937078390323331,
+    "threat": 0.8424657534246576,
+    "insult": 0.9223998826463253,
+    "identity_hate": 0.8753432180120813
   },
   "validation_positive_support": {
     "_note": "Positive examples per class in the 35,658-row validation split used for tuning.",
