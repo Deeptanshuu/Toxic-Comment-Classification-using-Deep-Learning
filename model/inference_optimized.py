@@ -9,7 +9,17 @@ from pathlib import Path
 class OptimizedToxicityClassifier:
     """High-performance toxicity classifier for production"""
     
+    # Per-class decision thresholds, tuned on the validation split for the
+    # shipped checkpoint. Order matches label_names.
+    TUNED_THRESHOLDS = [0.4724, 0.4724, 0.5276, 0.5276, 0.5643, 0.5643]
+
     def __init__(self, onnx_path=None, pytorch_path=None, device='cuda'):
+        # Allow an override so a caller tuning for a different operating point
+        # (for example a low-prevalence moderation queue, where precision at the
+        # F1-optimal threshold collapses -- see the base-rate section of the
+        # model card) does not have to edit this file.
+        self.thresholds = list(self.TUNED_THRESHOLDS)
+
         self.tokenizer = XLMRobertaTokenizer.from_pretrained('xlm-roberta-large')
         
         # Language mapping
@@ -145,14 +155,19 @@ class OptimizedToxicityClassifier:
             
             # Format results
             for j, (text, lang, probs) in enumerate(zip(batch_texts, langs[i:i+batch_size], probabilities)):
-                # Apply optimal thresholds per language
-                lang_thresholds = {  # Increased by ~20% from original values
-                    'default': [0.60, 0.54, 0.60, 0.48, 0.60, 0.50]  # Increased by ~20% from original values
-                    # mapping [toxic, severe_toxic, obscene, threat, insult, identity_hate]
-                }
-                
-                
-                thresholds = lang_thresholds.get(lang, lang_thresholds['default'])
+                # Thresholds tuned on the validation split for the shipped
+                # checkpoint and applied unchanged, matching what the reported
+                # F1 numbers were measured at.
+                #
+                # These were previously a hardcoded [0.60, 0.54, 0.60, 0.48,
+                # 0.60, 0.50] annotated "increased by ~20%", which belonged to
+                # an older checkpoint and did not match any tuned set. Every
+                # caller of this method -- app.py and streamlit_app.py both read
+                # is_toxic and toxic_categories -- was therefore deciding at an
+                # operating point no measurement supports.
+                #
+                # Order: toxic, severe_toxic, obscene, threat, insult, identity_hate
+                thresholds = self.thresholds
                 is_toxic = (probs >= np.array(thresholds)).astype(bool)
                 
                 result = {
