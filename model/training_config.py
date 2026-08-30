@@ -117,17 +117,14 @@ class DynamicClassWeights:
                 lang_counts[lang] = lang_count
                 batch_pos_ratios += lang_pos_ratio * (lang_count / batch_size)
 
-            # Class-specific adjustments based on statistical analysis
-            # Order: toxic, severe_toxic, obscene, threat, insult, identity_hate
-            class_adjustments = {
-                'en': [1.0, 1.0, 0.9, 0.85, 1.1, 1.0],   # English has more obscene/threat
-                'ru': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Russian has more insults
-                'tr': [1.0, 1.0, 1.0, 1.0, 0.9, 0.95],   # Turkish pattern
-                'es': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Spanish pattern
-                'fr': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # French pattern
-                'it': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0],    # Italian pattern
-                'pt': [1.0, 1.0, 1.0, 1.0, 0.9, 1.0]     # Portuguese pattern
-            }
+            # A per-language class_adjustments table used to sit here, described
+            # as "based on statistical analysis". It was not: five of its six
+            # non-English rows were byte-identical and its comments contradicted
+            # its values (the English row said "more obscene/threat" while
+            # down-weighting both). It distorted class weights by ~3.5% on
+            # average, 13% worst case. Removed after the language-conditioning
+            # ablation, which needed it held constant across both arms to
+            # cancel. See docs/KNOWN_ISSUES.md.
 
             # The per-sample weight row depends only on the sample's language, so
             # build one row per language present and index it out, rather than
@@ -154,10 +151,8 @@ class DynamicClassWeights:
                 log_ratio = torch.log1p(1.0 / (combined_pos_ratio + 1e-7))
                 class_weights = torch.exp(log_ratio.clamp(-2, 2))
 
-                # Apply language-specific scaling and class adjustments
+                # Apply language-specific scaling
                 row = class_weights * self.lang_scaling.get(lang, 1.0)
-                if lang in class_adjustments:
-                    row = row * torch.tensor(class_adjustments[lang], device=device)
 
                 lang_mask = torch.tensor([l == lang for l in langs], dtype=torch.bool, device=device)
                 weights[lang_mask] = row
