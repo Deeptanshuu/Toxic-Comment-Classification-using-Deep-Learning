@@ -75,6 +75,7 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
 | Experiment | Result |
 |---|---|
 | Per-language vs global thresholds | **NEGATIVE, -0.0047 macro F1, 1/5 splits improved.** Delete the per_language block. Damage concentrates in rare classes (threat -0.0144) because 7 thresholds fit on 1/7 the data each is variance, not signal. Writeup: experiments/per_language_thresholds.md |
+| Enforce label hierarchy P(child)<=P(toxic) | **NEGATIVE, -0.0001 macro F1.** The hierarchy IS real (severe_toxic is a perfect subset of toxic, 1648/1648) but the model already respects it: only 2.35% of rows violate it and the mean excess is 0.0127, too small to cross a threshold. Six sigmoids over a shared encoder are not independent -- the structure was learned from the labels. Writeup: experiments/label_hierarchy.md |
 
 ## IDEAS to improve the score (test, do not assume)
 
@@ -85,8 +86,9 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
 - Try unfreezing embeddings now that use_reentrant=False is correct (was never a
   fair test before, since the encoder was not training at all)
 - Longer training / different LR schedule; loss was still falling at epoch 2
-- severe_toxic is a SUBSET of toxic in Jigsaw's scheme; independent sigmoids
-  ignore that structure. Try modelling the hierarchy.
+- severe_toxic is a SUBSET of toxic. POST-HOC clamping tested and does nothing
+  (see experiments table). Hierarchy-aware TRAINING is still untested, but the
+  low violation rates suggest small headroom -- not a priority.
 - Near-duplicate leakage (3.8% en val) inflates val; test split is cleaner
 - The corpus is ~50% toxic vs a few % in real traffic. Consider reporting
   precision at a realistic base rate.
