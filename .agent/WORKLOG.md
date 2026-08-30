@@ -122,6 +122,25 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
   than assuming. Worth remembering: is_classifier()=True changes what sklearn
   requires of the estimator.
 
+### val-tuned thresholds from the NEW model (eval_20260830_072515), 08:07
+Macro F1 on VAL at tuned thresholds: 0.8807. Old model, same fixed sweep, on
+TEST: 0.605. Big gain but note val-vs-test; the test number is being computed.
+Per class (new val F1): toxic .9641 obscene .9371 insult .9224 identity_hate
+.8753 threat .8425 severe_toxic .7429.
+DO NOT compare against the old tuned_thresholds.json f1_score field directly --
+those were CV means from the broken GridSearchCV, not achieved F1.
+Why F1 moves far more than AUC: AUC only measures ranking and the old model
+ranked OK (0.91). F1 depends on probability SEPARATION, which is exactly what a
+frozen backbone was bad at -- rare-class probabilities sat compressed near the
+boundary so no threshold could split them.
+
+### Gotcha for future iterations
+`pgrep -f "<pattern>"` run from a Bash tool call MATCHES ITS OWN command line,
+because the pattern appears in the shell command. It made me report the ablation
+as running twice when it was not. Use
+`nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
+as the authoritative check for what is actually on the GPU.
+
 ## Notes for the owner (write anything they must know here)
 
 - Threshold numbers will differ from the earlier baseline because the old ones
