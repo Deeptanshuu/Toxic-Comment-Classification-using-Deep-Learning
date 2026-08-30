@@ -123,6 +123,55 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+# Groups the ~20 flat, alphabetically-sorted tags into the panels TensorBoard's
+# "Custom Scalars" tab renders. Tags stay exactly as logged elsewhere in this
+# file (train/, epoch/, epoch/val_auc/<class>) - this only adds a layout on
+# top, it never renames anything, so it stays comparable with runs already on
+# disk that predate it.
+#
+# Categories are ordered the way someone watching a run would actually check
+# it: is it learning, is it improving, which classes lag, is training
+# healthy, is it fast. epoch/lr is deliberately not charted here - it is only
+# one point per epoch, warmup (10% of steps, config.warmup_ratio) is over
+# within epoch 1, so it cannot show the warmup shape the way per-step train/lr
+# does. It still renders in the plain Scalars tab.
+CUSTOM_SCALARS_LAYOUT = {
+    'Loss': {
+        'Train vs Val (per epoch)': ['Multiline', ['epoch/train_loss', 'epoch/val_loss']],
+        'Train (per step)': ['Multiline', ['train/loss']],
+    },
+    'Validation AUC': {
+        'Macro vs Best-So-Far': ['Multiline', ['epoch/val_auc_macro', 'epoch/best_auc']],
+    },
+    'Per-Class AUC': {
+        'Validation AUC by Class': ['Multiline', [
+            'epoch/val_auc/toxic',
+            'epoch/val_auc/severe_toxic',
+            'epoch/val_auc/obscene',
+            'epoch/val_auc/threat',
+            'epoch/val_auc/insult',
+            'epoch/val_auc/identity_hate',
+        ]],
+    },
+    'Training Health': {
+        'Learning Rate (per step)': ['Multiline', ['train/lr']],
+        'Gradient Norm': ['Multiline', ['train/grad_norm']],
+        # Margin tags are [value, lower, upper]: mean drawn as the line, the
+        # min/max band shaded around it.
+        'Class Weight Range (mean / min / max)': ['Margin', [
+            'train/class_weight_mean',
+            'train/class_weight_min',
+            'train/class_weight_max',
+        ]],
+    },
+    'Speed & Memory': {
+        'Batch Time (s)': ['Multiline', ['train/batch_time']],
+        'Epoch Time (s)': ['Multiline', ['epoch/time_sec']],
+        'GPU Memory (MB)': ['Multiline', ['train/gpu_memory_mb', 'epoch/gpu_memory_mb']],
+    },
+}
+
+
 class SafeSummaryWriter:
     """TensorBoard writer that can never take the training run down with it.
 
@@ -145,6 +194,15 @@ class SafeSummaryWriter:
             logger.info(f"TensorBoard logging to {self.log_dir}")
         except Exception as e:
             logger.warning(f"Could not start TensorBoard writer ({str(e)}); continuing without it")
+
+        # Written once per writer (add_custom_scalars is only meaningful the
+        # first time - see its docstring) through the same _guard() path as
+        # every other call below, so a malformed layout disables logging
+        # rather than taking the run down with it.
+        self._guard(
+            lambda: self.writer.add_custom_scalars(CUSTOM_SCALARS_LAYOUT),
+            "add_custom_scalars",
+        )
 
     @property
     def enabled(self):

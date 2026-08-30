@@ -52,7 +52,7 @@ tmux send-keys -t "$SESSION:train" "$ENVS && $PY -m model.train 2>&1 | tee $LOG"
 if ! ss -lnt 2>/dev/null | grep -q ":$TB_PORT "; then
     tmux has-session -t "$SESSION:board" 2>/dev/null || tmux new-window -t "$SESSION" -n board -c "$REPO"
     tmux send-keys -t "$SESSION:board" \
-        "$PY -m tensorboard.main --logdir runs --port $TB_PORT --bind_all --reload_multifile true" C-m
+        "$PY -m tensorboard.main --logdir runs --port $TB_PORT --bind_all --reload_multifile true --samples_per_plugin scalars=100000 --window_title toxic-comment-training" C-m
 else
     echo "tensorboard already serving on :$TB_PORT, leaving it alone"
 fi
