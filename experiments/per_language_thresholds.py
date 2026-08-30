@@ -11,7 +11,9 @@ from model.evaluation.evaluate import optimize_threshold
 
 CLASSES = ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate']
 LANGS = {0: 'en', 1: 'ru', 2: 'tr', 3: 'es', 4: 'fr', 5: 'it', 6: 'pt'}
-PRED = 'evaluation_results/eval_20260830_011818/predictions.npz'
+# Default is the CURRENT model. The original run of this experiment used the
+# April model's predictions (eval_20260830_011818); both results are in the .md.
+PRED = 'evaluation_results/eval_20260830_072515/predictions.npz'
 MIN_FIT = 50   # below this many rows for a language, fall back to the global threshold
 
 
@@ -55,4 +57,5 @@ def main(path=PRED, n_splits=5):
 
 
 if __name__ == '__main__':
-    main()
+    import sys
+    main(sys.argv[1] if len(sys.argv) > 1 else PRED)

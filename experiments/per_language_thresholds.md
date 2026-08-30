@@ -31,6 +31,25 @@ and takes about a minute.
 
 ## Result
 
+Run `experiments/per_language_thresholds.py`. Measured on both models, since the
+question is whether the conclusion depends on which one you ask.
+
+**Current model** (5 splits): macro F1 0.8822 global vs 0.8806 per-language,
+**-0.0016**, and **0 of 5 splits improved**.
+
+| Class | Global F1 | Per-language F1 | Delta |
+|---|---|---|---|
+| toxic | 0.9639 | 0.9633 | -0.0006 |
+| severe_toxic | 0.7591 | 0.7527 | -0.0064 |
+| obscene | 0.9360 | 0.9368 | +0.0008 |
+| threat | 0.8446 | 0.8439 | -0.0007 |
+| insult | 0.9234 | 0.9219 | -0.0015 |
+| identity_hate | 0.8662 | 0.8648 | -0.0014 |
+| **Macro** | **0.8822** | **0.8806** | **-0.0016** |
+
+**April model** (5 splits): macro F1 0.6047 vs 0.6000, **-0.0047**, 1 of 5
+splits improved and that one by exactly 0.0000.
+
 | Class | Global F1 | Per-language F1 | Delta |
 |---|---|---|---|
 | toxic | 0.9036 | 0.9032 | -0.0004 |
@@ -41,8 +60,13 @@ and takes about a minute.
 | identity_hate | 0.4402 | 0.4370 | -0.0032 |
 | **Macro** | **0.6047** | **0.6000** | **-0.0047** |
 
-Per-split macro deltas: -0.0059, 0.0000, -0.0070, -0.0063, -0.0044.
-Mean -0.0047, sd 0.0025. **1 of 5 splits improved, and that one was exactly zero.**
+The conclusion holds on both, and is cleaner on the current model: not a single
+split improved. The damage is smaller in absolute terms (-0.0016 against -0.0047)
+for a reason worth noting -- the current model's probabilities are well separated,
+so where you put the threshold matters less to begin with. On this model,
+threshold tuning is worth only 0.0007 macro F1 over a flat 0.5; on the April
+model it was worth +0.0752. Less to gain from tuning also means less to lose from
+tuning badly.
 
 ## Why it loses, and why the pattern is the giveaway
 

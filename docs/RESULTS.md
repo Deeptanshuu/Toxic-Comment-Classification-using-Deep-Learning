@@ -348,14 +348,36 @@ unjustified number in the loss that produced the headline model. Tracked as O8 i
 
 ## Two things that were tried and did not work
 
-Both are negative results, measured rather than assumed. Both were measured on the April model's
-cached test predictions, which is enough to reject the idea but is not a statement about the
-retrained model; neither has been re-run against it.
+Both are negative results, measured rather than assumed, and both have now been run against the
+retrained model as well as the April one. The conclusions hold on both.
 
 | Idea | Result |
 |---|---|
-| Per-language thresholds instead of one global threshold per class | **Worse, −0.0047 macro F1**, 1 of 5 splits improved. Seven thresholds fit on a seventh of the data each is variance, not signal; damage concentrates in rare classes (`threat` −0.0144). [Writeup](../experiments/per_language_thresholds.md) |
-| Enforce the label hierarchy, clamping `P(child) <= P(toxic)` | **No effect, −0.0001 macro F1.** The hierarchy is real — `severe_toxic` is a perfect subset of `toxic`, 1,648 of 1,648 — but the model already respects it: 2.35% of rows violate it, by a mean of 0.0127, far too little to cross a threshold. Six sigmoids over a shared encoder are not independent. [Writeup](../experiments/label_hierarchy.md) |
+| Per-language thresholds instead of one global threshold per class | **Worse on both models.** Retrained: −0.0016 macro F1, **0 of 5 splits improved**. April: −0.0047, 1 of 5 improved and that one by exactly zero. Seven thresholds fit on a seventh of the data each is variance, not signal. [Writeup](../experiments/per_language_thresholds.md) |
+| Enforce the label hierarchy, clamping `P(child) <= P(toxic)` | **No effect on either model.** Retrained +0.0000, April −0.0001. [Writeup](../experiments/label_hierarchy.md) |
+
+The hierarchy result is worth reading in full, because re-running it corrected the explanation. The
+original write-up said the clamp does nothing because the model already respects the constraint —
+only 2.35% of April's rows violated it. The retrained model violates it on **35–50% of rows**, by a
+larger margin, and clamping still changes nothing.
+
+The real reason is that violations happen where the decision is not close. A clamp can only flip a
+prediction when `P(child)` is above its threshold while `P(toxic)` is below it, and that combination
+occurs on 0.006–0.244% of rows. For `threat`, 99% of violations sit below `P = 0.3`, on comments the
+model is confidently calling negative for both labels. `P(threat) = 0.18` against `P(toxic) = 0.04`
+breaks the rule, and clamping it to 0.04 is a change no threshold will notice.
+
+So the model has not learned the hierarchy as a hard rule — the violation rates rule that out. It
+has learned to be correctly ordered where the decision boundary is, and loosely ordered where
+nothing depends on it. That is a more interesting thing to know about it than the original
+explanation, and it only surfaced by re-running the experiment rather than assuming the old result
+carried over.
+
+Threshold tuning is also worth much less than it was. On the retrained model, per-class tuned
+thresholds beat a flat 0.5 by 0.0007 macro F1; on the April model the same tuning was worth +0.0752.
+When probabilities are well separated, where you put the cut-off stops mattering — which is the same
+fact the [AUC-versus-F1 section](#why-f1-gained-four-times-what-auc-did) describes from the other
+direction.
 
 ## Reproducing
 
