@@ -29,6 +29,7 @@ per-class AUC: toxic .9666 obscene .9278 threat .9051 insult .9035
 
 | Run | What | Status |
 |---|---|---|
+| train_20260830_080841 | ABLATION control, lang conditioning OFF | RUNNING, ends ~11:32 |
 | train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | **DONE 07:25**. 6/6 epochs. Best = epoch 5 @ 0.9868 val macro AUC. Epoch 6 tied and did not beat it. |
 
 Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799 | 4: 0.9849 | 5: 0.9868
@@ -163,6 +164,18 @@ what a frozen backbone could not do -- rare-class probabilities sat compressed
 near the decision boundary so no threshold could split them cleanly. Exact match
 .6194 -> .8772 means the share of comments where ALL SIX labels are right went
 from 62% to 88%.
+
+### ABLATION preliminary, epoch 1 of 6 (do NOT treat as the answer yet)
+                    treatment      control        diff
+  val macro AUC     0.9578263    0.9577712   -0.0000551
+  epoch train loss   0.041474     0.042831    +0.001357
+Not bitwise identical, so the arms genuinely differ. Per-class diffs are MIXED
+SIGN (toxic -0.0007, threat +0.0035, identity_hate -0.0022), which is what noise
+looks like; a real mechanism would push one direction consistently.
+Do not over-read the first few STEP losses (0.166 vs 0.281) -- single-batch
+noise, and the epoch averages are within 3%.
+This is epoch 1 on VAL. The answer is the paired test-split comparison via
+scripts/compare_ablation.py once the control finishes and is evaluated.
 
 ## Notes for the owner (write anything they must know here)
 
