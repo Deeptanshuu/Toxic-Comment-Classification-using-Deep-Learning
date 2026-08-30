@@ -176,7 +176,6 @@ environment so the control run needs no code edit:
 TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train
 ```
 
-The run is tagged `run.kind=control` vs `treatment` in MLflow (`train.py:871-877`) so the two arms
 can be compared from the run table.
 
 **The ablation has been run.** With the mechanism working, conditioning on language makes no
@@ -579,7 +578,6 @@ model/
 ├── language_aware_transformer.py   # model definition, the language bias
 ├── train.py                        # training loop, focal loss, validation, checkpointing
 ├── training_config.py              # TrainingConfig, MetricsTracker, DynamicClassWeights
-├── tracking.py                     # RunTracker: TensorBoard + MLflow, failure-isolated
 ├── data/sampler.py                 # MultilabelStratifiedSampler, length bucketing
 ├── data/collate.py                 # DynamicPadCollator
 ├── predict.py                      # single/batch prediction helpers

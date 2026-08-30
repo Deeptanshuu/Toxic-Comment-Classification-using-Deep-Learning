@@ -1,0 +1,356 @@
+{
+  "global": {
+    "toxic": {
+      "threshold": 0.43571428571428567,
+      "f1_score": 0.9637406706026512,
+      "support": 17697,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "severe_toxic": {
+      "threshold": 0.4724489795918367,
+      "f1_score": 0.7150316020884858,
+      "support": 1655,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "obscene": {
+      "threshold": 0.5459183673469388,
+      "f1_score": 0.9332251333178762,
+      "support": 8626,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "threat": {
+      "threshold": 0.5642857142857143,
+      "f1_score": 0.8314763231197771,
+      "support": 760,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "insult": {
+      "threshold": 0.5459183673469388,
+      "f1_score": 0.9200135652342425,
+      "support": 10199,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "identity_hate": {
+      "threshold": 0.5091836734693878,
+      "f1_score": 0.8735940010712373,
+      "support": 1878,
+      "total_samples": 35658,
+      "degenerate": false
+    }
+  },
+  "per_language": {
+    "0": {
+      "toxic": {
+        "threshold": 0.42241379310344823,
+        "f1_score": 0.9281696235395932,
+        "support": 2228,
+        "total_samples": 4638,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.7522522522522522,
+        "support": 199,
+        "total_samples": 4638,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.6086206896551724,
+        "f1_score": 0.9459677419354838,
+        "support": 1235,
+        "total_samples": 4638,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.5775862068965517,
+        "f1_score": 0.9377593360995851,
+        "support": 118,
+        "total_samples": 4638,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.6086206896551724,
+        "f1_score": 0.9151805132666376,
+        "support": 1144,
+        "total_samples": 4638,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.6086206896551724,
+        "f1_score": 0.9064039408866995,
+        "support": 214,
+        "total_samples": 4638,
+        "degenerate": false
+      }
+    },
+    "1": {
+      "toxic": {
+        "threshold": 0.42241379310344823,
+        "f1_score": 0.963400686237133,
+        "support": 2589,
+        "total_samples": 5193,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.45344827586206893,
+        "f1_score": 0.6895306859205776,
+        "support": 245,
+        "total_samples": 5193,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.9307723089235694,
+        "support": 1239,
+        "total_samples": 5193,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.7894736842105263,
+        "support": 106,
+        "total_samples": 5193,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.546551724137931,
+        "f1_score": 0.91324200913242,
+        "support": 1514,
+        "total_samples": 5193,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.8275862068965517,
+        "support": 279,
+        "total_samples": 5193,
+        "degenerate": false
+      }
+    },
+    "2": {
+      "toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.9595842956120092,
+        "support": 2585,
+        "total_samples": 5164,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.6829268292682927,
+        "support": 243,
+        "total_samples": 5164,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.546551724137931,
+        "f1_score": 0.8811359026369169,
+        "support": 1233,
+        "total_samples": 5164,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.7534883720930232,
+        "support": 110,
+        "total_samples": 5164,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.5775862068965517,
+        "f1_score": 0.8779514466245427,
+        "support": 1514,
+        "total_samples": 5164,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.8134991119005328,
+        "support": 282,
+        "total_samples": 5164,
+        "degenerate": false
+      }
+    },
+    "3": {
+      "toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.9757878554957725,
+        "support": 2579,
+        "total_samples": 5168,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.73828125,
+        "support": 243,
+        "total_samples": 5168,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.9463414634146341,
+        "support": 1234,
+        "total_samples": 5168,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.5775862068965517,
+        "f1_score": 0.8472906403940886,
+        "support": 108,
+        "total_samples": 5168,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.6086206896551724,
+        "f1_score": 0.9435215946843853,
+        "support": 1511,
+        "total_samples": 5168,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.9191176470588235,
+        "support": 276,
+        "total_samples": 5168,
+        "degenerate": false
+      }
+    },
+    "4": {
+      "toxic": {
+        "threshold": 0.39137931034482754,
+        "f1_score": 0.9741428845048842,
+        "support": 2568,
+        "total_samples": 5157,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.7338403041825095,
+        "support": 240,
+        "total_samples": 5157,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.9509127789046653,
+        "support": 1225,
+        "total_samples": 5157,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.8571428571428571,
+        "support": 105,
+        "total_samples": 5157,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.5775862068965517,
+        "f1_score": 0.9358465608465608,
+        "support": 1501,
+        "total_samples": 5157,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.896551724137931,
+        "support": 273,
+        "total_samples": 5157,
+        "degenerate": false
+      }
+    },
+    "5": {
+      "toxic": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.9739934502022731,
+        "support": 2572,
+        "total_samples": 5146,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.45344827586206893,
+        "f1_score": 0.7256317689530686,
+        "support": 242,
+        "total_samples": 5146,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.6706896551724137,
+        "f1_score": 0.9563772330702118,
+        "support": 1227,
+        "total_samples": 5146,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.6086206896551724,
+        "f1_score": 0.8315789473684211,
+        "support": 106,
+        "total_samples": 5146,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.9305510270622759,
+        "support": 1506,
+        "total_samples": 5146,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.5155172413793103,
+        "f1_score": 0.8848263254113345,
+        "support": 277,
+        "total_samples": 5146,
+        "degenerate": false
+      }
+    },
+    "6": {
+      "toxic": {
+        "threshold": 0.42241379310344823,
+        "f1_score": 0.9709111924484685,
+        "support": 2576,
+        "total_samples": 5192,
+        "degenerate": false
+      },
+      "severe_toxic": {
+        "threshold": 0.48448275862068957,
+        "f1_score": 0.720616570327553,
+        "support": 243,
+        "total_samples": 5192,
+        "degenerate": false
+      },
+      "obscene": {
+        "threshold": 0.6706896551724137,
+        "f1_score": 0.9362234264276782,
+        "support": 1233,
+        "total_samples": 5192,
+        "degenerate": false
+      },
+      "threat": {
+        "threshold": 0.5775862068965517,
+        "f1_score": 0.8421052631578947,
+        "support": 107,
+        "total_samples": 5192,
+        "degenerate": false
+      },
+      "insult": {
+        "threshold": 0.6706896551724137,
+        "f1_score": 0.933422999327505,
+        "support": 1509,
+        "total_samples": 5192,
+        "degenerate": false
+      },
+      "identity_hate": {
+        "threshold": 0.546551724137931,
+        "f1_score": 0.8856088560885609,
+        "support": 277,
+        "total_samples": 5192,
+        "degenerate": false
+      }
+    }
+  }
+}

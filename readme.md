@@ -136,7 +136,6 @@ TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train
 ```
 
 That switch makes the model ignore `lang_ids` entirely
-(`model/language_aware_transformer.py:252`). The run is tagged `run.kind=control` in MLflow so the
 two arms can be compared from the run table. Both arms have been run; the comparison found no
 measurable effect from language conditioning, which means `lang_ids` can be omitted at inference
 with no measurable cost. See
@@ -148,9 +147,7 @@ with no measurable cost. See
 |---|---|---|---|
 | TensorBoard | `scripts/train_tmux.sh` starts it | `:6006` | per-step loss, LR, grad norm, GPU memory |
 | Training dashboard | `scripts/monitor.sh` | `:8502` | live Streamlit view over the same event files |
-| MLflow | `scripts/mlflow_ui.sh` | `:5000` | params, tags, artifacts, run-vs-run comparison |
 
-TensorBoard and MLflow are written by the same call in the training loop
 (`model/tracking.py`). Both fail independently and neither can take a run down — the April run died
 at epoch 4 of 6 on a logging-backend auth error, which is exactly why the published checkpoint is a
 half-trained epoch-2 model.
@@ -163,10 +160,8 @@ dataset/        raw, processed and split CSVs (split/{train,val,test}.csv)
 augmentation/   Mistral-7B synthetic generation for rare classes
 analysis/       class weights, loss/ROC curves, language distribution
 utils/          dataset build, split, dedup, leakage check, attention/attribution viz
-scripts/        train_tmux.sh, monitor.sh, mlflow_ui.sh
 docs/           the documents linked below
 monitor_app.py  live training dashboard   ·   app.py  Gradio demo   ·   streamlit_app.py  demo
-runs/, mlruns/  TensorBoard event files and the MLflow file store (both gitignored)
 ```
 
 ## Docs

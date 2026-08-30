@@ -1,0 +1,340 @@
+{
+  "baseline_checkpoint": "/home/deeptanshul/Toxic-Comment-Classification-using-Deep-Learning/weights/toxic_classifier_xlmr_v2/best_model/pytorch_model.bin",
+  "retrained_checkpoint": "/home/deeptanshul/Toxic-Comment-Classification-using-Deep-Learning/weights/toxic_classifier_xlmr_v2/best_model/pytorch_model.bin",
+  "same_checkpoint": true,
+  "baseline_thresholds": [
+    0.4724489795918367,
+    0.4724489795918367,
+    0.5275510204081633,
+    0.5275510204081633,
+    0.5642857142857143,
+    0.5642857142857143
+  ],
+  "retrained_thresholds": [
+    0.4724489795918367,
+    0.4724489795918367,
+    0.5275510204081633,
+    0.5275510204081633,
+    0.5642857142857143,
+    0.5642857142857143
+  ],
+  "baseline_threshold_detail": {
+    "toxic": {
+      "threshold": 0.4724489795918367,
+      "f1_score": 0.964104847236908,
+      "support": 17697,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "severe_toxic": {
+      "threshold": 0.4724489795918367,
+      "f1_score": 0.7429062768701634,
+      "support": 1655,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "obscene": {
+      "threshold": 0.5275510204081633,
+      "f1_score": 0.937078390323331,
+      "support": 8626,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "threat": {
+      "threshold": 0.5275510204081633,
+      "f1_score": 0.8424657534246576,
+      "support": 760,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "insult": {
+      "threshold": 0.5642857142857143,
+      "f1_score": 0.9223998826463253,
+      "support": 10199,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "identity_hate": {
+      "threshold": 0.5642857142857143,
+      "f1_score": 0.8753432180120813,
+      "support": 1878,
+      "total_samples": 35658,
+      "degenerate": false
+    }
+  },
+  "retrained_threshold_detail": {
+    "toxic": {
+      "threshold": 0.4724489795918367,
+      "f1_score": 0.964104847236908,
+      "support": 17697,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "severe_toxic": {
+      "threshold": 0.4724489795918367,
+      "f1_score": 0.7429062768701634,
+      "support": 1655,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "obscene": {
+      "threshold": 0.5275510204081633,
+      "f1_score": 0.937078390323331,
+      "support": 8626,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "threat": {
+      "threshold": 0.5275510204081633,
+      "f1_score": 0.8424657534246576,
+      "support": 760,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "insult": {
+      "threshold": 0.5642857142857143,
+      "f1_score": 0.9223998826463253,
+      "support": 10199,
+      "total_samples": 35658,
+      "degenerate": false
+    },
+    "identity_hate": {
+      "threshold": 0.5642857142857143,
+      "f1_score": 0.8753432180120813,
+      "support": 1878,
+      "total_samples": 35658,
+      "degenerate": false
+    }
+  },
+  "category": {
+    "baseline": {
+      "sexual_orientation": {
+        "n": 49,
+        "fpr": 0.4897959183673469,
+        "meanp": 0.4615202951862724
+      },
+      "gender_identity": {
+        "n": 28,
+        "fpr": 0.17857142857142858,
+        "meanp": 0.18683256603877194
+      },
+      "race": {
+        "n": 49,
+        "fpr": 0.12244897959183673,
+        "meanp": 0.1246131735839596
+      },
+      "disability": {
+        "n": 42,
+        "fpr": 0.047619047619047616,
+        "meanp": 0.10702521475918945
+      },
+      "religion": {
+        "n": 63,
+        "fpr": 0.031746031746031744,
+        "meanp": 0.07034988018743221
+      },
+      "age": {
+        "n": 28,
+        "fpr": 0.0,
+        "meanp": 0.03154934921518101
+      },
+      "ethnicity_nationality": {
+        "n": 98,
+        "fpr": 0.0,
+        "meanp": 0.030952142321086507
+      },
+      "gender": {
+        "n": 14,
+        "fpr": 0.0,
+        "meanp": 0.024106042018891976
+      },
+      "control": {
+        "n": 63,
+        "fpr": 0.0,
+        "meanp": 0.012226486000202832
+      }
+    },
+    "retrained": {
+      "sexual_orientation": {
+        "n": 49,
+        "fpr": 0.4897959183673469,
+        "meanp": 0.4615202951862724
+      },
+      "gender_identity": {
+        "n": 28,
+        "fpr": 0.17857142857142858,
+        "meanp": 0.18683256603877194
+      },
+      "race": {
+        "n": 49,
+        "fpr": 0.12244897959183673,
+        "meanp": 0.1246131735839596
+      },
+      "disability": {
+        "n": 42,
+        "fpr": 0.047619047619047616,
+        "meanp": 0.10702521475918945
+      },
+      "religion": {
+        "n": 63,
+        "fpr": 0.031746031746031744,
+        "meanp": 0.07034988018743221
+      },
+      "age": {
+        "n": 28,
+        "fpr": 0.0,
+        "meanp": 0.03154934921518101
+      },
+      "ethnicity_nationality": {
+        "n": 98,
+        "fpr": 0.0,
+        "meanp": 0.030952142321086507
+      },
+      "gender": {
+        "n": 14,
+        "fpr": 0.0,
+        "meanp": 0.024106042018891976
+      },
+      "control": {
+        "n": 63,
+        "fpr": 0.0,
+        "meanp": 0.012226486000202832
+      }
+    }
+  },
+  "language": {
+    "baseline": {
+      "en": {
+        "n": 27,
+        "fpr": 0.4074074074074074,
+        "ctrl_fpr": 0.0
+      },
+      "ru": {
+        "n": 27,
+        "fpr": 0.7037037037037037,
+        "ctrl_fpr": 0.0
+      },
+      "tr": {
+        "n": 27,
+        "fpr": 0.6666666666666666,
+        "ctrl_fpr": 0.0
+      },
+      "es": {
+        "n": 27,
+        "fpr": 0.6666666666666666,
+        "ctrl_fpr": 0.0
+      },
+      "fr": {
+        "n": 27,
+        "fpr": 0.5925925925925926,
+        "ctrl_fpr": 0.0
+      },
+      "it": {
+        "n": 27,
+        "fpr": 0.5555555555555556,
+        "ctrl_fpr": 0.0
+      },
+      "pt": {
+        "n": 27,
+        "fpr": 0.7407407407407407,
+        "ctrl_fpr": 0.0
+      },
+      "ALL": {
+        "n": 189,
+        "fpr": 0.6190476190476191,
+        "ctrl_fpr": 0.0
+      }
+    },
+    "retrained": {
+      "en": {
+        "n": 27,
+        "fpr": 0.4074074074074074,
+        "ctrl_fpr": 0.0
+      },
+      "ru": {
+        "n": 27,
+        "fpr": 0.7037037037037037,
+        "ctrl_fpr": 0.0
+      },
+      "tr": {
+        "n": 27,
+        "fpr": 0.6666666666666666,
+        "ctrl_fpr": 0.0
+      },
+      "es": {
+        "n": 27,
+        "fpr": 0.6666666666666666,
+        "ctrl_fpr": 0.0
+      },
+      "fr": {
+        "n": 27,
+        "fpr": 0.5925925925925926,
+        "ctrl_fpr": 0.0
+      },
+      "it": {
+        "n": 27,
+        "fpr": 0.5555555555555556,
+        "ctrl_fpr": 0.0
+      },
+      "pt": {
+        "n": 27,
+        "fpr": 0.7407407407407407,
+        "ctrl_fpr": 0.0
+      },
+      "ALL": {
+        "n": 189,
+        "fpr": 0.6190476190476191,
+        "ctrl_fpr": 0.0
+      }
+    }
+  },
+  "real_data_bias": {
+    "ratio_baseline": 2.8423465211459753,
+    "ci_baseline": [
+      1.9649361948760118,
+      3.7692936146887437
+    ],
+    "ratio_retrained": 2.8423465211459753,
+    "ci_retrained": [
+      1.9649361948760118,
+      3.7692936146887437
+    ],
+    "delta": 0.0,
+    "delta_ci": [
+      0.0,
+      0.0
+    ],
+    "n_term": 275,
+    "n_other": 17362
+  },
+  "quality": {
+    "baseline": {
+      "auc_macro": 0.9851760764045183,
+      "f1_macro": 0.8814444766791678,
+      "f1_per_class": {
+        "toxic": 0.9640741982344396,
+        "severe_toxic": 0.754932799542465,
+        "obscene": 0.9378274537198743,
+        "threat": 0.840301576422207,
+        "insult": 0.9234828496042217,
+        "identity_hate": 0.8680479825517994
+      },
+      "identity_hate_recall": 0.8418826017979905,
+      "identity_hate_precision": 0.8958919527293191
+    },
+    "retrained": {
+      "auc_macro": 0.9851760764045183,
+      "f1_macro": 0.8814444766791678,
+      "f1_per_class": {
+        "toxic": 0.9640741982344396,
+        "severe_toxic": 0.754932799542465,
+        "obscene": 0.9378274537198743,
+        "threat": 0.840301576422207,
+        "insult": 0.9234828496042217,
+        "identity_hate": 0.8680479825517994
+      },
+      "identity_hate_recall": 0.8418826017979905,
+      "identity_hate_precision": 0.8958919527293191
+    }
+  }
+}
