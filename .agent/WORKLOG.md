@@ -29,7 +29,7 @@ per-class AUC: toxic .9666 obscene .9278 threat .9051 insult .9035
 
 | Run | What | Status |
 |---|---|---|
-| train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | RUNNING, ~06:46 |
+| train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | **DONE 07:25**. 6/6 epochs. Best = epoch 5 @ 0.9868 val macro AUC. Epoch 6 tied and did not beat it. |
 
 Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799 | 4: 0.9849 | 5: 0.9868
 Gains decelerate cleanly: +0.0119, +0.0102, +0.0051, +0.0019 -> converged.
@@ -44,8 +44,12 @@ Both losses still falling at epoch 3, so the remaining epochs should still buy s
 
 ## Plan (update as it changes)
 
-1. [~] Main run in progress, ~06:52. Do not disturb it.
-2. [~] AUTOMATED: scripts/after_training.sh is armed in tmux window `after`.
+1. [x] DONE. Main run finished 6/6 epochs at 07:25. Best epoch 5, val macro
+       AUC 0.9868 vs baseline 0.9147 (+0.0721). Converged: gains +0.0119,
+       +0.0102, +0.0051, +0.0019, then epoch 6 tied. Val loss rose at epoch 5
+       while train loss fell, so 6 epochs was the right budget.
+2. [~] RUNNING since ~07:25: test-split evaluation (eval_20260830_072515).
+   AUTOMATED: scripts/after_training.sh is running in tmux window `after`.
        It waits for the trainer to exit, checks 6 epochs actually completed and a
        best checkpoint exists, then runs the test-split eval, then starts the
        ablation. It REFUSES to start the ablation if the run ended early.
