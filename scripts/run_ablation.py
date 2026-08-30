@@ -9,7 +9,6 @@ class_adjustments table in training_config.py. It distorts class weights by
 ~3.5% on average, but it distorts BOTH arms the same way, so it cancels in the
 comparison. Removing it from one arm only would break the ablation.
 
-Writes to its own checkpoint dir and its own MLflow run tagged run.kind=control.
 """
 import os
 import sys

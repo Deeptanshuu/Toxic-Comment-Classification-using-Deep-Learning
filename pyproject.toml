@@ -25,7 +25,6 @@ dependencies = [
     # Experiment tracking (model/tracking.py): params, run comparison, artifacts.
     # File-backed (./mlruns), no server. protobuf must stay <6 for tensorboard
     # 2.18 at runtime; wandb's own protobuf<6 cap currently enforces that.
-    "mlflow==3.15.2",
     "wandb==0.19.5",
     "tqdm==4.67.1",
     # inference: model/predict.py does language detection before classification.

@@ -51,7 +51,6 @@ survive on test. Practical upshot: `lang_ids` can be omitted at inference with n
 | Evaluate (defaults are already correct) | `uv run python -m model.evaluation.evaluate` |
 | Ablation control run | `TOXIC_DISABLE_LANG_CONDITIONING=1 uv run python -m model.train` |
 | Training dashboard | `PY=.venv-uv/bin/python scripts/monitor.sh` — `.venv` lacks streamlit |
-| MLflow UI | `scripts/mlflow_ui.sh` |
 | Lint | `uv run ruff check .` |
 
 Full explanations of all of these: `docs/DEVELOPMENT.md`.

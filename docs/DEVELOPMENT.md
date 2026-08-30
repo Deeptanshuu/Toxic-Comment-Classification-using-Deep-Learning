@@ -63,13 +63,11 @@ if you are only training. Install narrower with `uv sync --extra serve`, etc.
 
 | Group | Adds | Needed for |
 |---|---|---|
-| *(core, always installed)* | torch, transformers, scikit-learn, tensorboard, **mlflow**, wandb, langdetect | training, evaluation, `model/predict.py` |
 | `serve` | streamlit, gradio, plotly, onnxruntime | `streamlit_app.py`, `app.py`, and `monitor_app.py` (see the venv note below) |
 | `augment` | accelerate, bitsandbytes | `augmentation/*.py` (4-bit Mistral-7B generation) |
 | `analysis` | seaborn, scipy | `analysis/*.py` plotting scripts |
 | `dev` | ruff, pytest | linting, tests — on by default, skip with `--no-dev` |
 
-`mlflow` is a core dependency, not a `serve` extra: the training loop always tries to use it
 (see [Monitoring](#monitoring-a-run) below), so it has to be present in any environment that
 runs `model/train.py`.
 
@@ -78,11 +76,7 @@ runs `model/train.py`.
 There are two virtual environments sitting in this repo, and they are not interchangeable.
 
 - **`.venv`** is the training environment. Every script (`train_tmux.sh`, `monitor.sh`,
-  `mlflow_ui.sh`) points its `PY` variable here by default. It has the core dependencies
-  plus `mlflow`, and *not* the `serve` extra.
-- **`.venv-uv`** was built by an earlier `uv sync --all-extras`, before `mlflow` was added
   as a core dependency. It has `serve` (streamlit, plotly, gradio), `augment`, and
-  `analysis` installed, but does not have `mlflow` at all.
 
 This has one concrete, verified consequence worth knowing before you hit it: `scripts/monitor.sh` runs
 `streamlit`, but `.venv` — its own default interpreter — does not have streamlit installed. Running
@@ -92,13 +86,9 @@ Two ways around it:
 ```bash
 PY=.venv-uv/bin/python scripts/monitor.sh   # works today; .venv-uv has streamlit and plotly
 # or, to fix it properly and stop needing two environments:
-uv sync --extra serve                       # adds streamlit/plotly/etc. to .venv, keeps mlflow
 ```
 
-`model/tracking.py` is written to degrade gracefully if `mlflow` is missing (it logs one
 line and falls back to TensorBoard-only), so running *training* against `.venv-uv` would not
-crash — it would just silently drop MLflow logging, which is a much easier mistake to miss
-than a `ModuleNotFoundError`. Use `.venv` for training and `scripts/mlflow_ui.sh`.
 
 ## Training
 
@@ -127,7 +117,6 @@ SSH session, so it keeps running whether or not anyone is attached.
 | `gpu` | `watch nvidia-smi`, refreshed every 5s | — |
 
 In practice you will usually add two more windows by hand for the other monitoring tools
-(`tmux new-window -n monitor scripts/monitor.sh`, same for `mlflow_ui.sh`) — that gives the
 five-window layout you will see if you attach to a live session.
 
 ```bash
@@ -153,18 +142,13 @@ opt into two-GPU DataParallel anyway, `GPUS=0,1`.
 |---|---|---|---|
 | TensorBoard | `train_tmux.sh` (automatic) | `:6006` | live per-step curves — loss, LR, grad norm, GPU memory — at full resolution, zero setup |
 | Training dashboard | `scripts/monitor.sh` | `:8502` | a single glance at run health: status (live/stalled/finished), ETA, and computed sanity checks (is the LR schedule actually shaped like warmup-then-decay, are the class weights actually non-uniform) that a raw curve does not tell you by itself |
-| MLflow UI | `scripts/mlflow_ui.sh` | `:5000` | comparing *runs against each other* — params, git commit, and the `run.kind=control`/`treatment` tag the ablation below sets, sortable in a table |
 
-Training writes to both TensorBoard and MLflow through one call
 (`model/tracking.py`'s `RunTracker`), because they are good at different things and neither
 alone covers what this project needs. TensorBoard writes every scalar synchronously and has
 no idea that two different directories under `runs/` might be worth comparing to each other.
-MLflow's file-backed store (`./mlruns`, no server process needed) does know about runs as
 first-class, comparable objects — it also stores parameters, tags, and artifacts, which
 TensorBoard has no slot for at all — but writing to it one metric at a time costs roughly
 1 ms per call, so `RunTracker` buffers per-step metrics and flushes them in batches, keeping
-MLflow's overhead to a fraction of a percent of a training step. Either backend can fail
-(the original SafeSummaryWriter design this replaces was built after MLflow's predecessor —
 wandb — killed a training run outright on an auth error) without affecting the other or
 stopping training; each self-disables after 10 consecutive failures.
 
@@ -173,7 +157,6 @@ machine has," not just one. The scripts' own comments describe this as being for
 reachability, and it is reachable there, but that framing undersells it: unlike a
 Tailscale-only bind, this is *also* reachable from the plain LAN, or from the public internet
 if this machine has a routable IP, by anyone who can reach the host on any interface. There is
-no password and, for MLflow specifically, the UI can delete runs and experiments outright.
 That is a reasonable trade on a network you fully trust — this is not a defect to fix before
 using the tools — but do not assume "bound to `0.0.0.0`" means "only reachable over
 Tailscale"; it means the opposite of restricted.
@@ -202,8 +185,6 @@ The environment variable is read once in `TrainingConfig.__post_init__`
 (`model/training_config.py:451-458`) and forces `disable_lang_conditioning = True`, which
 makes `model/language_aware_transformer.py` skip the language bias entirely
 (`model/language_aware_transformer.py:252`) — architecturally identical model, just blind to
-language. `model/train.py:871-874` tags the MLflow run `run.kind=control` or `=treatment`
-accordingly, so the two runs are easy to find and compare in the MLflow UI once both are
 done.
 
 Both arms have been run and compared: no measurable effect, +0.0003 macro AUC with a 95%
@@ -267,11 +248,9 @@ for what that comparison actually shows.
 
 ## Known environment hazards
 
-- **protobuf.** `mlflow` and `tensorboard` both depend on `protobuf`, and a bare `mlflow`
   install is happy to pull in `protobuf>=6`, which breaks `tensorboard==2.18` at runtime.
   The resolved version is currently pinned down to `5.29.6` — but only incidentally, via
   `wandb`'s own `protobuf<6` constraint (see the comment in `pyproject.toml` next to the
-  `mlflow` dependency). This is fragile: if `wandb` is ever dropped from the dependency list,
   that ceiling disappears with it, and the next `uv lock` could silently pull `protobuf>=6`
   and break TensorBoard logging. If you remove `wandb`, add an explicit `protobuf<6`
   constraint in its place first.

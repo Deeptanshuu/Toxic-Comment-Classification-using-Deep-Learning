@@ -195,11 +195,6 @@ class SafeSummaryWriter:
 
 
 
-# Fan out to MLflow as well as TensorBoard. TensorBoard keeps the dense
-# per-step curves; MLflow records params, tags and artifacts so runs (in
-# particular the lang-conditioning ablation) can actually be compared.
-# The two backends fail independently; neither can take the run down.
-from model.tracking import RunTracker as SafeSummaryWriter  # noqa: E402,F811
 
 def unwrap_model(model):
     """Return the underlying module, whether or not it is DataParallel-wrapped"""
@@ -863,18 +858,6 @@ def train(model, train_loader, val_loader, config, writer=None):
 
     writer.add_text('config', f"```json\n{json.dumps(config.to_serializable_dict(), indent=2)}\n```")
 
-    # MLflow side: params and tags are what make runs comparable later. The
-    # ablation tag in particular is how the real-vs-shuffled lang_ids
-    # comparison gets read back off the run table.
-    if hasattr(writer, 'log_params'):
-        writer.log_params(config.to_serializable_dict())
-        writer.set_tags({
-            'ablation.disable_lang_conditioning': str(
-                getattr(config, 'disable_lang_conditioning', False)).lower(),
-            'run.kind': 'control' if getattr(config, 'disable_lang_conditioning', False) else 'treatment',
-            'data.train_file': str(config.train_file),
-            'data.val_file': str(config.val_file),
-        })
 
     logger.info("Starting training loop...")
     # Training loop
