@@ -31,7 +31,12 @@ per-class AUC: toxic .9666 obscene .9278 threat .9051 insult .9035
 |---|---|---|
 | train_20260830_030414 | main retrain, 6 epochs, lang conditioning ON | RUNNING, ~06:46 |
 
-Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799
+Validation macro AUC by epoch: 1: 0.9578 | 2: 0.9697 | 3: 0.9799 | 4: 0.9849 | 5: 0.9868
+Gains decelerate cleanly: +0.0119, +0.0102, +0.0051, +0.0019 -> converged.
+Val loss ticked UP at e5 (0.0070 -> 0.0071) while train loss kept falling
+(0.0140 -> 0.0089): overfitting onset. Model selection on val AUC handles it, and
+this is exactly why the validation loop needed to exist. 6 epochs was the right
+budget; more would likely have cost accuracy.
 Baseline is 0.9147, so epoch 3 is already +0.0652. Rare classes gained most:
 identity_hate +0.0908, threat +0.0755, insult +0.0725, severe_toxic +0.0713,
 obscene +0.0563, toxic +0.0244. Best/worst class spread collapsed 0.080 -> 0.021.
