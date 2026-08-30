@@ -22,9 +22,15 @@ dependencies = [
     "joblib==1.4.2",
     # training loop
     "tensorboard==2.18.0",
-    # Experiment tracking (model/tracking.py): params, run comparison, artifacts.
-    # File-backed (./mlruns), no server. protobuf must stay <6 for tensorboard
-    # 2.18 at runtime; wandb's own protobuf<6 cap currently enforces that.
+    # setuptools 81 dropped pkg_resources, which tensorboard/default.py still
+    # imports unconditionally, so a fresh TensorBoard launch dies on import.
+    "setuptools<81",
+    # protobuf 6 breaks tensorboard 2.18 at runtime with
+    # "MessageFactory object has no attribute GetPrototype". This was previously
+    # held below 6 only by wandb's transitive cap, which is fragile -- pin it here.
+    "protobuf<6",
+    # Only analysis/plot_loss_curves.py still imports wandb; train.py logs to
+    # TensorBoard directly.
     "wandb==0.19.5",
     "tqdm==4.67.1",
     # inference: model/predict.py does language detection before classification.
