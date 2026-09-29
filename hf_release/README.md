@@ -114,7 +114,7 @@ model-index:
 > measured harm is worse than no card.
 
 
-# toxic-comment-multilingual-xlmr
+# Mill (toxic-comment-multilingual-xlmr)
 
 **A System One model for toxicity: unstructured comment in, typed probabilistic decisions out.**
 

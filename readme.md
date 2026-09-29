@@ -1,14 +1,19 @@
-# Multilingual Toxicity Classifier: a System One model
+# Mill
+
+**A System One model for multilingual toxicity.**
 
 > Unstructured comment in, typed probabilistic decisions out.
 
-A fast, single-pass classifier for content moderation across 7 languages (en, ru, tr, es, fr, it,
+Mill is a fast, single-pass classifier for content moderation across 7 languages (en, ru, tr, es, fr, it,
 pt), built on XLM-RoBERTa-large. It does not generate text. It reads a comment once and returns 6
 independent probabilities: `toxic`, `severe_toxic`, `obscene`, `threat`, `insult`,
 `identity_hate`. "Multi-label" means the labels are not exclusive — one comment can be `toxic` and
 `insult` and nothing else, or all six at once.
 
 ## What "System One" means here
+
+The name is for John Stuart Mill, whose harm principle is the classic argument for where speech
+stops being protected; it is a naming nod, not a claim about the model.
 
 The framing follows the "System One model" idea in TypeSafe's
 [Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev): a model used as
