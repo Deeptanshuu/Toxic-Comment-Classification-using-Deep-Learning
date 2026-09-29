@@ -1,6 +1,6 @@
 # Mill
 
-**A System One model for multilingual toxicity.**
+**A fast, single-pass model for multilingual toxicity.**
 
 > Unstructured comment in, typed probabilistic decisions out.
 
@@ -10,15 +10,15 @@ independent probabilities: `toxic`, `severe_toxic`, `obscene`, `threat`, `insult
 `identity_hate`. "Multi-label" means the labels are not exclusive — one comment can be `toxic` and
 `insult` and nothing else, or all six at once.
 
-## What "System One" means here
+## Design
 
 The name is for John Stuart Mill, whose harm principle is the classic argument for where speech
 stops being protected; it is a naming nod, not a claim about the model.
 
-The framing follows the "System One model" idea in TypeSafe's
-[Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev): a model used as
-a function call inside a software workflow rather than as a conversational partner. This project is
-independent of TypeSafe and Jev; it borrows the framing, not the model.
+Mill is used as a function call inside a software workflow, not as a conversational partner. The
+idea is similar to TypeSafe's [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+applied here to one use case: multilingual toxicity moderation. Mill is an independent project and is
+not affiliated with TypeSafe.
 
 | Property | This model | Evidence |
 |---|---|---|

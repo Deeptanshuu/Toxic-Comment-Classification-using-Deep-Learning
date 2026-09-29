@@ -116,7 +116,7 @@ model-index:
 
 # Mill (toxic-comment-multilingual-xlmr)
 
-**A System One model for toxicity: unstructured comment in, typed probabilistic decisions out.**
+**A fast, single-pass model for toxicity: unstructured comment in, typed probabilistic decisions out.**
 
 Multi-label toxicity classification for online comments in seven languages:
 English, Russian, Turkish, Spanish, French, Italian, Portuguese.
@@ -128,9 +128,10 @@ pass. It does not generate text: the output is six sigmoids, so the result is
 always a fixed-shape vector you can drop into a moderation workflow as a
 function call.
 
-The "System One" framing follows TypeSafe's
-[Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
-This model is independent of TypeSafe and Jev. The scores are ranks, not
+The idea is similar to TypeSafe's
+[Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), applied
+here to one use case: multilingual toxicity moderation. Mill is an independent
+project and is not affiliated with TypeSafe. The scores are ranks, not
 calibrated probabilities, and latency has not been measured, so this card makes
 no claim on either.
 
