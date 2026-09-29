@@ -4,8 +4,9 @@ Instructions for an AI assistant working in this repository.
 
 ## What this is
 
-**Mill** (display name only; the package, weight paths and HF repo ID
-`Deeptanshuu/toxic-comment-multilingual-xlmr` keep their old names). Multi-label toxic-comment classification: 6 non-exclusive labels, 7 languages, fine-tuning
+**Mill** (display name; the GitHub and HF repos are both `Deeptanshuu/mill-screen`, renamed
+2026-09-29 from `Toxic-Comment-Classification-using-Deep-Learning` and
+`toxic-comment-multilingual-xlmr`; the package and weight paths keep their old names). Multi-label toxic-comment classification: 6 non-exclusive labels, 7 languages, fine-tuning
 XLM-RoBERTa-large with a custom attention block that conditions on language ID. The branch
 `fix/training-correctness` is an audit-and-fix pass over a 2025 run that shipped with eleven
 bugs; `main` still has the original, unfixed code — verified: `main`'s `model/train.py` still

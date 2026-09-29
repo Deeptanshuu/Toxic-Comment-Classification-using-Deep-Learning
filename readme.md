@@ -1,4 +1,4 @@
-# Mill
+# Mill Screen
 
 **A fast, single-pass model for multilingual toxicity.**
 

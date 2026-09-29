@@ -27,7 +27,7 @@ import sys
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-REPO_ID = "Deeptanshuu/toxic-comment-multilingual-xlmr"
+REPO_ID = "Deeptanshuu/mill-screen"
 
 # Baked into the trained language embedding table. Do not renumber.
 LANGUAGE_IDS = {"en": 0, "ru": 1, "tr": 2, "es": 3, "fr": 4, "it": 5, "pt": 6}

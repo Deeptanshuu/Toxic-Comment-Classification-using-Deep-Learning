@@ -28,7 +28,7 @@ cd "$(dirname "$0")/.."
 REPO="$PWD"
 
 PY="${PY:-$REPO/.venv/bin/python}"
-HF_REPO="${HF_REPO:-Deeptanshuu/toxic-comment-multilingual-xlmr}"
+HF_REPO="${HF_REPO:-Deeptanshuu/mill-screen}"
 SRC="${SRC:-$REPO/hf_release}"
 BEST="${BEST:-$REPO/weights/toxic_classifier_xlmr_v2/best_model}"
 TOKENIZER_NAME="${TOKENIZER_NAME:-xlm-roberta-large}"

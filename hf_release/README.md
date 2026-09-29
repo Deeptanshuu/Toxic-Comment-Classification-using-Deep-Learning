@@ -22,7 +22,7 @@ metrics:
   - roc_auc
   - f1
 model-index:
-  - name: Mill (toxic-comment-multilingual-xlmr)
+  - name: Mill Screen
     results:
       - task:
           type: text-classification
@@ -58,9 +58,9 @@ model-index:
 > On real held-out rows with no positive label, identity-term rows are flagged 2.84x as often
 > (95% CI [1.96, 3.82]). One paragraph of neutral filler in front drops the top probe to 0.042.
 > The cause is the training data: benign identity usage is almost absent from it. Do not run this
-> on user content without mitigation or human review. [Analysis](https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning/blob/main/experiments/identity_bias.md).
+> on user content without mitigation or human review. [Analysis](https://github.com/Deeptanshuu/mill-screen/blob/main/experiments/identity_bias.md).
 
-# Mill (toxic-comment-multilingual-xlmr)
+# Mill Screen
 
 **Unstructured comment in, typed probabilistic decisions out.**
 
@@ -87,7 +87,7 @@ import json, torch
 from huggingface_hub import hf_hub_download
 from transformers import AutoModel, AutoTokenizer
 
-REPO = "Deeptanshuu/toxic-comment-multilingual-xlmr"
+REPO = "Deeptanshuu/mill-screen"
 LANGUAGE_IDS = {"en": 0, "ru": 1, "tr": 2, "es": 3, "fr": 4, "it": 5, "pt": 6}
 LABELS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
@@ -149,7 +149,7 @@ Mill is the most accurate and runs at the speed of other XLM-R-large models, abo
 Detoxify's throughput. One Quadro RTX 6000, fp16, median batch-1 latency. 89% of English test
 rows are in Jigsaw data the Detoxify models trained on; removing them keeps every AUC gap. Mill
 trained on this test set's distribution; the baselines did not.
-[Details](https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning/blob/main/experiments/baselines.md).
+[Details](https://github.com/Deeptanshuu/mill-screen/blob/main/experiments/baselines.md).
 
 Per class, tuned thresholds:
 
@@ -230,6 +230,6 @@ Wikipedia talk pages, Mistral-generated text) keeps its own terms.
   author       = {Deeptanshu Lal},
   title        = {Mill: multilingual multi-label toxicity classification},
   year         = {2026},
-  howpublished = {\url{https://huggingface.co/Deeptanshuu/toxic-comment-multilingual-xlmr}}
+  howpublished = {\url{https://huggingface.co/Deeptanshuu/mill-screen}}
 }
 ```
