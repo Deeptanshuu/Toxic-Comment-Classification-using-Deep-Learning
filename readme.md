@@ -37,21 +37,28 @@ Every language improved, and the gap between best and worst narrowed from 0.052 
 
 v2 separates real threats from everything else: 16% of threats score below 0.5, down from 80%.
 
-Against public models, `toxic` AUC on the same test rows. Source:
-[experiments/baselines.md](experiments/baselines.md).
+### Against public models
 
-| Model | Baseline AUC | Mill AUC |
-|---|---|---|
-| Detoxify multilingual | 0.9692 | **0.9921** |
-| textdetox XLM-R large | 0.9327 | **0.9921** |
-| citizenlab mDistilBERT | 0.8513 | **0.9921** |
-| toxic-bert (English, six-label macro) | 0.9584 | **0.9902** |
+Same test rows, each baseline used as published. Source: [experiments/baselines.md](experiments/baselines.md).
 
-89% of English test rows appear in Jigsaw data the Detoxify models trained on; excluding them keeps or
-widens every gap. Mill also trained on this test set's distribution, which the baselines did not.
+| Model | Size | `toxic` AUC | Comments/s | Latency |
+|---|---|---|---|---|
+| **Mill** | 565M | **0.9921** | 871 | 11.8 ms |
+| Detoxify multilingual | 278M | 0.9692 | 2,424 | 6.2 ms |
+| textdetox XLM-R large | 560M | 0.9327 | 896 | 11.0 ms |
+| citizenlab mDistilBERT | 135M | 0.8513 | 3,700 | 2.9 ms |
+| toxic-bert (English only) | 110M | 0.9797 (Mill 0.9797) | 1,362 | 5.5 ms |
 
-**Known bias:** short benign text containing identity terms ("I am a gay man.") is over-flagged as
-toxic. Read [experiments/identity_bias.md](experiments/identity_bias.md) before deploying.
+![AUC against public models](docs/images/baseline_auc.png)
+
+![Throughput and latency](docs/images/baseline_speed.png)
+
+Mill is the most accurate, at the speed of other XLM-R-large models (a third of Detoxify's
+throughput). 89% of English test rows are in Jigsaw data the Detoxify models trained on; removing
+them keeps every gap. Mill trained on this test set's distribution; the baselines did not.
+
+**Known bias:** short benign self-descriptions that name an identity are over-flagged as toxic.
+Read [experiments/identity_bias.md](experiments/identity_bias.md) before deploying.
 
 ## Setup
 
