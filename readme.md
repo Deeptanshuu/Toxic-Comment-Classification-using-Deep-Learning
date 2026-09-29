@@ -1,9 +1,27 @@
-# Multilingual Toxic Comment Classification
+# Multilingual Toxicity Classifier: a System One model
 
-Multi-label toxicity classification across 7 languages (en, ru, tr, es, fr, it, pt), built on
-XLM-RoBERTa-large. Each comment gets 6 independent yes/no scores: `toxic`, `severe_toxic`,
-`obscene`, `threat`, `insult`, `identity_hate`. "Multi-label" means the labels are not exclusive —
-one comment can be `toxic` and `insult` and nothing else, or all six at once.
+> Unstructured comment in, typed probabilistic decisions out.
+
+A fast, single-pass classifier for content moderation across 7 languages (en, ru, tr, es, fr, it,
+pt), built on XLM-RoBERTa-large. It does not generate text. It reads a comment once and returns 6
+independent probabilities: `toxic`, `severe_toxic`, `obscene`, `threat`, `insult`,
+`identity_hate`. "Multi-label" means the labels are not exclusive — one comment can be `toxic` and
+`insult` and nothing else, or all six at once.
+
+## What "System One" means here
+
+The framing follows the "System One model" idea in TypeSafe's
+[Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev): a model used as
+a function call inside a software workflow rather than as a conversational partner. This project is
+independent of TypeSafe and Jev; it borrows the framing, not the model.
+
+| Property | This model | Evidence |
+|---|---|---|
+| Input | One comment, plus an optional language ID | [Model card](hf_release/README.md#quick-start) |
+| Output | Six typed floats in [0, 1], one per label, each with its own tuned threshold | [docs/MODEL.md](docs/MODEL.md) |
+| Cannot generate text | True by construction: the output head is six sigmoids | `model/language_aware_transformer.py` |
+| Confidence scores | Ranks, not calibrated probabilities; use the shipped thresholds | [docs/RESULTS.md](docs/RESULTS.md) |
+| Latency | Not measured; no claim made | n/a |
 
 The architecture adds *language-conditioned attention*: the model is told which language it is
 reading, and that signal is allowed to change how the attention layer weighs the tokens. Whether

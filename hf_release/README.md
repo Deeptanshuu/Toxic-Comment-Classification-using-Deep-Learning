@@ -116,12 +116,23 @@ model-index:
 
 # toxic-comment-multilingual-xlmr
 
+**A System One model for toxicity: unstructured comment in, typed probabilistic decisions out.**
+
 Multi-label toxicity classification for online comments in seven languages:
 English, Russian, Turkish, Spanish, French, Italian, Portuguese.
 
 The model is XLM-RoBERTa-large with one extra attention block on top whose
 attention scores carry a per-language bias, followed by a small classification
-head. It emits six independent probabilities per comment.
+head. It emits six independent probabilities per comment in a single forward
+pass. It does not generate text: the output is six sigmoids, so the result is
+always a fixed-shape vector you can drop into a moderation workflow as a
+function call.
+
+The "System One" framing follows TypeSafe's
+[Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
+This model is independent of TypeSafe and Jev. The scores are ranks, not
+calibrated probabilities, and latency has not been measured, so this card makes
+no claim on either.
 
 **Read the [Known limitations](#known-limitations) and
 [Out-of-scope use](#out-of-scope-use) sections before you deploy this.** They are
