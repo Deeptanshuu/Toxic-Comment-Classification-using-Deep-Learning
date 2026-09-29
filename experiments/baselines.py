@@ -3,17 +3,25 @@
   run KEY   -- score one public model on dataset/split/test.csv and save
                experiments/baselines_out/KEY.npz (row indices + scores).
                Needs a GPU for the XLM-R-large model; the rest run on CPU, slowly.
+  overlap DIR -- mark test rows whose text also appears in public Jigsaw data, saved
+               as experiments/baselines_out/overlap.npz. DIR must hold
+               jigsaw2018_train.csv and jigsaw2018_test.csv (Kaggle 2018 challenge) and
+               civil_comments*.parquet (google/civil_comments, the Jigsaw 2019 base that
+               the 2020 multilingual competition trained on).
   score     -- compare every saved baseline against Mill's saved test predictions
                (evaluation_results/eval_20260830_072515/predictions.npz, same row
-               order as test.csv) on exactly the same rows. Prints markdown tables.
+               order as test.csv) on exactly the same rows. Prints markdown tables,
+               then the same tables with overlapping rows removed if overlap.npz exists.
 
 Usage (from the repo root):
     uv run python experiments/baselines.py run detoxify_multi
     uv run python experiments/baselines.py run textdetox_xlmr_large
     uv run python experiments/baselines.py run citizenlab_mdistilbert
     uv run python experiments/baselines.py run toxic_bert
+    uv run python experiments/baselines.py overlap PATH/TO/DOWNLOADS
     uv run python experiments/baselines.py score
 """
+import re
 import sys
 import time
 from pathlib import Path
@@ -87,6 +95,42 @@ def run(key, batch_size=64):
     print(f"{key}: {len(idx)} rows in {time.time() - t0:.0f}s on {device} -> {OUT / f'{key}.npz'}")
 
 
+_NON_WORD = re.compile(r"[\W_]+")
+
+
+def _norm(text):
+    # Mill's English text was cleaned (apostrophes and punctuation stripped, whitespace
+    # collapsed), so an exact match misses most copies. Compare lowercase letters/digits only.
+    return _NON_WORD.sub(" ", str(text).lower()).strip()
+
+
+def overlap(src_dir):
+    src_dir = Path(src_dir)
+    df = load_test()
+    sources = {
+        "jigsaw2018_train": pd.read_csv(src_dir / "jigsaw2018_train.csv").comment_text,
+        "jigsaw2018_test": pd.read_csv(src_dir / "jigsaw2018_test.csv").comment_text,
+        "civil_comments": pd.concat([pd.read_parquet(f, columns=["text"]).text
+                                     for f in sorted(src_dir.glob("civil_comments*.parquet"))]),
+    }
+    norm = df.comment_text.map(_norm)
+    masks = {}
+    print("| Source | " + " | ".join(LANGS) + " | Total |")
+    print("|---|" + "---|" * (len(LANGS) + 1))
+    for name, texts in sources.items():
+        exact = df.comment_text.isin(set(texts)).values
+        seen = {_norm(t) for t in texts}
+        masks[name] = (norm.isin(seen) & (norm.str.len() > 0)).values
+        for kind, m in (("exact", exact), ("normalised", masks[name])):
+            counts = [int(m[df.lang.values == lg].sum()) for lg in LANGS]
+            print(f"| {name} ({kind}) | " + " | ".join(map(str, counts)) + f" | {int(m.sum())} |")
+    any_ = np.logical_or.reduce(list(masks.values()))
+    counts = [int(any_[df.lang.values == lg].sum()) for lg in LANGS]
+    print("| any (normalised) | " + " | ".join(map(str, counts)) + f" | {int(any_.sum())} |")
+    OUT.mkdir(parents=True, exist_ok=True)
+    np.savez(OUT / "overlap.npz", any=any_, **masks)
+
+
 def paired_auc_diff(y, a, b, n_boot=1000, seed=0):
     """AUC(a) - AUC(b) on the same rows, with a paired bootstrap 95% CI."""
     rng = np.random.default_rng(seed)
@@ -101,17 +145,8 @@ def paired_auc_diff(y, a, b, n_boot=1000, seed=0):
     return diff, lo, hi
 
 
-def score():
-    df = load_test()
-    mill = np.load(MILL)
-    y_all = mill["labels"]
-    assert (df[LABELS].values.astype(np.float32) == y_all).all(), "Mill predictions are not aligned with test.csv"
-    p_mill = mill["predictions"]
+def tables(df, y_all, p_mill, files, keep):
     langs = df.lang.values
-
-    files = sorted(OUT.glob("*.npz"))
-    if not files:
-        sys.exit(f"no baseline outputs in {OUT}; run `baselines.py run KEY` first")
 
     # 1. `toxic` label, every multilingual baseline, all 7 languages.
     print("## `toxic` label, all languages (AUC; Mill scored on the same rows)\n")
@@ -120,9 +155,11 @@ def score():
     per_lang = {}
     for f in files:
         d = np.load(f)
-        key, idx, s = f.stem, d["idx"], d["scores"][:, 0]
+        idx, s = d["idx"], d["scores"]
         if set(langs[idx]) != set(LANGS):
             continue
+        k = keep[idx]
+        key, idx, s = f.stem, idx[k], s[k, 0]
         y = y_all[idx, 0].astype(int)
         m = p_mill[idx, 0]
         diff, lo, hi = paired_auc_diff(y, m, s)
@@ -143,23 +180,49 @@ def score():
         d = np.load(f)
         if d["scores"].shape[1] != 6:
             continue
-        idx, s = d["idx"], d["scores"]
+        k = keep[d["idx"]]
+        idx, s = d["idx"][k], d["scores"][k]
         print(f"\n## All six labels, English only ({f.stem}, {len(idx)} rows)\n")
-        print("| Label | Model AUC | Mill AUC | Mill - model [95% CI] |")
-        print("|---|---|---|---|")
-        for k, name in enumerate(LABELS):
-            y = y_all[idx, k].astype(int)
-            diff, lo, hi = paired_auc_diff(y, p_mill[idx, k], s[:, k])
-            print(f"| `{name}` | {roc_auc_score(y, s[:, k]):.4f} | {roc_auc_score(y, p_mill[idx, k]):.4f} "
+        print("| Label | Positives | Model AUC | Mill AUC | Mill - model [95% CI] |")
+        print("|---|---|---|---|---|")
+        for j, name in enumerate(LABELS):
+            y = y_all[idx, j].astype(int)
+            diff, lo, hi = paired_auc_diff(y, p_mill[idx, j], s[:, j])
+            print(f"| `{name}` | {y.sum()} | {roc_auc_score(y, s[:, j]):.4f} | {roc_auc_score(y, p_mill[idx, j]):.4f} "
                   f"| {diff:+.4f} [{lo:+.4f}, {hi:+.4f}] |")
-        macro_b = np.mean([roc_auc_score(y_all[idx, k], s[:, k]) for k in range(6)])
-        macro_m = np.mean([roc_auc_score(y_all[idx, k], p_mill[idx, k]) for k in range(6)])
-        print(f"| **macro** | {macro_b:.4f} | {macro_m:.4f} | {macro_m - macro_b:+.4f} |")
+        macro_b = np.mean([roc_auc_score(y_all[idx, j], s[:, j]) for j in range(6)])
+        macro_m = np.mean([roc_auc_score(y_all[idx, j], p_mill[idx, j]) for j in range(6)])
+        print(f"| **macro** | | {macro_b:.4f} | {macro_m:.4f} | {macro_m - macro_b:+.4f} |")
+
+
+def score():
+    df = load_test()
+    mill = np.load(MILL)
+    y_all = mill["labels"]
+    assert (df[LABELS].values.astype(np.float32) == y_all).all(), "Mill predictions are not aligned with test.csv"
+    p_mill = mill["predictions"]
+
+    files = sorted(f for f in OUT.glob("*.npz") if f.stem != "overlap")
+    if not files:
+        sys.exit(f"no baseline outputs in {OUT}; run `baselines.py run KEY` first")
+
+    print("# All test rows\n")
+    tables(df, y_all, p_mill, files, np.ones(len(df), dtype=bool))
+
+    ov = OUT / "overlap.npz"
+    if ov.exists():
+        keep = ~np.load(ov)["any"]
+        print(f"\n# Excluding {int((~keep).sum())} rows whose text appears in public Jigsaw data\n")
+        tables(df, y_all, p_mill, files, keep)
+    else:
+        print("\n# Not checked for training-data overlap (run `baselines.py overlap DIR`)")
 
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "run":
         run(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "overlap":
+        overlap(sys.argv[2])
     elif len(sys.argv) == 2 and sys.argv[1] == "score":
         score()
     else:
