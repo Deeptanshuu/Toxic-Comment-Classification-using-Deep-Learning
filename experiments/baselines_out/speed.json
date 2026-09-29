@@ -1,0 +1,42 @@
+{
+  "gpu": "Quadro RTX 6000",
+  "dtype": "fp16",
+  "n_rows": 2048,
+  "batch_size": 64,
+  "n_latency": 300,
+  "max_length": 512,
+  "timing": "wall clock, tokenisation included",
+  "models": {
+    "mill": {
+      "params_m": 564.7,
+      "throughput_per_s": 871.3,
+      "latency_ms_median": 11.76,
+      "latency_ms_p95": 16.04
+    },
+    "detoxify_multi": {
+      "params_m": 278.0,
+      "throughput_per_s": 2424.1,
+      "latency_ms_median": 6.17,
+      "latency_ms_p95": 9.11
+    },
+    "textdetox_xlmr_large": {
+      "params_m": 559.9,
+      "throughput_per_s": 896.1,
+      "latency_ms_median": 11.0,
+      "latency_ms_p95": 16.57
+    },
+    "citizenlab_mdistilbert": {
+      "params_m": 135.3,
+      "throughput_per_s": 3700.1,
+      "latency_ms_median": 2.93,
+      "latency_ms_p95": 4.92
+    },
+    "toxic_bert": {
+      "params_m": 109.5,
+      "throughput_per_s": 1361.8,
+      "latency_ms_median": 5.48,
+      "latency_ms_p95": 6.66
+    }
+  },
+  "mill_fp16_max_abs_gap": 0.002255737781524658
+}

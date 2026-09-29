@@ -65,6 +65,28 @@ All six labels, English only, against `toxic-bert` (4,638 rows):
 | `identity_hate` | 0.9838 | 0.9938 | +0.0100 [-0.0008, +0.0179] |
 | macro | 0.9584 | 0.9902 | +0.0318 |
 
+### Speed
+
+`baselines.py speed`, one Quadro RTX 6000, fp16, max length 512, wall clock with tokenisation.
+Throughput on 2,048 random test rows at batch 64 (median of 3 passes); latency at batch 1 on 280
+rows after 20 warm-up rows. Mill was checked to reproduce its saved test scores in fp16 (max gap
+0.0023) before timing.
+
+| Model | Params | Comments/s | Latency median | Latency p95 |
+|---|---|---|---|---|
+| Mill | 565M | 871 | 11.8 ms | 16.0 ms |
+| Detoxify multilingual | 278M | 2,424 | 6.2 ms | 9.1 ms |
+| textdetox XLM-R large | 560M | 896 | 11.0 ms | 16.6 ms |
+| citizenlab mDistilBERT | 135M | 3,700 | 2.9 ms | 4.9 ms |
+| toxic-bert | 110M | 1,362 | 5.5 ms | 6.7 ms |
+
+Mill costs what any XLM-R-large model costs: about 2.8x Detoxify multilingual's compute for
++0.023 `toxic` AUC. toxic-bert is slower than its size suggests: its English WordPiece vocabulary
+turns a non-English comment into 114 tokens on average, against 72 for the XLM-R tokenizer.
+
+Charts: `baselines.py plot` writes `docs/images/baseline_auc.png` and
+`docs/images/baseline_speed.png` (copies in `hf_release/images/`).
+
 ### Training-data overlap
 
 Test rows whose text also appears in public Jigsaw data (`baselines.py overlap`). Matching is on
@@ -115,6 +137,8 @@ uv run python experiments/baselines.py run citizenlab_mdistilbert
 uv run python experiments/baselines.py run toxic_bert
 uv run python experiments/baselines.py overlap PATH/TO/DOWNLOADS
 uv run python experiments/baselines.py score > experiments/baselines_result.md
+uv run python experiments/baselines.py speed
+uv run python experiments/baselines.py plot
 ```
 
 Each `run` writes `experiments/baselines_out/KEY.npz`. Uses the GPU in fp16 when one is available;
