@@ -37,6 +37,19 @@ Every language improved, and the gap between best and worst narrowed from 0.052 
 
 v2 separates real threats from everything else: 16% of threats score below 0.5, down from 80%.
 
+Against public models, `toxic` AUC on the same test rows. Source:
+[experiments/baselines.md](experiments/baselines.md).
+
+| Model | Baseline AUC | Mill AUC |
+|---|---|---|
+| Detoxify multilingual | 0.9692 | **0.9921** |
+| textdetox XLM-R large | 0.9327 | **0.9921** |
+| citizenlab mDistilBERT | 0.8513 | **0.9921** |
+| toxic-bert (English, six-label macro) | 0.9584 | **0.9902** |
+
+89% of English test rows appear in Jigsaw data the Detoxify models trained on; excluding them keeps or
+widens every gap. Mill also trained on this test set's distribution, which the baselines did not.
+
 **Known bias:** short benign text containing identity terms ("I am a gay man.") is over-flagged as
 toxic. Read [experiments/identity_bias.md](experiments/identity_bias.md) before deploying.
 
