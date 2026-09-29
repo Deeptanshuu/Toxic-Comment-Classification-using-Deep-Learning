@@ -231,135 +231,78 @@ def speed(n_rows=2048, batch_size=64, n_latency=300):
     (OUT / "speed.json").write_text(json.dumps(results, indent=2) + "\n")
 
 
-# Display names and a fixed colour + marker per model, the same in every chart.
-# Colours are slots 1-5 of the dataviz reference palette; markers are the secondary encoding.
-STYLE = {
-    "mill": ("Mill", "#2a78d6", "o"),
-    "detoxify_multi": ("Detoxify multilingual", "#eb6834", "s"),
-    "textdetox_xlmr_large": ("textdetox XLM-R large", "#1baf7a", "D"),
-    "citizenlab_mdistilbert": ("citizenlab mDistilBERT", "#eda100", "^"),
-    "toxic_bert": ("toxic-bert", "#e87ba4", "v"),
+# The multilingual models, in chart order. toxic-bert is English-only, so it stays in the tables.
+NAMES = {
+    "mill": "Mill",
+    "detoxify_multi": "Detoxify multilingual",
+    "textdetox_xlmr_large": "textdetox XLM-R large",
+    "citizenlab_mdistilbert": "citizenlab mDistilBERT",
 }
-LANG_NAMES = {"en": "English", "ru": "Russian", "tr": "Turkish", "es": "Spanish",
-              "fr": "French", "it": "Italian", "pt": "Portuguese"}
+MILL_BLUE, BASE_GREY = "#2a78d6", "#b9b8b3"
 INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#ffffff"
 
 
-def _axes_style(ax):
-    ax.set_facecolor(SURFACE)
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    ax.spines["bottom"].set_color(GRID)
-    ax.tick_params(colors=INK2, length=0, labelsize=9)
-    ax.grid(axis="x", color=GRID, linewidth=0.8)
-    ax.set_axisbelow(True)
-
-
-def _save(fig, name):
-    for d in (Path("docs/images"), Path("hf_release/images")):
-        fig.savefig(d / name, dpi=200, facecolor=SURFACE, bbox_inches="tight")
-    print(f"wrote docs/images/{name} and hf_release/images/{name}")
-
-
-def plot():
+def _bars(values, title, xlabel, fmt, note, name):
+    """One horizontal bar per model, Mill in blue, value printed at the bar end."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    keys = list(NAMES)
+    y = np.arange(len(keys))[::-1]
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    fig.patch.set_facecolor(SURFACE)
+    ax.set_facecolor(SURFACE)
+    colors = [MILL_BLUE if k == "mill" else BASE_GREY for k in keys]
+    ax.barh(y, [values[k] for k in keys], height=0.6, color=colors)
+    top = max(values.values())
+    for yv, k in zip(y, keys, strict=True):
+        ax.text(values[k] + top * 0.015, yv, fmt(values[k]), va="center", fontsize=11,
+                color=INK, fontweight="bold" if k == "mill" else "normal")
+    ax.set_yticks(y, [NAMES[k] for k in keys], fontsize=11, color=INK)
+    for lbl, k in zip(ax.get_yticklabels(), keys, strict=True):
+        lbl.set_fontweight("bold" if k == "mill" else "normal")
+    ax.set_xlim(0, top * 1.2)
+    ax.set_title(title, loc="left", fontsize=13, color=INK, pad=12)
+    ax.set_xlabel(xlabel, fontsize=10, color=INK2)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(axis="y", length=0)
+    ax.tick_params(axis="x", colors=INK2, labelsize=9)
+    ax.grid(axis="x", color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    fig.text(0.01, -0.1, note, fontsize=8.5, color=INK2)
+    for d in (Path("docs/images"), Path("hf_release/images")):
+        fig.savefig(d / name, dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    print(f"wrote docs/images/{name} and hf_release/images/{name}")
+
+
+def plot():
     df = load_test()
     mill = np.load(MILL)
-    y_all, p_mill, langs = mill["labels"], mill["predictions"], df.lang.values
-
-    # --- Chart 1: toxic AUC by language, and all six labels vs toxic-bert in English.
-    rows = ["all"] + LANGS
-    auc = {"mill": {}}
-    for r in rows:
-        m = np.ones(len(df), bool) if r == "all" else langs == r
-        auc["mill"][r] = roc_auc_score(y_all[m, 0], p_mill[m, 0])
-    for key in ("detoxify_multi", "textdetox_xlmr_large", "citizenlab_mdistilbert"):
+    y = mill["labels"][:, 0]
+    auc = {"mill": roc_auc_score(y, mill["predictions"][:, 0])}
+    for key in list(NAMES)[1:]:
         d = np.load(OUT / f"{key}.npz")
-        full = np.full(len(df), np.nan)
-        full[d["idx"]] = d["scores"][:, 0]
-        auc[key] = {}
-        for r in rows:
-            m = np.ones(len(df), bool) if r == "all" else langs == r
-            auc[key][r] = roc_auc_score(y_all[m, 0], full[m])
-    tb = np.load(OUT / "toxic_bert.npz")
-    tb_auc = [roc_auc_score(y_all[tb["idx"], k], tb["scores"][:, k]) for k in range(6)]
-    mill_en = [roc_auc_score(y_all[tb["idx"], k], p_mill[tb["idx"], k]) for k in range(6)]
+        assert len(d["idx"]) == len(df)
+        auc[key] = roc_auc_score(y[d["idx"]], d["scores"][:, 0])
+    # 100 * (1 - AUC): of 100 random (toxic, clean) pairs, how many the model ranks the wrong way.
+    _bars({k: 100 * (1 - v) for k, v in auc.items()},
+          "Ranking mistakes, lower is better",
+          "(toxic, clean) pairs ranked the wrong way, per 100  =  100 x (1 - AUC)",
+          lambda v: f"{v:.1f}",
+          "toxic label, all 7 languages, Mill's 35,658-row test split. Baselines used as published.",
+          "baseline_auc.png")
 
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={"wspace": 0.45})
-    fig.patch.set_facecolor(SURFACE)
-    ypos = np.arange(len(rows))[::-1]
-    # Each model sits at its own small vertical offset so near-ties do not hide one another.
-    for j, key in enumerate(auc):
-        name, color, marker = STYLE[key]
-        a1.scatter([auc[key][r] for r in rows], ypos + 0.24 - 0.16 * j, s=46, color=color,
-                   marker=marker, edgecolor=SURFACE, linewidth=1.5, zorder=3, label=name)
-    a1.set_yticks(ypos, ["All languages"] + [LANG_NAMES[lg] for lg in LANGS], color=INK)
-    a1.set_xlim(0.74, 1.0)
-    a1.set_xlabel("AUC, `toxic` label", color=INK2, fontsize=9)
-    a1.set_title("toxic, by language (35,658 test rows)", loc="left", color=INK, fontsize=11)
-    _axes_style(a1)
-
-    ypos2 = np.arange(6)[::-1]
-    for vals, key, dy in ((mill_en, "mill", 0.12), (tb_auc, "toxic_bert", -0.12)):
-        name, color, marker = STYLE[key]
-        a2.scatter(vals, ypos2 + dy, s=46, color=color, marker=marker, edgecolor=SURFACE,
-                   linewidth=1.5, zorder=3)
-    a2.set_yticks(ypos2, LABELS, color=INK)
-    a2.set_xlim(0.86, 1.0)
-    a2.set_xlabel("AUC", color=INK2, fontsize=9)
-    a2.set_title("All six labels, English only (4,638 rows)", loc="left", color=INK, fontsize=11)
-    _axes_style(a2)
-
-    handles = [plt.Line2D([], [], linestyle="", marker=STYLE[k][2], color=STYLE[k][1],
-                          markersize=7, label=STYLE[k][0]) for k in STYLE]
-    fig.legend(handles=handles, loc="upper center", ncol=5, frameon=False, fontsize=9,
-               labelcolor=INK, bbox_to_anchor=(0.5, 1.06))
-    fig.text(0.0, -0.06, "Higher is better. Mill's test split; baselines used as published. "
-             "Mill trained on this distribution and the baselines did not.",
-             color=INK2, fontsize=8)
-    _save(fig, "baseline_auc.png")
-    plt.close(fig)
-
-    # --- Chart 2: speed. Two panels, never one dual axis.
-    sp = json.loads((OUT / "speed.json").read_text())
-    keys = list(STYLE)
-    names = [f"{STYLE[k][0]} ({sp['models'][k]['params_m']:.0f}M)" for k in keys]
-    colors = [STYLE[k][1] for k in keys]
-    thr = [sp["models"][k]["throughput_per_s"] for k in keys]
-    med = [sp["models"][k]["latency_ms_median"] for k in keys]
-    p95 = [sp["models"][k]["latency_ms_p95"] for k in keys]
-
-    fig, (b1, b2) = plt.subplots(1, 2, figsize=(11, 3.6), gridspec_kw={"wspace": 0.12})
-    fig.patch.set_facecolor(SURFACE)
-    yb = np.arange(len(keys))[::-1]
-    b1.barh(yb, thr, height=0.62, color=colors, edgecolor=SURFACE, linewidth=2)
-    for yv, v in zip(yb, thr, strict=True):
-        b1.text(v, yv, f"  {v:,.0f}", va="center", color=INK, fontsize=9)
-    b1.set_yticks(yb, names, color=INK)
-    b1.set_xlim(0, max(thr) * 1.18)
-    b1.set_xlabel("comments per second, batch 64 (higher is faster)", color=INK2, fontsize=9)
-    b1.set_title("Throughput", loc="left", color=INK, fontsize=11)
-    _axes_style(b1)
-
-    b2.barh(yb, med, height=0.62, color=colors, edgecolor=SURFACE, linewidth=2)
-    b2.hlines(yb, med, p95, color=INK2, linewidth=1)
-    b2.scatter(p95, yb, marker="|", s=60, color=INK2)
-    for yv, v, q in zip(yb, med, p95, strict=True):
-        b2.text(q, yv, f"  {v:.1f} ms", va="center", color=INK, fontsize=9)
-    b2.set_yticks(yb, [""] * len(keys))
-    b2.set_xlim(0, max(p95) * 1.3)
-    b2.set_xlabel("ms per comment, batch 1: median, whisker to p95 (lower is faster)",
-                  color=INK2, fontsize=9)
-    b2.set_title("Latency", loc="left", color=INK, fontsize=11)
-    _axes_style(b2)
-    fig.text(0.0, -0.1, f"One {sp['gpu']}, fp16, max length 512, tokenisation included. "
-             f"{sp['n_rows']:,} random test rows for throughput, {sp['n_latency'] - 20} for latency.",
-             color=INK2, fontsize=8)
-    _save(fig, "baseline_speed.png")
-    plt.close(fig)
+    sp = json.loads((OUT / "speed.json").read_text())["models"]
+    _bars({k: sp[k]["throughput_per_s"] for k in NAMES},
+          "Throughput, higher is faster",
+          "comments per second",
+          lambda v: f"{v:,.0f}",
+          "One Quadro RTX 6000, fp16, batch 64, max length 512, tokenisation included.",
+          "baseline_speed.png")
 
 
 def paired_auc_diff(y, a, b, n_boot=1000, seed=0):

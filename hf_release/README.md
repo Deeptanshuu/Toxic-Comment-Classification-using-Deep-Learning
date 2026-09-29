@@ -128,20 +128,30 @@ speech are unmeasured; scores are ranks, not calibrated probabilities.
 
 ## Results
 
-Held-out test split, 35,658 rows. Thresholds tuned on validation only.
+Held-out test split, 35,658 rows, thresholds tuned on validation only: macro AUC **0.9852**, macro
+F1 **0.8814**, exact match **0.8772**.
 
-| Metric | Mill | v1 (2025) |
-|---|---|---|
-| Macro AUC | **0.9852** | 0.9147 |
-| Macro F1, tuned thresholds | **0.8814** | 0.6036 |
-| Weighted F1 | **0.9332** | 0.7732 |
-| Exact match | **0.8772** | 0.6194 |
+Against public models, same test rows:
 
-![F1 by class, v1 versus Mill](images/f1_gains_by_class.png)
+| Model | Size | `toxic` AUC | Comments/s | Latency |
+|---|---|---|---|---|
+| **Mill** | 565M | **0.9921** | 871 | 11.8 ms |
+| Detoxify multilingual | 278M | 0.9692 | 2,424 | 6.2 ms |
+| textdetox XLM-R large | 560M | 0.9327 | 896 | 11.0 ms |
+| citizenlab mDistilBERT | 135M | 0.8513 | 3,700 | 2.9 ms |
+| toxic-bert (English only) | 110M | 0.9797 (Mill 0.9797) | 1,362 | 5.5 ms |
 
-![Per-language AUC and F1, v1 versus Mill](images/per_language_performance.png)
+![AUC against public models](images/baseline_auc.png)
 
-![Threat probability distributions, v1 versus Mill](images/threat_probability_shift.png)
+![Throughput](images/baseline_speed.png)
+
+Mill is the most accurate and runs at the speed of other XLM-R-large models, about a third of
+Detoxify's throughput. One Quadro RTX 6000, fp16, median batch-1 latency. 89% of English test
+rows are in Jigsaw data the Detoxify models trained on; removing them keeps every AUC gap. Mill
+trained on this test set's distribution; the baselines did not.
+[Details](https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning/blob/main/experiments/baselines.md).
+
+Per class, tuned thresholds:
 
 | Class | AUC | Threshold | Precision | Recall | F1 |
 |---|---|---|---|---|---|
@@ -155,25 +165,20 @@ Held-out test split, 35,658 rows. Thresholds tuned on validation only.
 Macro AUC by language: en 0.9902, ru 0.9790, tr 0.9726, es 0.9882, fr 0.9877, it 0.9893,
 pt 0.9832. Full values in `metrics.json`.
 
-### Against public models
+### Compared with v1 (2025)
 
-| Model | Size | `toxic` AUC | Comments/s | Latency |
-|---|---|---|---|---|
-| **Mill** | 565M | **0.9921** | 871 | 11.8 ms |
-| Detoxify multilingual | 278M | 0.9692 | 2,424 | 6.2 ms |
-| textdetox XLM-R large | 560M | 0.9327 | 896 | 11.0 ms |
-| citizenlab mDistilBERT | 135M | 0.8513 | 3,700 | 2.9 ms |
-| toxic-bert (English only) | 110M | 0.9797 (Mill 0.9797) | 1,362 | 5.5 ms |
+| Metric | Mill | v1 (2025) |
+|---|---|---|
+| Macro AUC | **0.9852** | 0.9147 |
+| Macro F1, tuned thresholds | **0.8814** | 0.6036 |
+| Weighted F1 | **0.9332** | 0.7732 |
+| Exact match | **0.8772** | 0.6194 |
 
-![AUC against public models](images/baseline_auc.png)
+![F1 by class, v1 versus Mill](images/f1_gains_by_class.png)
 
-![Throughput and latency](images/baseline_speed.png)
+![Per-language AUC and F1, v1 versus Mill](images/per_language_performance.png)
 
-Mill is the most accurate and runs at the speed of other XLM-R-large models, about a third of
-Detoxify's throughput. One Quadro RTX 6000, fp16, median batch-1 latency. 89% of English test
-rows are in Jigsaw data the Detoxify models trained on; removing them keeps every AUC gap. Mill
-trained on this test set's distribution; the baselines did not.
-[Details](https://github.com/Deeptanshuu/Toxic-Comment-Classification-using-Deep-Learning/blob/main/experiments/baselines.md).
+![Threat probability distributions, v1 versus Mill](images/threat_probability_shift.png)
 
 ## On real traffic
 

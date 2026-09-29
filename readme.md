@@ -16,7 +16,28 @@ TypeSafe.
 
 ## Results
 
-Held-out `test` split, per-class thresholds tuned on `val`. Source: [docs/RESULTS.md](docs/RESULTS.md).
+Held-out `test` split, per-class thresholds tuned on `val`: macro AUC **0.9852**, macro F1 **0.8814**.
+Source: [docs/RESULTS.md](docs/RESULTS.md).
+
+Against public models, same test rows, each baseline used as published. Source: [experiments/baselines.md](experiments/baselines.md).
+
+| Model | Size | `toxic` AUC | Comments/s | Latency |
+|---|---|---|---|---|
+| **Mill** | 565M | **0.9921** | 871 | 11.8 ms |
+| Detoxify multilingual | 278M | 0.9692 | 2,424 | 6.2 ms |
+| textdetox XLM-R large | 560M | 0.9327 | 896 | 11.0 ms |
+| citizenlab mDistilBERT | 135M | 0.8513 | 3,700 | 2.9 ms |
+| toxic-bert (English only) | 110M | 0.9797 (Mill 0.9797) | 1,362 | 5.5 ms |
+
+![AUC against public models](docs/images/baseline_auc.png)
+
+![Throughput](docs/images/baseline_speed.png)
+
+Mill is the most accurate, at the speed of other XLM-R-large models (a third of Detoxify's
+throughput). 89% of English test rows are in Jigsaw data the Detoxify models trained on; removing
+them keeps every gap. Mill trained on this test set's distribution; the baselines did not.
+
+### Compared with v1 (2025)
 
 | Metric | Mill (v2) | v1 (2025) | Delta |
 |---|---|---|---|
@@ -36,26 +57,6 @@ Every language improved, and the gap between best and worst narrowed from 0.052 
 ![Threat probability distributions, v1 versus v2](docs/images/threat_probability_shift.png)
 
 v2 separates real threats from everything else: 16% of threats score below 0.5, down from 80%.
-
-### Against public models
-
-Same test rows, each baseline used as published. Source: [experiments/baselines.md](experiments/baselines.md).
-
-| Model | Size | `toxic` AUC | Comments/s | Latency |
-|---|---|---|---|---|
-| **Mill** | 565M | **0.9921** | 871 | 11.8 ms |
-| Detoxify multilingual | 278M | 0.9692 | 2,424 | 6.2 ms |
-| textdetox XLM-R large | 560M | 0.9327 | 896 | 11.0 ms |
-| citizenlab mDistilBERT | 135M | 0.8513 | 3,700 | 2.9 ms |
-| toxic-bert (English only) | 110M | 0.9797 (Mill 0.9797) | 1,362 | 5.5 ms |
-
-![AUC against public models](docs/images/baseline_auc.png)
-
-![Throughput and latency](docs/images/baseline_speed.png)
-
-Mill is the most accurate, at the speed of other XLM-R-large models (a third of Detoxify's
-throughput). 89% of English test rows are in Jigsaw data the Detoxify models trained on; removing
-them keeps every gap. Mill trained on this test set's distribution; the baselines did not.
 
 **Known bias:** short benign self-descriptions that name an identity are over-flagged as toxic.
 Read [experiments/identity_bias.md](experiments/identity_bias.md) before deploying.
