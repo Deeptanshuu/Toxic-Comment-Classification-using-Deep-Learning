@@ -1,7 +1,7 @@
 [project]
 name = "toxic-comment-classification"
 version = "0.1.0"
-description = "Multilingual toxic comment classification (XLM-RoBERTa-large, 7 languages, 6 labels)"
+description = "Mill: multilingual toxicity classifier (XLM-RoBERTa-large, 7 languages, 6 labels)"
 readme = "readme.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [

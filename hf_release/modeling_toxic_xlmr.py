@@ -1,4 +1,4 @@
-"""Model definition for Deeptanshuu/toxic-comment-multilingual-xlmr.
+"""Model definition for Mill (Deeptanshuu/toxic-comment-multilingual-xlmr).
 
 This is a custom architecture, not a stock Hugging Face model. It is
 XLM-RoBERTa-large followed by one extra attention block whose scores carry a

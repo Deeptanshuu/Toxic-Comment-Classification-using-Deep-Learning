@@ -251,7 +251,7 @@ commit = api.upload_folder(
     repo_id=repo_id,
     repo_type="model",
     folder_path=folder,
-    commit_message="Publish multilingual toxicity classifier: weights, card, thresholds, config",
+    commit_message="Publish Mill: weights, card, thresholds, config",
 )
 print(f"uploaded: {commit.commit_url if hasattr(commit, 'commit_url') else commit}")
 print(f"repo (private): https://huggingface.co/{repo_id}")

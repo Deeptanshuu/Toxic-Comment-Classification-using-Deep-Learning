@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Streamlit Launcher Script for Toxic Comment Classifier
+# Streamlit launcher for Mill
 # This script launches the Streamlit version of the application
 
-echo "🚀 Starting Toxic Comment Classifier - Streamlit Edition"
+echo "Starting Mill - Streamlit demo"
 echo "📚 Loading model and dependencies..."
 
 # Check for Python and Streamlit

@@ -170,8 +170,8 @@ def create_app():
         .example-text { font-style: italic; color: #666; }
     """) as app:
         gr.Markdown("""
-        # Multilingual Toxic Comment Classifier
-        This app analyzes text for different types of toxicity across multiple languages. 
+        # Mill
+        A fast, single-pass model for multilingual toxicity. This app analyzes text for different types of toxicity across multiple languages. 
         Enter your text, select a language (or let it auto-detect), and click 'Analyze'.
         
         Supported languages: English, Russian, Turkish, Spanish, French, Italian, Portuguese

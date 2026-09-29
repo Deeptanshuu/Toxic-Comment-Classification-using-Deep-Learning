@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runnable example: batch toxicity prediction with tuned per-class thresholds.
+"""Runnable example: batch toxicity prediction with Mill, using tuned per-class thresholds.
 
     python inference_example.py                       # pull from the Hub
     python inference_example.py /path/to/local/repo   # use a local checkout

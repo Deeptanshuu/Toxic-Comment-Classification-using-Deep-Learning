@@ -966,7 +966,7 @@ def main() -> None:
     inject_css()
     st.markdown('<div class="main-title">Training Monitor</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="subtitle">XLM-RoBERTa toxicity classifier -- live view over TensorBoard event files</div>',
+        '<div class="subtitle">Mill (XLM-RoBERTa toxicity classifier) -- live view over TensorBoard event files</div>',
         unsafe_allow_html=True,
     )
 

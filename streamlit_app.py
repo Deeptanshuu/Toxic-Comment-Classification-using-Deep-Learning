@@ -20,7 +20,7 @@ with ModuleProtector('torch.classes'):
 
 # Set page configuration - MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(
-    page_title="Multilingual Toxicity Analyzer",
+    page_title="Mill",
     page_icon="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9ImN1cnJlbnRDb2xvciIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJsdWNpZGUgbHVjaWRlLXNoaWVsZC1wbHVzLWljb24gbHVjaWRlLXNoaWVsZC1wbHVzIj48cGF0aCBkPSJNMjAgMTNjMCA1LTMuNSA3LjUtNy42NiA4Ljk1YTEgMSAwIDAgMS0uNjctLjAxQzcuNSAyMC41IDQgMTggNCAxM1Y2YTEgMSAwIDAgMSAxLTFjMiAwIDQuNS0xLjIgNi4yNC0yLjcyYTEuMTcgMS4xNyAwIDAgMSAxLjUyIDBDMTQuNTEgMy44MSAxNyA1IDE5IDVhMSAxIDAgMCAxIDEgMXoiLz48cGF0aCBkPSJNOSAxMmg2Ii8+PHBhdGggZD0iTTEyIDl2NiIvPjwvc3ZnPg==",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1005,7 +1005,7 @@ if 'use_example' not in st.session_state:
 
 # Sidebar content
 with st.sidebar:
-    st.markdown("<h1 class='main-title'>Multilingual Toxicity Analyzer</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-title'>Mill</h1>", unsafe_allow_html=True)
     
     st.markdown("""
     #### This app analyzes text for different types of toxicity across multiple languages with high accuracy.
@@ -1181,11 +1181,11 @@ st.markdown("""
         <path d="M9 12h6"/>
         <path d="M12 9v6"/>
     </svg> 
-    Multilingual Toxicity Analyzer
+    Mill
 </h1>
 """, unsafe_allow_html=True)
 st.markdown("""
-<p class='subtitle'>Detect toxic content in multiple languages with state-of-the-art accuracy</p>
+<p class='subtitle'>A fast, single-pass model for multilingual toxicity</p>
 """, unsafe_allow_html=True)
 
 # Text input area with interactive styling

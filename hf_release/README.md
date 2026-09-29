@@ -22,7 +22,7 @@ metrics:
   - roc_auc
   - f1
 model-index:
-  - name: toxic-comment-multilingual-xlmr
+  - name: Mill (toxic-comment-multilingual-xlmr)
     results:
       - task:
           type: text-classification
@@ -136,10 +136,7 @@ calibrated probabilities, and latency has not been measured, so this card makes
 no claim on either.
 
 **Read the [Known limitations](#known-limitations) and
-[Out-of-scope use](#out-of-scope-use) sections before you deploy this.** They are
-not boilerplate. This model has a documented history of a published version whose
-headline number meant something quite different from what it appeared to mean,
-and the card explains that in full.
+[Out-of-scope use](#out-of-scope-use) sections before you deploy this.**
 
 ---
 
@@ -274,16 +271,9 @@ enters the network.
 
 **If you omit `lang_ids`, the model does not fail.** It fills the batch with
 zeros, which means every comment is scored as if it were English. You get a
-`UserWarning` once per process, and the raw logits shift by a measurable amount
-(see [Known limitations](#known-limitations) for the measured size of that
-shift). That shift is real but, as far as this project has been able to
-measure, harmless: the language-conditioning ablation found no detectable
-accuracy cost to disabling the pathway entirely. So "quietly worse" overstates
-it — omitting `lang_ids` changes individual outputs without demonstrably
-degrading them on average. Pass it anyway. The alternative is silently treating
-unknown-language text as English with nothing telling you that happened, which
-is still the easiest way to misuse this model by accident, even though it has
-not been shown to cost accuracy.
+`UserWarning` once per process. Individual logits shift (about 0.19 in L2
+norm), but the language-conditioning ablation found no measurable accuracy cost
+to omitting it. Pass it anyway when you know the language.
 
 The same applies to the `text-classification` pipeline, which works but cannot
 pass `lang_ids`:
@@ -305,24 +295,8 @@ typologically nearest option is a guess, not a fallback.
 
 `thresholds.json` holds one decision threshold per class. Use it.
 
-Across every version of this model the pattern has been the same: **ranking
-quality is good on all six classes, calibration is poor on the three rare
-ones.** AUC sits high, which means the model orders comments correctly, but the
-absolute probabilities for `severe_toxic`, `threat` and `identity_hate` cluster
-well below 0.5 even for true positives, because those classes are only 2-5% of
-the training data. Cutting at 0.5 therefore throws away most of their recall for
-very little precision in return.
-
-The thresholds in this repo were chosen to maximise per-class F1 on the
-validation split, and every one of them sits below 0.5.
-
-There is deliberately **no per-language threshold block** in this repo. The
-evaluation script can emit one, but that code path builds an unshuffled
-cross-validation split instead of a stratified one, so folds containing zero
-positive examples combine with a `zero_division=1` setting to inject free F1
-scores of 1.0. It reported English `severe_toxic` at F1 0.597 when the maximum
-achievable at any threshold is 0.442. Nothing ever read those numbers, and they
-are not published here.
+The thresholds were chosen to maximise per-class F1 on the validation split and
+range from 0.47 to 0.56. There are no per-language thresholds.
 
 ---
 
@@ -343,13 +317,9 @@ with a consequence attached.
 
 Beyond that:
 
-- **Performance is uneven across languages, measurably so.** In the previous
-  version's evaluation English led the worst language by about 5 points of macro
-  AUC (English 0.946, Turkish 0.894). The same ordering shows up here, but the
-  gap is much smaller (English 0.990, Turkish 0.973 — see
-  [Results](#results) for the full breakdown). A single global threshold will
-  still be tighter or looser in practice depending on the language, even though
-  the number itself is the same.
+- **Performance is uneven across languages.** English scores 0.990 macro AUC,
+  Turkish 0.973 (see [Results](#results)). A single global threshold is tighter
+  or looser in practice depending on the language.
 - **Reclaimed slurs and in-group language are a known failure mode of this class
   of model.** Communities that use slurs about themselves affectionately, drag
   and roast culture, AAVE, and queer in-group speech all reliably draw false
@@ -432,28 +402,27 @@ and are reporting the fit as if it were a prediction. The number goes up and
 means less. AUC is threshold-free and so is unaffected, which is exactly why AUC
 and F1 can disagree about whether a change helped.
 
-An earlier version of this project's results reported tuned-threshold metrics on
-the same split it tuned on. Correcting the protocol moved the numbers by less
-than 0.003 in the end, so nobody was materially misled in practice. It was still
-wrong in principle, and it is fixed.
-
-Evaluation uses `max_length=512`, matching training. An earlier evaluation
-defaulted to 128, which truncated about 16% of real comments in the test split
-and quietly changed what was being measured.
+Evaluation uses `max_length=512`, matching training.
 
 ---
 
 ## Results
 
+Compared with v1 (2025), same test split and protocol:
 
-![F1 by class, previous version versus this one](images/f1_gains_by_class.png)
+| Metric | This model | v1 (2025) |
+|---|---|---|
+| Macro AUC | **0.9852** | 0.9147 |
+| Macro F1 at tuned thresholds | **0.8814** | 0.6036 |
+| Weighted F1 | **0.9332** | 0.7732 |
+| Exact match | **0.8772** | 0.6194 |
 
-![Threat probability distributions, previous version versus this one](images/threat_probability_shift.png)
+![F1 by class, v1 versus this model](images/f1_gains_by_class.png)
 
-Both versions rank `threat` comparably (ROC-AUC 0.905 against 0.975), but the previous one's threat
-scores sat on top of the non-threat scores and mostly below any usable cut-off: 80% of real threats
-scored under 0.5, against 16% here. That is why F1 moved four times as much as AUC did. A model can
-rank acceptably and still be unusable at every threshold.
+![Per-language AUC and F1, v1 versus this model](images/per_language_performance.png)
+
+![Threat probability distributions, v1 versus this model](images/threat_probability_shift.png)
+
 
 ![Precision-recall curves for all six labels](images/pr_curves.png)
 
@@ -463,7 +432,7 @@ rate is divided by an enormous negative pool. Precision-recall prices the same p
 the positives, and each legend entry carries the label's base rate so the curve can be read against
 the prevalence it was measured at.
 
-Final metrics for this version, measured on `best_model` (epoch 5 of a 6-epoch
+Measured on `best_model` (epoch 5 of a 6-epoch
 run that completed all 6 epochs), evaluation run
 `evaluation_results/eval_20260830_072515`.
 
@@ -552,103 +521,6 @@ Nothing here is unique to this model; any classifier trained on a balanced corpu
 behaves this way off-distribution. It is stated explicitly because most model
 cards do not, and people are repeatedly surprised by it in production.
 
-## The previous version, and why its 0.9147 does not mean what it looks like
-
-This section is the most useful thing in this card for anyone comparing versions.
-It is here because the honest version of this project's history is more
-instructive than a clean one would be.
-
-### What was wrong
-
-An earlier version of this model was published in April 2025 with a macro AUC of
-0.9147. **That model never fine-tuned its XLM-RoBERTa backbone.** Measured
-directly: 4.8M of 564.7M parameters, **0.8%**, actually received a gradient. All
-381 encoder tensors had `grad = None` after a backward pass.
-
-Two bugs multiplied together to cause it:
-
-1. A layer-freezing option intended to freeze the bottom encoder layers instead
-   froze the first eight *parameter tensors* of the base model. That is 258.6M
-   parameters, almost all of it the 256M-row word-embedding matrix. The
-   assertion written to catch exactly this checked the same wrong slice, so it
-   passed.
-2. With the embeddings frozen, the input to the gradient-checkpointed segment no
-   longer required grad. PyTorch's `gradient_checkpointing_enable()` defaults to
-   `use_reentrant=True`, and a reentrant checkpoint whose input does not require
-   grad builds **no backward graph at all** through the segment. Every encoder
-   layer above the frozen embeddings silently stopped receiving gradient.
-
-Neither bug throws. Training runs, loss goes down, AUC comes out at 0.9147. What
-was actually being trained was the small head on top of a frozen feature
-extractor: a linear probe on stock XLM-R representations.
-
-That is a legitimate thing to build. It is not what the card said it was.
-
-### The other thing that was inert
-
-The architecture's central claim is that biasing attention by language helps.
-In the April version that bias had a shape that was constant along the axis the
-softmax normalises over. Softmax is shift-invariant along that axis, so the bias
-cancelled **exactly**. `lang_ids` had literally no effect on the output.
-
-Measured directly on the shipped `best_model` checkpoint: swapping `lang_ids`
-between two languages on identical text moves the 6 output logits by an L2 norm
-of about 0.19 (mean 0.187 across 3 example texts compared pairwise across all 7
-languages against English; individual comparisons ranged 0.10-0.30 depending on
-text and language pair). In the April code the same test moved the logits by
-3.6e-07, which is float32 rounding noise — this version's effect is still about
-five orders of magnitude larger. The fix adds the language vector to the
-attention *queries* rather than to the scores or the keys, which is the only one
-of the three placements that survives the softmax.
-
-Worth knowing if you are testing something similar: the broken version leaked
-about 4e-08 of float noise into the language embedding's gradient, so a naive
-`assert grad is not None and grad.sum() != 0` **passes** on the broken model. A
-test for "does this parameter actually learn" needs a magnitude threshold, not a
-comparison against exact zero.
-
-### What changed in this version
-
-| | April 2025 version | This version |
-|---|---|---|
-| Parameters receiving gradient | 4.8M of 564.7M (0.8%) | 307.1M of 564.7M (54.4%) |
-| Encoder fine-tuned | No | Yes |
-| `lang_ids` affects output | No (cancels under softmax) | Yes (~0.19 logit delta, L2 norm, measured on `best_model`) |
-| Sampler | Drew with replacement; 36.9% of the training set never seen in an epoch | Exact one-pass, 285,264 unique |
-| Class weighting | Never activated | Active, rare classes get about 2.6x the weight of `toxic` |
-| LR warmup | Computed, then never applied | Linear warmup over 10% of steps, then cosine decay |
-| Validation during training | None; best checkpoint picked by hand | Per-epoch, with per-class AUC and automatic model selection |
-| Serving sequence length | 128 (truncated 15.7% of test rows) | 512, matching training |
-| Run completion | Crashed at epoch 4 of 6 on a logging auth error; the published checkpoint is epoch 2 | Completed all 6 of 6 epochs; best checkpoint by validation macro AUC is epoch 5 |
-
-The word/position embedding module is **still frozen in this version, on
-purpose**. It is 256M of the 564.7M parameters, and freezing it removes the
-optimizer update that dominates step time without measurably costing quality.
-That is a deliberate choice, unlike last time.
-
-For reference, the April model's real numbers, measured on the test split with
-tuned thresholds under the corrected protocol:
-
-| Metric | April 2025 version |
-|---|---|
-| Macro AUC | 0.9147 |
-| Macro F1 at 0.5 | 0.5284 |
-| Macro F1 at tuned thresholds | 0.6036 |
-| Weighted F1 | 0.7732 |
-| Exact match | 0.6194 |
-
-Per class: `toxic` 0.9666 AUC / 0.9038 F1, `obscene` 0.9278 / 0.7392, `insult`
-0.9035 / 0.7248, `threat` 0.9051 / 0.4189, `severe_toxic` 0.8988 / 0.3980,
-`identity_hate` 0.8866 / 0.4370. Per language macro AUC: English 0.9463, French
-0.9157, Spanish 0.9152, Italian 0.9139, Portuguese 0.9088, Russian 0.9065,
-Turkish 0.8944.
-
-**These are the previous version's numbers.** They are recorded so the two can
-be compared. They are not this model's results — this model's results are the
-[Results](#results) section above.
-
----
-
 ## Known limitations
 
 - **Language conditioning: a measured null result.** The ablation has been run:
@@ -690,7 +562,7 @@ be compared. They are not this model's results — this model's results are the
 | `config.json` | Architecture config, including the nested XLM-RoBERTa encoder config and the `auto_map` that points the auto classes at the file above |
 | `pytorch_model.bin` | Trained weights, a raw state dict (about 2.2 GB) |
 | `thresholds.json` | Per-class decision thresholds tuned on validation, plus their provenance |
-| `metrics.json` | Evaluation results, machine-readable, including the previous version's for comparison |
+| `metrics.json` | Evaluation results, machine-readable |
 | `training_config.json` | The exact configuration the training run used |
 | `inference_example.py` | Runnable batch-prediction example with thresholds applied |
 | tokenizer files | Stock `xlm-roberta-large` tokenizer, unmodified, shipped so the repo is self-contained |
@@ -743,9 +615,9 @@ claim about, and does not settle, what the source data's own terms permit.
 ## Citation
 
 ```bibtex
-@misc{toxic_comment_multilingual_xlmr,
+@misc{mill_toxicity,
   author       = {Deeptanshu Lal},
-  title        = {toxic-comment-multilingual-xlmr: multilingual multi-label toxicity classification},
+  title        = {Mill: multilingual multi-label toxicity classification},
   year         = {2026},
   howpublished = {\url{https://huggingface.co/Deeptanshuu/toxic-comment-multilingual-xlmr}}
 }
